@@ -51,14 +51,31 @@ export class WidgetRenderer extends MarkdownRenderChild {
     this.iframe = this.containerEl.createEl("iframe", {
       cls: "financial-canvas-widget-iframe",
       attr: {
-        src,
         sandbox: "allow-scripts allow-same-origin allow-popups",
         allow: "fullscreen",
-        loading: "lazy",
         title: this.spec.widgetTitle ?? this.spec.symbol ?? "Widget",
         style: `height: ${this.height}px; width: 100%; border: none;`,
       },
     });
+
+    // Defer assigning src until the iframe is attached and laid out at its
+    // final size. Obsidian runs code block processors while the element is
+    // still detached; in Canvas the iframe is resized once the canvas-node
+    // CSS chain kicks in. TradingView measures its container at init and
+    // does not always recover from a post-init resize, which collapsed the
+    // chart area (header + "Charts by TradingView" squeezed at the top).
+    let assigned = false;
+    const assignSrc = () => {
+      if (assigned || !this.iframe) return;
+      assigned = true;
+      this.iframe.src = src;
+    };
+    onAttached(this.containerEl, () => {
+      this.tagParentPreviewAsCard();
+      requestAnimationFrame(() => requestAnimationFrame(assignSrc));
+    });
+    // Fallback: if the element never gets connected, still load the widget.
+    setTimeout(assignSrc, 2000);
   }
 
   private resolveSrc(): string | null {
