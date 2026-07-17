@@ -39,9 +39,12 @@
    :not(.is-editing). Obsidian hides the reading-view render while editing
    via inline display: none — our !important layout rules would otherwise
    override that and show BOTH the reading render and the editor's live
-   preview, duplicating the chart. */
+   preview, duplicating the chart. Likewise, .markdown-embed-content is
+   scoped with :not([style*="display: none"]): Obsidian keeps stale embed
+   shells across node re-renders (node-insert-event) and hides them inline —
+   resurrecting one paints an empty duplicate box over the chart. */
 .financial-canvas-card-note:not(.is-editing) .canvas-node-content,
-.financial-canvas-card-note:not(.is-editing) .markdown-embed-content {
+.financial-canvas-card-note:not(.is-editing) .markdown-embed-content:not([style*="display: none"]) {
   padding: 0 !important;
   margin: 0 !important;
   border: none !important;
@@ -165,6 +168,15 @@
   box-sizing: border-box !important;
 }
 
+/* Belt and braces: never resurrect an embed shell Obsidian hid inline.
+   Without this, a stale empty shell gets un-hidden by the layout rules
+   above and overlaps the card as a dead duplicate box. */
+.financial-canvas-card-note .markdown-embed-content[style*="display: none"],
+.canvas-node:has(.financial-canvas-widget) .markdown-embed-content[style*="display: none"],
+.canvas-node:has(.financial-canvas-chart-container) .markdown-embed-content[style*="display: none"] {
+  display: none !important;
+}
+
 /* Ensure the widget card content area fills the card; if the node ends up
    shorter than the widget's fixed height, the card content scrolls instead
    of clipping. */
@@ -209,7 +221,7 @@
 }
 
 .canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .canvas-node-content,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-embed-content {
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-embed-content:not([style*="display: none"]) {
   padding: 0 !important;
   margin: 0 !important;
   border: none !important;
