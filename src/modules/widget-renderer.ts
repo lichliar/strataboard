@@ -61,15 +61,16 @@ export class WidgetRenderer extends MarkdownRenderChild {
       },
     });
 
-    // Pin the iframe to the container's real pixel height instead of relying
-    // on height: 100%. A percentage height resolves to the iframe's intrinsic
-    // 150px wherever an ancestor lacks a definite height (e.g. the canvas
-    // node's live-preview editor, or the first frames before the canvas CSS
-    // chain applies), and TradingView's embed script measures its container
-    // once at init — so it ended up stuck in a header-only compact mode.
-    // Explicit pixels are always definite, in every view. A resize of the
-    // iframe element also resizes its viewport, firing the widget's own
-    // window-resize handling when the user drags the canvas node.
+    // Pin the iframe to a definite pixel height instead of relying on
+    // height: 100% (a percentage resolves to the intrinsic 150px wherever an
+    // ancestor lacks a definite height). Which height depends on context:
+    // - Canvas reading view: the container's real height, so the widget
+    //   fills the card and follows node resizes (resizing the iframe element
+    //   resizes its viewport, triggering the widget's own resize handling).
+    // - Everywhere else (regular notes, the canvas node's live-preview
+    //   editor): the fixed height from settings. The container there is
+    //   content-driven, so echoing its measured height back into the iframe
+    //   would form a feedback loop that grows the chart without bound.
     let assigned = false;
     const assignSrc = () => {
       if (assigned || !this.iframe) return;
@@ -78,8 +79,9 @@ export class WidgetRenderer extends MarkdownRenderChild {
     };
 
     this.resizeObserver = new ResizeObserver((entries) => {
-      const height = entries[0]?.contentRect.height ?? 0;
-      if (height <= 0 || !this.iframe) return;
+      const measured = entries[0]?.contentRect.height ?? 0;
+      if (measured <= 0 || !this.iframe) return;
+      const height = this.isInCanvasReadingView() ? measured : this.height;
       this.iframe.style.height = `${Math.round(height)}px`;
       // Load the widget only once the iframe has a real, final size.
       requestAnimationFrame(assignSrc);
@@ -89,6 +91,17 @@ export class WidgetRenderer extends MarkdownRenderChild {
     onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
     // Fallback: if the element never gets a size, still load the widget.
     setTimeout(assignSrc, 2000);
+  }
+
+  private isInCanvasReadingView(): boolean {
+    let el: HTMLElement | null = this.containerEl;
+    while (el) {
+      if (el.classList.contains("canvas-node")) {
+        return !el.classList.contains("is-editing");
+      }
+      el = el.parentElement;
+    }
+    return false;
   }
 
   private resolveSrc(): string | null {
