@@ -25,7 +25,7 @@
   background-color: transparent;
 }
 
-.financial-canvas-card-note,
+.financial-canvas-card-note.markdown-preview-view,
 .financial-canvas-card-note .canvas-node-content,
 .financial-canvas-card-note .markdown-embed-content,
 .financial-canvas-card-note .markdown-preview-view,
@@ -401,6 +401,27 @@
   flex: 1 1 auto;
   min-height: 0;
   position: relative;
+}
+
+/* lightweight-charts lays out its panes and the time axis with an internal
+   <table>. Obsidian's global table styles (theme/snippet rules putting
+   borders and padding on td) leak into it and break the chart's height
+   math — the time axis row gets pushed out of the visible area and its
+   labels render squashed. Shield the chart's internals from ambient table
+   CSS. (Reproduced with td { border; padding } and verified fixed.) */
+.financial-canvas-chart-container .tv-lightweight-charts table,
+.financial-canvas-chart-container .tv-lightweight-charts tr,
+.financial-canvas-chart-container .tv-lightweight-charts td {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: none !important;
+}
+
+.financial-canvas-chart-container .tv-lightweight-charts table {
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
+  width: 100%;
 }
 
 .financial-canvas-chart-container {
