@@ -57,9 +57,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
     const spec = this.result.spec;
 
     try {
-      const data = this.plugin.pluginSettings.autoRefreshOnOpen
-        ? await this.plugin.dataAdapter.loadOhlcv(spec)
-        : await this.plugin.dataAdapter.loadCachedOhlcv(spec);
+      const data = await this.loadData(spec);
       const symbolInfo = await this.plugin.symbolIndex.lookup(spec.symbol, spec.assetType);
       this.chartRenderer = new ChartRenderer(this.containerEl, {
         spec,
@@ -85,6 +83,17 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
 
   private async refresh() {
     this.render();
+  }
+
+  private async loadData(spec: ParsedCardSpec) {
+    if (this.plugin.pluginSettings.autoRefreshOnOpen) {
+      return this.plugin.dataAdapter.loadOhlcv(spec);
+    }
+    const cached = await this.plugin.dataAdapter.loadCachedOhlcv(spec);
+    if (cached.length > 0) return cached;
+    // First use (or cache miss): fetch once even when auto-refresh is off,
+    // otherwise a card with an empty cache shows "暂无数据" forever.
+    return this.plugin.dataAdapter.loadOhlcv(spec);
   }
 
   private tagParentPreviewAsCard() {

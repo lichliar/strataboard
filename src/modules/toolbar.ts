@@ -165,9 +165,17 @@ export class CanvasToolbar {
       return;
     }
 
+    // Cascade repeated inserts diagonally so cards don't stack exactly on
+    // top of each other at the viewport center.
+    const libraryPath = this.plugin.pluginSettings.cardLibraryPath;
+    const cardCount = Array.from(canvas.nodes.values()).filter(
+      (node: any) => node.filePath && node.filePath.startsWith(libraryPath + "/")
+    ).length;
+    const cascade = (cardCount % 8) * 40;
+
     const options = {
       file: tfile,
-      pos: { x: center.x - 400, y: center.y - 250 },
+      pos: { x: center.x - 400 + cascade, y: center.y - 250 + cascade },
       size: { width: 800, height: 500 },
     };
     console.log("placeFileNode: creating file node", { path: tfile.path, options });
