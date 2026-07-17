@@ -26,8 +26,8 @@
 }
 
 .financial-canvas-card-note.markdown-preview-view,
-.financial-canvas-card-note .canvas-node-content,
-.financial-canvas-card-note .markdown-embed-content,
+.financial-canvas-card-note:not(.is-editing) .canvas-node-content,
+.financial-canvas-card-note:not(.is-editing) .markdown-embed-content,
 .financial-canvas-card-note .markdown-preview-view,
 .financial-canvas-card-note .markdown-preview-sizer,
 .financial-canvas-card-note .markdown-preview-section {
@@ -35,8 +35,13 @@
   min-height: 0 !important;
 }
 
-.financial-canvas-card-note .canvas-node-content,
-.financial-canvas-card-note .markdown-embed-content {
+/* NOTE: rules that carry the class on the canvas node are scoped with
+   :not(.is-editing). Obsidian hides the reading-view render while editing
+   via inline display: none — our !important layout rules would otherwise
+   override that and show BOTH the reading render and the editor's live
+   preview, duplicating the chart. */
+.financial-canvas-card-note:not(.is-editing) .canvas-node-content,
+.financial-canvas-card-note:not(.is-editing) .markdown-embed-content {
   padding: 0 !important;
   margin: 0 !important;
   border: none !important;
@@ -85,14 +90,16 @@
 /* Hide raw YAML source when the card is rendered in Canvas.
    The code-block processor replaces the block with the iframe,
    but in edit/live-preview mode Obsidian renders the raw code block
-   with different classes. We hide all of them aggressively. */
-.financial-canvas-card-note pre,
-.financial-canvas-card-note pre code,
-.financial-canvas-card-note .HyperMD-codeblock,
-.financial-canvas-card-note .HyperMD-codeblock-begin,
-.financial-canvas-card-note .HyperMD-codeblock-end,
-.financial-canvas-card-note .HyperMD-codeblock-bg,
-.financial-canvas-card-note .markdown-source-view.mod-cm6 .cm-line:has(.HyperMD-codeblock) {
+   with different classes. We hide all of them aggressively — but only
+   while NOT editing, so the source stays visible and editable when the
+   user double-clicks into the node. */
+.financial-canvas-card-note:not(.is-editing) pre,
+.financial-canvas-card-note:not(.is-editing) pre code,
+.financial-canvas-card-note:not(.is-editing) .HyperMD-codeblock,
+.financial-canvas-card-note:not(.is-editing) .HyperMD-codeblock-begin,
+.financial-canvas-card-note:not(.is-editing) .HyperMD-codeblock-end,
+.financial-canvas-card-note:not(.is-editing) .HyperMD-codeblock-bg,
+.financial-canvas-card-note:not(.is-editing) .markdown-source-view.mod-cm6 .cm-line:has(.HyperMD-codeblock) {
   display: none !important;
 }
 
@@ -125,21 +132,21 @@
 
 /* Fallback: if the JS class was not applied (e.g. old build cached),
    use :has() to target any canvas node that contains our widget. */
-.canvas-node:has(.financial-canvas-widget) .metadata-container,
-.canvas-node:has(.financial-canvas-widget) .frontmatter-container,
-.canvas-node:has(.financial-canvas-widget) .frontmatter,
-.canvas-node:has(.financial-canvas-widget) .properties-heading,
-.canvas-node:has(.financial-canvas-widget) .properties-view-multiple-container,
-.canvas-node:has(.financial-canvas-widget) .mod-header,
-.canvas-node:has(.financial-canvas-widget) .inline-title,
-.canvas-node:has(.financial-canvas-widget) .markdown-preview-pusher,
-.canvas-node:has(.financial-canvas-widget) pre,
-.canvas-node:has(.financial-canvas-widget) pre code,
-.canvas-node:has(.financial-canvas-widget) .HyperMD-codeblock,
-.canvas-node:has(.financial-canvas-widget) .HyperMD-codeblock-begin,
-.canvas-node:has(.financial-canvas-widget) .HyperMD-codeblock-end,
-.canvas-node:has(.financial-canvas-widget) .HyperMD-codeblock-bg,
-.canvas-node:has(.financial-canvas-widget) .markdown-source-view.mod-cm6 .cm-line:has(.HyperMD-codeblock) {
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .metadata-container,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .frontmatter-container,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .frontmatter,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .properties-heading,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .properties-view-multiple-container,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .mod-header,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .inline-title,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-preview-pusher,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) pre,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) pre code,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .HyperMD-codeblock,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .HyperMD-codeblock-begin,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .HyperMD-codeblock-end,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .HyperMD-codeblock-bg,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-source-view.mod-cm6 .cm-line:has(.HyperMD-codeblock) {
   display: none !important;
 }
 
@@ -166,11 +173,11 @@
   overflow: auto !important;
 }
 
-.canvas-node:has(.financial-canvas-widget) .canvas-node-content,
-.canvas-node:has(.financial-canvas-widget) .markdown-embed-content,
-.canvas-node:has(.financial-canvas-widget) .markdown-preview-view,
-.canvas-node:has(.financial-canvas-widget) .markdown-preview-sizer,
-.canvas-node:has(.financial-canvas-widget) .markdown-preview-section {
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .canvas-node-content,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-embed-content,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-preview-view,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-preview-sizer,
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-preview-section {
   height: 100% !important;
   min-height: 0 !important;
 }
@@ -189,20 +196,20 @@
    detached from the canvas node, so the JS class tagging can miss. These
    :has() rules replicate the .financial-canvas-card-note layout so the card
    fills the node (and the chart's time axis is not clipped) regardless. */
-.canvas-node:has(.financial-canvas-chart-container) .metadata-container,
-.canvas-node:has(.financial-canvas-chart-container) .frontmatter-container,
-.canvas-node:has(.financial-canvas-chart-container) .frontmatter,
-.canvas-node:has(.financial-canvas-chart-container) .properties-heading,
-.canvas-node:has(.financial-canvas-chart-container) .mod-header,
-.canvas-node:has(.financial-canvas-chart-container) .inline-title,
-.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-pusher,
-.canvas-node:has(.financial-canvas-chart-container) pre,
-.canvas-node:has(.financial-canvas-chart-container) pre code {
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .metadata-container,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .frontmatter-container,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .frontmatter,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .properties-heading,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .mod-header,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .inline-title,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-preview-pusher,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) pre,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) pre code {
   display: none !important;
 }
 
-.canvas-node:has(.financial-canvas-chart-container) .canvas-node-content,
-.canvas-node:has(.financial-canvas-chart-container) .markdown-embed-content {
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .canvas-node-content,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-embed-content {
   padding: 0 !important;
   margin: 0 !important;
   border: none !important;
@@ -210,11 +217,11 @@
   flex-direction: column !important;
 }
 
-.canvas-node:has(.financial-canvas-chart-container) .canvas-node-content,
-.canvas-node:has(.financial-canvas-chart-container) .markdown-embed-content,
-.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-view,
-.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-sizer,
-.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-section {
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .canvas-node-content,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-embed-content,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-preview-view,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-preview-sizer,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-preview-section {
   height: 100% !important;
   min-height: 0 !important;
 }
