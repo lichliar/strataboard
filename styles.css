@@ -113,11 +113,14 @@
   min-height: 0;
 }
 
-/* In Canvas, keep the widget iframe width filling the card but let its
-   height be controlled by the settings slider (inline style). */
+/* In Canvas the node size is user-controlled (drag to resize), so the widget
+   iframe must fill the whole card — overriding the fixed inline height from
+   the widgetIframeHeight setting. In regular notes the class is never tagged
+   and these rules don't match, so the fixed height still applies there. */
 .financial-canvas-card-note .financial-canvas-widget-iframe,
 .canvas-node:has(.financial-canvas-widget) .financial-canvas-widget-iframe {
   width: 100% !important;
+  height: 100% !important;
   border: none !important;
 }
 
@@ -143,15 +146,31 @@
 
 .canvas-node:has(.financial-canvas-widget) .financial-canvas-widget-iframe {
   width: 100% !important;
+  height: 100% !important;
   border: none !important;
 }
 
-/* Ensure the widget card content area fills width; height is controlled by
-   the inline style from the widgetIframeHeight setting. When the fixed iframe
-   height exceeds the card height, the card content scrolls instead of clipping. */
+/* Widget container fills the card in Canvas so the iframe's height: 100%
+   resolves against a definite height all the way up the chain. */
+.canvas-node:has(.financial-canvas-widget) .financial-canvas-widget,
+.financial-canvas-card-note .financial-canvas-widget {
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+/* Ensure the widget card content area fills the card; the iframe inside is
+   height: 100% (see above), so the whole chain up to the canvas node needs a
+   definite height. If the node ends up shorter than the widget wants to be,
+   the card content scrolls instead of clipping. */
 .canvas-node:has(.financial-canvas-widget) .canvas-node-content,
 .financial-canvas-card-note .canvas-node-content {
   overflow: auto !important;
+}
+
+.canvas-node:has(.financial-canvas-widget) .canvas-node-content,
+.canvas-node:has(.financial-canvas-widget) .markdown-embed-content {
+  height: 100% !important;
+  min-height: 0 !important;
 }
 
 .canvas-node:has(.financial-canvas-widget) .markdown-preview-view,
