@@ -154,12 +154,15 @@
   border: none !important;
 }
 
-/* Widget container fills the card in Canvas so the iframe's height: 100%
-   resolves against a definite height all the way up the chain. */
-.canvas-node:has(.financial-canvas-widget) .financial-canvas-widget,
-.financial-canvas-card-note .financial-canvas-widget {
+/* Widget container fills the card in Canvas so the ResizeObserver measures
+   the real card height; the padding gives the widget a small bleed so its
+   edges don't touch the card border. */
+.canvas-node:not(.is-editing):has(.financial-canvas-widget) .financial-canvas-widget,
+.financial-canvas-card-note:not(.is-editing) .financial-canvas-widget {
   height: 100% !important;
   min-height: 0 !important;
+  padding: 8px !important;
+  box-sizing: border-box !important;
 }
 
 /* Ensure the widget card content area fills the card; if the node ends up
