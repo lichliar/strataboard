@@ -14,6 +14,7 @@ export class WidgetRenderer extends MarkdownRenderChild {
   private options: WidgetRendererOptions;
   private height: number;
   private iframe: HTMLIFrameElement | null = null;
+  private resizeObserver: ResizeObserver | null = null;
 
   constructor(containerEl: HTMLElement, spec: ParsedCardSpec, options: WidgetRendererOptions) {
     super(containerEl);
@@ -27,6 +28,8 @@ export class WidgetRenderer extends MarkdownRenderChild {
   }
 
   onunload() {
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
     this.iframe?.remove();
     this.iframe = null;
   }
@@ -58,23 +61,33 @@ export class WidgetRenderer extends MarkdownRenderChild {
       },
     });
 
-    // Defer assigning src until the iframe is attached and laid out at its
-    // final size. Obsidian runs code block processors while the element is
-    // still detached; in Canvas the iframe is resized once the canvas-node
-    // CSS chain kicks in. TradingView measures its container at init and
-    // does not always recover from a post-init resize, which collapsed the
-    // chart area (header + "Charts by TradingView" squeezed at the top).
+    // Pin the iframe to the container's real pixel height instead of relying
+    // on height: 100%. A percentage height resolves to the iframe's intrinsic
+    // 150px wherever an ancestor lacks a definite height (e.g. the canvas
+    // node's live-preview editor, or the first frames before the canvas CSS
+    // chain applies), and TradingView's embed script measures its container
+    // once at init — so it ended up stuck in a header-only compact mode.
+    // Explicit pixels are always definite, in every view. A resize of the
+    // iframe element also resizes its viewport, firing the widget's own
+    // window-resize handling when the user drags the canvas node.
     let assigned = false;
     const assignSrc = () => {
       if (assigned || !this.iframe) return;
       assigned = true;
       this.iframe.src = src;
     };
-    onAttached(this.containerEl, () => {
-      this.tagParentPreviewAsCard();
-      requestAnimationFrame(() => requestAnimationFrame(assignSrc));
+
+    this.resizeObserver = new ResizeObserver((entries) => {
+      const height = entries[0]?.contentRect.height ?? 0;
+      if (height <= 0 || !this.iframe) return;
+      this.iframe.style.height = `${Math.round(height)}px`;
+      // Load the widget only once the iframe has a real, final size.
+      requestAnimationFrame(assignSrc);
     });
-    // Fallback: if the element never gets connected, still load the widget.
+    this.resizeObserver.observe(this.containerEl);
+
+    onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
+    // Fallback: if the element never gets a size, still load the widget.
     setTimeout(assignSrc, 2000);
   }
 
