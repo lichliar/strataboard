@@ -163,6 +163,64 @@
   min-height: 0 !important;
 }
 
+/* Fallback for chart (tushare) cards, same idea as the widget fallback
+   above: Obsidian runs code block processors while the element is still
+   detached from the canvas node, so the JS class tagging can miss. These
+   :has() rules replicate the .financial-canvas-card-note layout so the card
+   fills the node (and the chart's time axis is not clipped) regardless. */
+.canvas-node:has(.financial-canvas-chart-container) .metadata-container,
+.canvas-node:has(.financial-canvas-chart-container) .frontmatter-container,
+.canvas-node:has(.financial-canvas-chart-container) .frontmatter,
+.canvas-node:has(.financial-canvas-chart-container) .properties-heading,
+.canvas-node:has(.financial-canvas-chart-container) .mod-header,
+.canvas-node:has(.financial-canvas-chart-container) .inline-title,
+.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-pusher,
+.canvas-node:has(.financial-canvas-chart-container) pre,
+.canvas-node:has(.financial-canvas-chart-container) pre code {
+  display: none !important;
+}
+
+.canvas-node:has(.financial-canvas-chart-container) .canvas-node-content,
+.canvas-node:has(.financial-canvas-chart-container) .markdown-embed-content {
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.canvas-node:has(.financial-canvas-chart-container) .canvas-node-content,
+.canvas-node:has(.financial-canvas-chart-container) .markdown-embed-content,
+.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-view,
+.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-sizer,
+.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-section {
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-view {
+  padding: 0 !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-sizer,
+.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-section {
+  padding: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.canvas-node:has(.financial-canvas-chart-container) .financial-canvas-card {
+  padding: 0 !important;
+  border-radius: 0 !important;
+  border: none !important;
+  background-color: transparent !important;
+  min-height: 0 !important;
+  height: 100% !important;
+}
+
 /* Remove default paragraph margins inside widget cards. */
 .financial-canvas-card-note p,
 .canvas-node:has(.financial-canvas-widget) p {
@@ -334,20 +392,15 @@
 .financial-canvas-chart-stack {
   display: flex;
   flex-direction: column;
-  flex: 0 0 auto;
-  min-height: 0;
-  position: relative;
-}
-
-/* Inside a Canvas node the card is a fixed-height flex column
-   (header + period tabs + chart stack). Let the chart stack grow/shrink to
-   fill the space remaining after the header and tabs, instead of forcing the
-   fixed pixel height from the inline style (kept here as the flex basis).
-   Previously the fixed height overflowed the node and the card's
-   overflow: hidden clipped the bottom of the chart — the time axis. */
-.financial-canvas-card-note .financial-canvas-chart-stack {
+  /* Grow/shrink to fill whatever the card leaves after the header and tabs.
+     The inline height set from JS acts as the flex basis; in normal notes
+     the card height is content-driven, so the basis wins and behavior is
+     unchanged. In Canvas (fixed-height card with overflow: hidden) the
+     stack shrinks instead of pushing the chart's bottom — the time axis —
+     out of view. */
   flex: 1 1 auto;
   min-height: 0;
+  position: relative;
 }
 
 .financial-canvas-chart-container {

@@ -11,7 +11,7 @@ import {
   type Time,
 } from "lightweight-charts";
 import type { MarketData, OhlcvRow, ParsedCardSpec, SymbolItem } from "../types";
-import { resolveEffectiveTheme, watchThemeChange } from "../utils/dom";
+import { resolveEffectiveTheme, watchThemeChange, onAttached } from "../utils/dom";
 import { parseDateYmd, formatDate } from "../utils/date";
 
 interface ChartRendererOptions {
@@ -94,7 +94,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     this.cleanup();
     this.containerEl.empty();
     this.containerEl.addClass("financial-canvas-card");
-    this.suppressMarkdownChrome();
+    onAttached(this.containerEl, () => this.suppressMarkdownChrome());
 
     const { spec, data } = this.options;
 
