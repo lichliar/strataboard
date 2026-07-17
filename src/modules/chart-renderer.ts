@@ -217,7 +217,9 @@ export class ChartRenderer extends MarkdownRenderChild {
       attr: { style: `color: ${color}` },
     });
 
-    const showMarketData = this.options.spec.showMarketData !== false;
+    // daily_basic only covers stocks; funds and indexes would show a row of
+    // "--", so skip the market data row (and its collapse toggle) for them.
+    const showMarketData = this.options.spec.showMarketData !== false && this.options.spec.assetType === "stock";
     let marketRow: HTMLElement | null = null;
 
     if (showMarketData) {
@@ -250,6 +252,10 @@ export class ChartRenderer extends MarkdownRenderChild {
       collapseBtn.textContent = this.isHeaderCollapsed ? "展开" : "折叠";
       collapseBtn.setAttribute("aria-label", this.isHeaderCollapsed ? "展开详细信息" : "折叠详细信息");
     });
+
+    if (!marketRow) {
+      collapseBtn.style.display = "none";
+    }
   }
 
   private async loadMarketData(tradeDate: string): Promise<MarketData | null> {
@@ -456,6 +462,11 @@ export class ChartRenderer extends MarkdownRenderChild {
         } else {
           this.chart?.timeScale().fitContent();
         }
+        // Re-apply the initial range only once, right after the container
+        // gets its real size. lightweight-charts preserves the visible
+        // logical range across later resizes on its own; re-fitting here
+        // every time would reset the user's zoom/pan.
+        this.resizeObserver?.disconnect();
       });
     });
     this.resizeObserver.observe(this.chartContainerEl);

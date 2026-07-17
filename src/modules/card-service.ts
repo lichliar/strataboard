@@ -104,17 +104,37 @@ export class CardService {
 
     const blockType = spec.widgetType ? "financial-widget" : "tushare";
     const content = await this.options.app.vault.cachedRead(file);
-    const newContent = [
-      buildCardFrontmatter(spec),
-      "",
-      "```" + blockType,
-      stringifyCardSpec(spec),
-      "```",
-      "",
-    ].join("\n");
+
+    // Replace only the generated parts — the fc-* frontmatter lines and the
+    // code block — so notes the user added elsewhere in the file survive.
+    let newContent = this.mergeFrontmatter(content, buildCardFrontmatter(spec));
+
+    const blockRe = new RegExp(`\`\`\`${blockType}\\n[\\s\\S]*?\\n\`\`\``);
+    const newBlock = ["```" + blockType, stringifyCardSpec(spec), "```"].join("\n");
+    if (blockRe.test(newContent)) {
+      newContent = newContent.replace(blockRe, newBlock);
+    } else {
+      newContent = `${newContent.trimEnd()}\n\n${newBlock}\n`;
+    }
 
     if (content === newContent) return;
     await this.options.app.vault.modify(file, newContent);
+  }
+
+  // Swaps the fc-* lines of the existing frontmatter for freshly generated
+  // ones, keeping any other keys the user added; prepends a frontmatter
+  // block when the file has none.
+  private mergeFrontmatter(content: string, frontmatter: string): string {
+    const fcLines = frontmatter.split("\n").slice(1, -1);
+    const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!fmMatch) {
+      return `${frontmatter}\n\n${content}`;
+    }
+    const userLines = fmMatch[1]
+      .split("\n")
+      .filter((line) => !line.startsWith("fc-") && line.trim() !== "");
+    const merged = ["---", ...userLines, ...fcLines, "---"].join("\n");
+    return merged + content.slice(fmMatch[0].length);
   }
 
   private async ensureFolder(path: string): Promise<void> {

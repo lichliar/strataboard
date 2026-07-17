@@ -193,22 +193,6 @@ export class FinancialCanvasSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("小组件 iframe 高度")
-      .setDesc("HTML / TradingView 小组件在卡片内部渲染时 iframe 的高度（像素）。")
-      .addSlider((slider) =>
-        slider
-          .setLimits(200, 1600, 50)
-          .setValue(this.plugin.pluginSettings.widgetIframeHeight)
-          .setDynamicTooltip()
-          .onChange(async (value) => {
-            this.plugin.pluginSettings.widgetIframeHeight = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    containerEl.createEl("h3", { text: "TradingView 小组件" });
-
-    new Setting(containerEl)
       .setName("上涨颜色")
       .setDesc("上涨 K 线的颜色。")
       .addColorPicker((picker) =>
@@ -227,6 +211,24 @@ export class FinancialCanvasSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
+
+    containerEl.createEl("h3", { text: "HTML / TradingView 小组件" });
+
+    new Setting(containerEl)
+      .setName("小组件 iframe 高度")
+      .setDesc("HTML / TradingView 小组件在卡片内部渲染时 iframe 的高度（像素）。")
+      .addSlider((slider) =>
+        slider
+          .setLimits(200, 1600, 50)
+          .setValue(this.plugin.pluginSettings.widgetIframeHeight)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.widgetIframeHeight = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    containerEl.createEl("h3", { text: "工具栏与其他" });
 
     new Setting(containerEl)
       .setName("工具栏位置")
