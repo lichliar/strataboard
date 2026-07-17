@@ -1,0 +1,442 @@
+.financial-canvas-card-note.markdown-preview-view {
+  padding: 0 !important;
+}
+
+.financial-canvas-card-note .metadata-container,
+.financial-canvas-card-note .frontmatter-container,
+.financial-canvas-card-note .frontmatter,
+.financial-canvas-card-note .mod-header,
+.financial-canvas-card-note .markdown-preview-pusher,
+.financial-canvas-card-note .inline-title,
+.financial-canvas-card-note .properties-heading {
+  display: none !important;
+}
+
+.financial-canvas-card-note .markdown-preview-sizer,
+.financial-canvas-card-note .markdown-preview-section {
+  padding: 0 !important;
+  min-height: 0 !important;
+}
+
+.financial-canvas-card-note .financial-canvas-card {
+  padding: 0;
+  border-radius: 0;
+  border: none;
+  background-color: transparent;
+}
+
+.financial-canvas-card-note,
+.financial-canvas-card-note .canvas-node-content,
+.financial-canvas-card-note .markdown-embed-content,
+.financial-canvas-card-note .markdown-preview-view,
+.financial-canvas-card-note .markdown-preview-sizer,
+.financial-canvas-card-note .markdown-preview-section {
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+.financial-canvas-card-note .canvas-node-content,
+.financial-canvas-card-note .markdown-embed-content {
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.financial-canvas-card-note .markdown-preview-view {
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.financial-canvas-card-note .markdown-preview-sizer,
+.financial-canvas-card-note .markdown-preview-section {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Card container */
+.financial-canvas-card {
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  height: 100%;
+  min-height: 300px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.financial-canvas-card-note .financial-canvas-card {
+  padding: 0;
+  border-radius: 0;
+  border: none;
+  background-color: transparent;
+  min-height: 0;
+  height: 100% !important;
+}
+
+/* Hide raw YAML source when the card is rendered in Canvas.
+   The code-block processor replaces the block with the iframe,
+   but in edit/live-preview mode Obsidian renders the raw code block
+   with different classes. We hide all of them aggressively. */
+.financial-canvas-card-note pre,
+.financial-canvas-card-note pre code,
+.financial-canvas-card-note .HyperMD-codeblock,
+.financial-canvas-card-note .HyperMD-codeblock-begin,
+.financial-canvas-card-note .HyperMD-codeblock-end,
+.financial-canvas-card-note .HyperMD-codeblock-bg,
+.financial-canvas-card-note .markdown-source-view.mod-cm6 .cm-line:has(.HyperMD-codeblock) {
+  display: none !important;
+}
+
+/* Widget card */
+.financial-canvas-widget {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.financial-canvas-widget-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* In Canvas, keep the widget iframe width filling the card but let its
+   height be controlled by the settings slider (inline style). */
+.financial-canvas-card-note .financial-canvas-widget-iframe,
+.canvas-node:has(.financial-canvas-widget) .financial-canvas-widget-iframe {
+  width: 100% !important;
+  border: none !important;
+}
+
+/* Fallback: if the JS class was not applied (e.g. old build cached),
+   use :has() to target any canvas node that contains our widget. */
+.canvas-node:has(.financial-canvas-widget) .metadata-container,
+.canvas-node:has(.financial-canvas-widget) .frontmatter-container,
+.canvas-node:has(.financial-canvas-widget) .frontmatter,
+.canvas-node:has(.financial-canvas-widget) .properties-heading,
+.canvas-node:has(.financial-canvas-widget) .properties-view-multiple-container,
+.canvas-node:has(.financial-canvas-widget) .mod-header,
+.canvas-node:has(.financial-canvas-widget) .inline-title,
+.canvas-node:has(.financial-canvas-widget) .markdown-preview-pusher,
+.canvas-node:has(.financial-canvas-widget) pre,
+.canvas-node:has(.financial-canvas-widget) pre code,
+.canvas-node:has(.financial-canvas-widget) .HyperMD-codeblock,
+.canvas-node:has(.financial-canvas-widget) .HyperMD-codeblock-begin,
+.canvas-node:has(.financial-canvas-widget) .HyperMD-codeblock-end,
+.canvas-node:has(.financial-canvas-widget) .HyperMD-codeblock-bg,
+.canvas-node:has(.financial-canvas-widget) .markdown-source-view.mod-cm6 .cm-line:has(.HyperMD-codeblock) {
+  display: none !important;
+}
+
+.canvas-node:has(.financial-canvas-widget) .financial-canvas-widget-iframe {
+  width: 100% !important;
+  border: none !important;
+}
+
+/* Ensure the widget card content area fills width; height is controlled by
+   the inline style from the widgetIframeHeight setting. When the fixed iframe
+   height exceeds the card height, the card content scrolls instead of clipping. */
+.canvas-node:has(.financial-canvas-widget) .canvas-node-content,
+.financial-canvas-card-note .canvas-node-content {
+  overflow: auto !important;
+}
+
+.canvas-node:has(.financial-canvas-widget) .markdown-preview-view,
+.canvas-node:has(.financial-canvas-widget) .markdown-preview-sizer,
+.canvas-node:has(.financial-canvas-widget) .markdown-preview-section,
+.canvas-node:has(.financial-canvas-widget) .financial-canvas-card,
+.canvas-node:has(.financial-canvas-widget) .financial-canvas-widget {
+  display: block !important;
+  min-height: 0 !important;
+}
+
+/* Remove default paragraph margins inside widget cards. */
+.financial-canvas-card-note p,
+.canvas-node:has(.financial-canvas-widget) p {
+  margin: 0 !important;
+}
+
+/* Header */
+.financial-canvas-header {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary-alt);
+  flex-shrink: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.financial-canvas-card-note .financial-canvas-header {
+  padding: 4px 6px;
+}
+
+.financial-canvas-header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.financial-canvas-header-title-wrap {
+  min-width: 0;
+}
+
+.financial-canvas-header-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--text-normal);
+  line-height: 1.3;
+  flex-wrap: wrap;
+}
+
+.financial-canvas-header-enname {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: var(--font-ui-smaller);
+}
+
+.financial-canvas-header-code {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.3;
+}
+
+.financial-canvas-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.financial-canvas-header-refresh {
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-normal);
+}
+
+.financial-canvas-header-refresh:hover {
+  background: var(--background-modifier-hover);
+}
+
+.financial-canvas-header-collapse {
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-normal);
+  white-space: nowrap;
+}
+
+.financial-canvas-header-collapse:hover {
+  background: var(--background-modifier-hover);
+}
+
+.financial-canvas-header-quote {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.financial-canvas-header-price {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.financial-canvas-header-change,
+.financial-canvas-header-change-pct {
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+}
+
+.financial-canvas-header-market {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.financial-canvas-header-market-item {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.financial-canvas-header-market-label {
+  color: var(--text-faint);
+}
+
+.financial-canvas-header-market-value {
+  color: var(--text-muted);
+}
+
+/* Period tabs */
+.financial-canvas-period-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+  background-color: var(--background-primary-alt);
+}
+
+.financial-canvas-card-note .financial-canvas-period-tabs {
+  padding: 4px 6px;
+}
+
+.financial-canvas-period-tabs button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 10px;
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.financial-canvas-period-tabs button:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.financial-canvas-period-tabs button.is-active {
+  background: var(--background-primary);
+  border-color: var(--background-modifier-border);
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+/* Chart stack */
+.financial-canvas-chart-stack {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-height: 0;
+  position: relative;
+}
+
+/* Inside a Canvas node the card is a fixed-height flex column
+   (header + period tabs + chart stack). Let the chart stack grow/shrink to
+   fill the space remaining after the header and tabs, instead of forcing the
+   fixed pixel height from the inline style (kept here as the flex basis).
+   Previously the fixed height overflowed the node and the card's
+   overflow: hidden clipped the bottom of the chart — the time axis. */
+.financial-canvas-card-note .financial-canvas-chart-stack {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.financial-canvas-chart-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  box-sizing: border-box;
+}
+
+
+/* Legacy per-chart wrappers are no longer emitted; keep minimal rules in case
+   cached DOM or external CSS still references them. */
+.financial-canvas-price-chart,
+.financial-canvas-volume-chart,
+.financial-canvas-macd-chart {
+  width: 100%;
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* Crosshair sync line */
+.financial-canvas-crosshair-line {
+  display: none;
+}
+
+/* Empty / error */
+.financial-canvas-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 120px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.financial-canvas-error {
+  color: var(--text-error);
+  font-weight: 500;
+}
+
+/* Toolbar */
+.financial-canvas-toolbar {
+  position: absolute;
+  display: flex;
+  gap: 6px;
+  z-index: 100;
+  background: var(--background-primary-alt);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.financial-canvas-toolbar button {
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-normal);
+}
+
+.financial-canvas-toolbar button:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* Legacy overlay - kept minimal in case other code references it */
+.financial-canvas-overlay {
+  display: none;
+}
+
+/* Widget input modal: stack the HTML / iframe URL label above the textarea
+   so the input area gets the full width. */
+.fc-widget-input-url-setting {
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 8px;
+}
+
+.fc-widget-input-url-setting .setting-item-info,
+.fc-widget-input-url-setting .setting-item-control {
+  width: 100% !important;
+  margin-right: 0 !important;
+}
+
+.fc-widget-input-url-setting textarea {
+  width: 100%;
+  min-height: 160px;
+}
