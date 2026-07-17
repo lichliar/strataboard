@@ -1,0 +1,9 @@
+*.map
+main.js
+node_modules/
+.DS_Store
+.cache/
+data.json
+cache/
+*.db
+sql-wasm.wasm
