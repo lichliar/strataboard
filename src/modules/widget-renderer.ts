@@ -1,6 +1,7 @@
 import { MarkdownRenderChild } from "obsidian";
 import type { ParsedCardSpec } from "../types";
 import type FinancialCanvasPlugin from "../main";
+import { onAttached } from "../utils/dom";
 
 export interface WidgetRendererOptions {
   height?: number;
@@ -33,7 +34,7 @@ export class WidgetRenderer extends MarkdownRenderChild {
   private render() {
     this.containerEl.empty();
     this.containerEl.addClass("financial-canvas-card", "financial-canvas-widget");
-    this.tagParentPreviewAsCard();
+    onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
     this.renderIframe();
   }
 

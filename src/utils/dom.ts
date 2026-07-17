@@ -28,3 +28,29 @@ export function createContainer(className: string): HTMLDivElement {
   el.className = className;
   return el;
 }
+
+/**
+ * Runs cb once el is connected to the document. Obsidian runs markdown code
+ * block processors while the element is still detached from the canvas node,
+ * so ancestor lookups (e.g. finding the enclosing .canvas-node) done
+ * synchronously in the processor silently miss. Retries for a few frames as
+ * a safety net, then gives up — the CSS :has() fallbacks cover that case.
+ */
+export function onAttached(el: HTMLElement, cb: () => void, maxAttempts = 30): void {
+  let attempts = 0;
+  const tick = () => {
+    if (el.isConnected) {
+      cb();
+      return;
+    }
+    attempts++;
+    if (attempts < maxAttempts) {
+      requestAnimationFrame(tick);
+    }
+  };
+  if (el.isConnected) {
+    cb();
+  } else {
+    requestAnimationFrame(tick);
+  }
+}

@@ -21,6 +21,7 @@ import { SymbolSearchModal } from "./ui/symbol-search-modal";
 import { WidgetInputModal } from "./ui/widget-input-modal";
 import type { AssetType, ParsedCardSpec, SymbolItem } from "./types";
 import { resolveDateRange, formatIsoDate, parseDateYmd } from "./utils/date";
+import { onAttached } from "./utils/dom";
 
 class TushareCodeBlockRenderer extends MarkdownRenderChild {
   private plugin: FinancialCanvasPlugin;
@@ -44,7 +45,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
   private async render() {
     this.containerEl.empty();
     this.containerEl.addClass("financial-canvas-card");
-    this.tagParentPreviewAsCard();
+    onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
 
     if (!this.result.ok) {
       this.containerEl.createEl("div", {
@@ -159,7 +160,7 @@ class WidgetCodeBlockRenderer extends MarkdownRenderChild {
   private render() {
     this.containerEl.empty();
     this.containerEl.addClass("financial-canvas-card");
-    this.tagParentPreviewAsCard();
+    onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
 
     if (!this.result.ok) {
       this.containerEl.createEl("div", {
