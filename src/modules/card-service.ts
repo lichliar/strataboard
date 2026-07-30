@@ -3,6 +3,12 @@ import type { ParsedCardSpec } from "../types";
 import { buildCardFileName } from "../utils/slug";
 import { buildCardFrontmatter, canonicalKey, stringifyCardSpec } from "./card-spec";
 
+function codeBlockTypeFor(spec: ParsedCardSpec): string {
+  if (spec.contentType === "calendar") return "calendar";
+  if (spec.contentType === "widget" || spec.widgetType) return "financial-widget";
+  return "tushare";
+}
+
 interface CardServiceOptions {
   app: App;
   cardLibraryPath: string;
@@ -30,39 +36,53 @@ export class CardService {
     const libraryPath = normalizePath(savePath || this.options.cardLibraryPath);
     await this.ensureFolder(libraryPath);
 
-    const baseName = spec.widgetType
-      ? this.buildWidgetFileName(spec)
-      : buildCardFileName(spec.symbol, spec.assetType, spec.freq);
-    let filePath = `${libraryPath}/${baseName}`;
+    const baseName =
+      spec.contentType === "calendar"
+        ? "日历.md"
+        : spec.widgetType
+          ? this.buildWidgetFileName(spec)
+          : buildCardFileName(spec.symbol, spec.assetType, spec.freq);
+    const filePath = await this.uniqueFilePath(libraryPath, baseName);
+
+    const blockType = codeBlockTypeFor(spec);
+    const content = [
+      buildCardFrontmatter(spec),
+      "",
+      `\`\`\`${blockType}`,
+      stringifyCardSpec(spec),
+      "```",
+      "",
+    ].join("\n");
+
+    return this.options.app.vault.create(filePath, content);
+  }
+
+  // Creates a card file from a raw code-block body, for card types whose spec
+  // lives outside ParsedCardSpec (currently the timeline ruler). No fc-*
+  // frontmatter and no reuse: every insert produces a fresh card.
+  async createRawCard(baseName: string, blockType: string, blockBody: string, savePath?: string): Promise<TFile> {
+    const libraryPath = normalizePath(savePath || this.options.cardLibraryPath);
+    await this.ensureFolder(libraryPath);
+
+    const filePath = await this.uniqueFilePath(libraryPath, baseName);
+    const content = [`\`\`\`${blockType}`, blockBody, "```", ""].join("\n");
+
+    return this.options.app.vault.create(filePath, content);
+  }
+
+  async uniqueFilePath(libraryPath: string, baseName: string): Promise<string> {
+    let filePath = libraryPath ? `${libraryPath}/${baseName}` : baseName;
     let counter = 1;
 
     while (await this.options.app.vault.adapter.exists(filePath)) {
       const dotIndex = baseName.lastIndexOf(".");
       const stem = dotIndex >= 0 ? baseName.slice(0, dotIndex) : baseName;
       const ext = dotIndex >= 0 ? baseName.slice(dotIndex) : "";
-      filePath = `${libraryPath}/${stem}-${counter}${ext}`;
+      filePath = libraryPath ? `${libraryPath}/${stem}-${counter}${ext}` : `${stem}-${counter}${ext}`;
       counter++;
     }
 
-    const content = spec.widgetType
-      ? [
-          buildCardFrontmatter(spec),
-          "",
-          "```financial-widget",
-          stringifyCardSpec(spec),
-          "```",
-          "",
-        ].join("\n")
-      : [
-          buildCardFrontmatter(spec),
-          "",
-          "```tushare",
-          stringifyCardSpec(spec),
-          "```",
-          "",
-        ].join("\n");
-
-    return this.options.app.vault.create(filePath, content);
+    return filePath;
   }
 
   private buildWidgetFileName(spec: ParsedCardSpec): string {
@@ -102,7 +122,7 @@ export class CardService {
       throw new Error(`Card file not found: ${filePath}`);
     }
 
-    const blockType = spec.widgetType ? "financial-widget" : "tushare";
+    const blockType = codeBlockTypeFor(spec);
     const content = await this.options.app.vault.cachedRead(file);
 
     // Replace only the generated parts — the fc-* frontmatter lines and the

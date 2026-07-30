@@ -518,13 +518,21 @@
 }
 
 .financial-canvas-toolbar button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   border: 1px solid var(--background-modifier-border);
   border-radius: 4px;
-  padding: 4px 8px;
+  padding: 6px;
   cursor: pointer;
   font-size: 12px;
   color: var(--text-normal);
+}
+
+.financial-canvas-toolbar button svg {
+  width: 16px;
+  height: 16px;
 }
 
 .financial-canvas-toolbar button:hover {
@@ -553,4 +561,242 @@
 .fc-widget-input-url-setting textarea {
   width: 100%;
   min-height: 160px;
+}
+
+/* Calendar card */
+.financial-calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  user-select: none;
+}
+
+.financial-calendar-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 30px;
+}
+
+.financial-calendar-title {
+  flex: 1;
+  text-align: center;
+  font-weight: 600;
+  color: var(--text-normal);
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.financial-calendar-title:hover {
+  background: var(--background-modifier-hover);
+}
+
+.financial-calendar-title.is-editing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: default;
+}
+
+.financial-calendar-title.is-editing:hover {
+  background: transparent;
+}
+
+/* Specificity must beat Obsidian's global input[type="text"] rules, which
+   would otherwise shrink the font and, via em units, the width too. */
+.financial-calendar-title.is-editing input.financial-calendar-year-input,
+.financial-calendar-title.is-editing input.financial-calendar-month-input {
+  font-size: inherit;
+  font-weight: inherit;
+  color: var(--text-normal);
+  text-align: center;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.financial-calendar-title.is-editing input.financial-calendar-year-input {
+  width: 3.2em;
+}
+
+.financial-calendar-title.is-editing input.financial-calendar-month-input {
+  width: 1.8em;
+}
+
+.financial-calendar-nav,
+.financial-calendar-today {
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 2px 10px;
+  cursor: pointer;
+  font-size: inherit;
+  color: var(--text-normal);
+}
+
+.financial-calendar-nav:hover,
+.financial-calendar-today:hover {
+  background: var(--background-modifier-hover);
+}
+
+.financial-calendar-weekdays,
+.financial-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+/* Rows stretch evenly when the grid is given an explicit height (Canvas
+   nodes), and collapse to content height elsewhere. */
+.financial-calendar-grid {
+  grid-auto-rows: 1fr;
+}
+
+.financial-calendar-weekday {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 0;
+}
+
+.financial-calendar-day {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-height: 40px;
+  padding: 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-normal);
+  overflow: hidden;
+}
+
+.financial-calendar-day:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* Weekends get a faintly different surface so Sat/Sun stand apart from
+   weekdays without a harsh jump (dark themes: slightly brighter). */
+.financial-calendar-day.is-weekend {
+  background: color-mix(in srgb, var(--background-secondary) 35%, transparent);
+}
+
+.financial-calendar-day.is-weekend:hover {
+  background: var(--background-modifier-hover);
+}
+
+.financial-calendar-day.is-outside {
+  color: var(--text-faint);
+}
+
+.financial-calendar-day-number {
+  font-size: var(--fc-day-font-size, 20px);
+}
+
+.financial-calendar-day-excerpt {
+  width: 100%;
+  font-size: var(--fc-excerpt-font-size, 15px);
+  line-height: var(--fc-excerpt-line-height, 2);
+  color: var(--text-muted);
+  text-align: left;
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: var(--fc-excerpt-max-lines, 4);
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.financial-calendar-day.is-today .financial-calendar-day-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5em;
+  height: 1.5em;
+  padding: 0 0.15em;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.financial-calendar-day.has-note::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+}
+
+/* Timeline ruler card */
+.financial-timeline {
+  padding: 8px;
+  user-select: none;
+}
+
+/* Horizontal padding is set inline from RULER_PADDING_PX in
+   timeline-renderer.ts (single source of truth) — do not add padding here. */
+.financial-timeline-ruler {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 56px;
+  overflow: hidden;
+}
+
+.financial-timeline-baseline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--background-modifier-border);
+}
+
+.financial-timeline-tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 6px;
+  background: var(--background-modifier-border);
+}
+
+.financial-timeline-tick.is-major {
+  height: 12px;
+  background: var(--text-muted);
+}
+
+.financial-timeline-label {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: var(--fc-timeline-font-size, var(--font-ui-smaller));
+  line-height: 1.2;
+  color: var(--text-muted);
+}
+
+.financial-timeline-label.is-minor {
+  bottom: 8px;
+}
+
+.financial-timeline-label.is-major {
+  top: 0;
+  color: var(--text-normal);
+  font-weight: 500;
+}
+
+.financial-timeline-today {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--interactive-accent);
 }

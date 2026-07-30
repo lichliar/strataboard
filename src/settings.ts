@@ -21,6 +21,13 @@ export interface FinancialCanvasSettings {
   symbolListRefreshIntervalDays: number;
   defaultChartHeight: number;
   widgetIframeHeight: number;
+  dailyNotesFolder: string;
+  dailyNotesFormat: string;
+  calendarExcerptFontSize: number;
+  calendarDayFontSize: number;
+  calendarExcerptLineHeight: number;
+  calendarExcerptMaxLines: number;
+  timelineFontSize: number;
 }
 
 export const DEFAULT_SETTINGS: FinancialCanvasSettings = {
@@ -41,6 +48,15 @@ export const DEFAULT_SETTINGS: FinancialCanvasSettings = {
   symbolListRefreshIntervalDays: 7,
   defaultChartHeight: DEFAULT_CARD_HEIGHT,
   widgetIframeHeight: 400,
+  // Empty means "follow the core Daily notes plugin, else built-in defaults".
+  dailyNotesFolder: "",
+  dailyNotesFormat: "",
+  calendarExcerptFontSize: 15,
+  calendarDayFontSize: 20,
+  calendarExcerptLineHeight: 2,
+  calendarExcerptMaxLines: 4,
+  // Matches the timeline label fallback (--font-ui-smaller) in styles.css.
+  timelineFontSize: 12,
 };
 
 export class FinancialCanvasSettingTab extends PluginSettingTab {
@@ -224,6 +240,106 @@ export class FinancialCanvasSettingTab extends PluginSettingTab {
           .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.widgetIframeHeight = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    containerEl.createEl("h3", { text: "日历卡片" });
+
+    new Setting(containerEl)
+      .setName("日记文件夹")
+      .setDesc("日历卡片按天查找/创建日记的文件夹。留空则跟随核心「日记」插件的设置，否则默认为「日记」。")
+      .addText((text) =>
+        text
+          .setPlaceholder("日记")
+          .setValue(this.plugin.pluginSettings.dailyNotesFolder)
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.dailyNotesFolder = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("日记文件名格式")
+      .setDesc("日记文件名的日期格式（Moment 格式，如 YYYY-MM-DD）。留空则跟随核心「日记」插件的设置。")
+      .addText((text) =>
+        text
+          .setPlaceholder("YYYY-MM-DD")
+          .setValue(this.plugin.pluginSettings.dailyNotesFormat)
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.dailyNotesFormat = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("摘要字号")
+      .setDesc("日历格子内日记摘要的字号（像素），重新打开卡片后生效。")
+      .addSlider((slider) =>
+        slider
+          .setLimits(10, 24, 1)
+          .setValue(this.plugin.pluginSettings.calendarExcerptFontSize)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.calendarExcerptFontSize = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("日期数字字号")
+      .setDesc("日历格子内日期数字的字号（像素），重新打开卡片后生效。")
+      .addSlider((slider) =>
+        slider
+          .setLimits(12, 32, 1)
+          .setValue(this.plugin.pluginSettings.calendarDayFontSize)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.calendarDayFontSize = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("摘要行高")
+      .setDesc("日历格子内日记摘要的行高倍数，重新打开卡片后生效。")
+      .addSlider((slider) =>
+        slider
+          .setLimits(1, 3, 0.1)
+          .setValue(this.plugin.pluginSettings.calendarExcerptLineHeight)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.calendarExcerptLineHeight = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("摘要最大行数")
+      .setDesc("日历格子内日记摘要最多显示的行数，重新打开卡片后生效。")
+      .addSlider((slider) =>
+        slider
+          .setLimits(1, 8, 1)
+          .setValue(this.plugin.pluginSettings.calendarExcerptMaxLines)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.calendarExcerptMaxLines = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    containerEl.createEl("h3", { text: "时间线卡片" });
+
+    new Setting(containerEl)
+      .setName("标签字号")
+      .setDesc("时间线卡片刻度标签的字号（像素），重新打开卡片后生效。")
+      .addSlider((slider) =>
+        slider
+          .setLimits(8, 24, 1)
+          .setValue(this.plugin.pluginSettings.timelineFontSize)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.timelineFontSize = value;
             await this.plugin.saveSettings();
           })
       );

@@ -1,4 +1,4 @@
-import { Notice, TFile, type WorkspaceLeaf } from "obsidian";
+import { Menu, Notice, TFile, setIcon, setTooltip, type WorkspaceLeaf } from "obsidian";
 import { parseCardSpec } from "./card-spec";
 import type FinancialCanvasPlugin from "../main";
 import type { AssetType } from "../types";
@@ -24,11 +24,20 @@ export class CanvasToolbar {
     const container = view.containerEl as HTMLElement;
     this.toolbarEl = container.createEl("div", { cls: "financial-canvas-toolbar" });
 
-    this.createButton("插入股票", () => this.insertCard("stock"));
-    this.createButton("插入基金", () => this.insertCard("fund"));
-    this.createButton("插入指数", () => this.insertCard("index"));
-    this.createButton("插入小组件", () => this.insertWidget());
-    this.createButton("全部刷新", () => this.refreshAll());
+    this.createMenuButton("database", "自有数据库", [
+      { text: "插入股票", icon: "trending-up", onClick: () => this.insertCard("stock") },
+      { text: "插入基金", icon: "piggy-bank", onClick: () => this.insertCard("fund") },
+      { text: "插入指数", icon: "bar-chart", onClick: () => this.insertCard("index") },
+    ]);
+    this.createMenuButton("code", "TradingView Widgets", [
+      { text: "插入TradingView Widgets", icon: "code", onClick: () => this.insertWidget() },
+      { text: "TradingView 小组件文档", icon: "book-open", onClick: () => this.openWidgetDocs() },
+    ]);
+    this.createMenuButton("calendar-days", "插入组件", [
+      { text: "日历", icon: "calendar-days", onClick: () => this.insertCalendar() },
+      { text: "时间线", icon: "ruler", onClick: () => this.insertTimeline() },
+    ]);
+    this.createButton("refresh-cw", "全部刷新", () => this.refreshAll());
 
     this.applyPosition();
   }
@@ -45,9 +54,53 @@ export class CanvasToolbar {
     this.applyPosition();
   }
 
-  private createButton(text: string, onClick: () => void) {
-    const btn = this.toolbarEl!.createEl("button", { text });
+  private createButton(icon: string, tooltip: string, onClick: () => void) {
+    const btn = this.toolbarEl!.createEl("button");
+    setIcon(btn, icon);
+    setTooltip(btn, tooltip);
     btn.addEventListener("click", onClick);
+  }
+
+  private createMenuButton(
+    icon: string,
+    tooltip: string,
+    items: { text: string; icon: string; onClick: () => void }[]
+  ) {
+    const btn = this.toolbarEl!.createEl("button");
+    setIcon(btn, icon);
+    setTooltip(btn, tooltip);
+    btn.addEventListener("click", (event) => {
+      const menu = new Menu();
+      for (const item of items) {
+        menu.addItem((menuItem) => {
+          menuItem.setTitle(item.text).setIcon(item.icon).onClick(item.onClick);
+        });
+      }
+      const rect = btn.getBoundingClientRect();
+      // Open away from the screen edge the toolbar sits on, so the menu never
+      // covers the toolbar itself: bottom toolbar opens upward, top downward.
+      if (this.plugin.pluginSettings.toolbarPosition.includes("top")) {
+        menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 });
+      } else {
+        // showAtPosition anchors the menu's top-left corner; to open upward we
+        // show first, then shift the freshly-created menu element above the button.
+        // Obsidian renders the menu items asynchronously (setTimeout 0 inside
+        // showAtPosition), so the height is only final after that tick — adjust
+        // both immediately and on the next tick to catch the real height.
+        const before = new Set(Array.from(document.querySelectorAll<HTMLElement>(".menu")));
+        menu.showAtPosition({ x: rect.left, y: rect.top });
+        const adjust = () => {
+          const menuEl = Array.from(document.querySelectorAll<HTMLElement>(".menu"))
+            .find((el) => !before.has(el));
+          if (menuEl && menuEl.isConnected) {
+            menuEl.style.top = `${Math.max(0, rect.top - menuEl.offsetHeight - 4)}px`;
+          }
+        };
+        adjust();
+        setTimeout(adjust, 0);
+      }
+      event.preventDefault();
+    });
   }
 
   private applyPosition() {
@@ -100,6 +153,18 @@ export class CanvasToolbar {
 
   private insertWidget() {
     this.plugin.openWidgetInputModal();
+  }
+
+  private openWidgetDocs() {
+    window.open("https://www.tradingview.com/widget-docs/widgets/");
+  }
+
+  private insertCalendar() {
+    void this.plugin.insertCalendarCard();
+  }
+
+  private insertTimeline() {
+    void this.plugin.insertTimelineCard();
   }
 
   private async refreshAll() {
