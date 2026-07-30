@@ -40,6 +40,11 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
 
   const map = parsed as Record<string, unknown>;
 
+  const isCalendar = extractBoolean(map, "日历") === true || map["月份"] !== undefined;
+  if (isCalendar) {
+    return parseCalendarCardSpec(map, defaults);
+  }
+
   const widgetType = extractLiteral(map, "小组件类型", VALID_WIDGET_TYPES);
   const iframeUrl = extractString(map, "iframe地址");
   const widgetHtml = extractString(map, "小组件HTML");
@@ -144,7 +149,38 @@ function parseWidgetCardSpec(
   };
 }
 
+const CALENDAR_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+function parseCalendarCardSpec(
+  map: Record<string, unknown>,
+  defaults?: Partial<ParsedCardSpec>
+): ParseResult {
+  const month = extractString(map, "月份");
+  if (month && !CALENDAR_MONTH_RE.test(month)) {
+    return { ok: false, error: { message: `Invalid 月份: ${month}. Use YYYY-MM.` } };
+  }
+
+  return {
+    ok: true,
+    spec: {
+      contentType: "calendar",
+      symbol: "calendar",
+      assetType: "stock",
+      freq: "D",
+      range: "1y",
+      version: 1,
+      height: extractHeight(map, defaults?.height),
+      calendarMonth: month,
+    },
+  };
+}
+
 export function canonicalKey(spec: ParsedCardSpec): string {
+  if (spec.contentType === "calendar") {
+    // A single calendar card is reused globally: it only reflects the
+    // daily-notes folder, so duplicates would render the same thing.
+    return "calendar";
+  }
   if (spec.contentType === "widget" || spec.widgetType) {
     return ["widget", spec.widgetType ?? "iframe", spec.symbol].join("|");
   }
@@ -155,6 +191,15 @@ export function canonicalKey(spec: ParsedCardSpec): string {
 }
 
 export function stringifyCardSpec(spec: ParsedCardSpec): string {
+  if (spec.contentType === "calendar") {
+    const obj: Record<string, unknown> = { 日历: true };
+    if (spec.calendarMonth) obj.月份 = spec.calendarMonth;
+    if (spec.height != null && spec.height !== DEFAULT_CARD_HEIGHT) {
+      obj.高度 = spec.height;
+    }
+    return yaml.dump(obj, { lineWidth: -1, noRefs: true }).trim();
+  }
+
   if (spec.contentType === "widget" || spec.widgetType) {
     const obj: Record<string, unknown> = {
       小组件类型: spec.widgetType ?? "iframe",
@@ -213,6 +258,16 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
 }
 
 export function buildCardFrontmatter(spec: ParsedCardSpec): string {
+  if (spec.contentType === "calendar") {
+    return [
+      "---",
+      `fc-content-type: calendar`,
+      `fc-高度: ${spec.height ?? DEFAULT_CARD_HEIGHT}`,
+      `fc-key: ${canonicalKey(spec)}`,
+      "---",
+    ].join("\n");
+  }
+
   if (spec.contentType === "widget" || spec.widgetType) {
     return [
       "---",

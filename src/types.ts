@@ -6,7 +6,7 @@ export type ChartType = "candlestick" | "line";
 export type ToolbarPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 export type VisibleRangePreset = "1m" | "3m" | "6m" | "1y" | "ytd" | "max";
 export type WidgetType = "iframe" | "html";
-export type CardContentType = "tushare" | "widget";
+export type CardContentType = "tushare" | "widget" | "calendar";
 
 export interface OhlcvRow {
   tradeDate: string;
@@ -62,6 +62,7 @@ export interface ParsedCardSpec {
   iframeUrl?: string;
   widgetHtml?: string;
   widgetTitle?: string;
+  calendarMonth?: string; // YYYY-MM, initial month shown by a calendar card
 }
 
 export interface CacheEntry {
