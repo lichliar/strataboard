@@ -55,7 +55,6 @@ showHeader: true
 showMarketData: true
 riseColor: "#ef4444"
 fallColor: "#22c55e"
-headerCollapsed: true
 ```
 ```
 
@@ -74,7 +73,6 @@ You can edit this code block directly to change the card.
 | `fallColor` | Per-card falling candle color. |
 | `showHeader` | Show the header block. Default: `true`. |
 | `showMarketData` | Show the market-data row inside the header. Default: `true`. |
-| `headerCollapsed` | Collapse OHLC and market-data rows by default. Default: `false`. |
 | `visibleRange` | Initial viewport: `1m`, `3m`, `6m`, `1y`, `ytd`, or `max`. Omit to fit all data. |
 | `logScale` | Use logarithmic price scale. Default: `false`. |
 

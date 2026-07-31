@@ -1,4 +1,11 @@
 export type AssetType = "stock" | "fund" | "index";
+
+// Chinese display labels for asset types, used in UI (search results, Notices).
+export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
+  stock: "股票",
+  fund: "基金",
+  index: "指数",
+};
 export type Freq = "D" | "W" | "M";
 export type RangePreset = "1y" | "3y" | "5y" | "ytd" | "max";
 export type ChartTheme = "auto" | "dark" | "light";
@@ -57,7 +64,6 @@ export interface ParsedCardSpec {
   showMarketData?: boolean;
   visibleRange?: VisibleRangePreset;
   logScale?: boolean;
-  headerCollapsed?: boolean;
   widgetType?: WidgetType;
   iframeUrl?: string;
   widgetHtml?: string;

@@ -85,7 +85,6 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
   const showMarketData = extractBoolean(map, "显示市场数据");
   const visibleRange = extractLiteral(map, "可见范围", VALID_VISIBLE_RANGES);
   const logScale = extractBoolean(map, "对数坐标");
-  const headerCollapsed = extractBoolean(map, "标题折叠");
 
   return {
     ok: true,
@@ -105,7 +104,6 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
       showMarketData,
       visibleRange,
       logScale,
-      headerCollapsed,
     },
   };
 }
@@ -250,9 +248,6 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
   }
   if (spec.logScale === true) {
     obj.对数坐标 = true;
-  }
-  if (spec.headerCollapsed === true) {
-    obj.标题折叠 = true;
   }
   return yaml.dump(obj, { lineWidth: -1, noRefs: true }).trim();
 }

@@ -53,6 +53,18 @@
   flex-direction: column !important;
 }
 
+/* The .markdown-embed wrapper between the node content and the embed content
+   is a plain block div. Without stretching it, the whole height chain below
+   collapses to content height and the chart leaves dead space at the bottom
+   when the canvas node is dragged taller than the card. */
+.financial-canvas-card-note:not(.is-editing) .markdown-embed,
+.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-embed {
+  height: 100% !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
 .financial-canvas-card-note .markdown-preview-view {
   overflow: hidden !important;
   display: flex !important;
@@ -81,8 +93,10 @@
   overflow: hidden;
 }
 
+/* Inside a canvas node the card keeps a uniform gap to the node border on
+   all four sides (same bleed as the widget card). */
 .financial-canvas-card-note .financial-canvas-card {
-  padding: 0;
+  padding: 8px;
   border-radius: 0;
   border: none;
   background-color: transparent;
@@ -253,7 +267,7 @@
 }
 
 .canvas-node:has(.financial-canvas-chart-container) .financial-canvas-card {
-  padding: 0 !important;
+  padding: 8px !important;
   border-radius: 0 !important;
   border: none !important;
   background-color: transparent !important;
@@ -334,21 +348,6 @@
 }
 
 .financial-canvas-header-refresh:hover {
-  background: var(--background-modifier-hover);
-}
-
-.financial-canvas-header-collapse {
-  background: transparent;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
-  padding: 2px 6px;
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--text-normal);
-  white-space: nowrap;
-}
-
-.financial-canvas-header-collapse:hover {
   background: var(--background-modifier-hover);
 }
 
@@ -471,6 +470,36 @@
   box-sizing: border-box;
 }
 
+/* Crosshair legend: readout of the hovered (or latest) bar, overlaid on the
+   top-left of the chart. pointer-events: none so it never blocks pan/zoom. */
+.financial-canvas-chart-legend {
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: none;
+  color: var(--text-muted);
+}
+
+.financial-canvas-chart-legend-date {
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+.financial-canvas-chart-legend-label {
+  margin-right: 2px;
+}
+
+.financial-canvas-chart-legend-value {
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums;
+}
+
 
 /* Legacy per-chart wrappers are no longer emitted; keep minimal rules in case
    cached DOM or external CSS still references them. */
@@ -502,6 +531,26 @@
 .financial-canvas-error {
   color: var(--text-error);
   font-weight: 500;
+}
+
+/* Load-failure state with retry */
+.financial-canvas-load-error {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.financial-canvas-retry-btn {
+  padding: 4px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* Asset-type badge in the symbol search modal */
+.fc-symbol-meta {
+  float: right;
+  margin-left: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
 }
 
 /* Toolbar */
