@@ -1,8 +1,6 @@
 import { Menu, Notice, TFile, setIcon, setTooltip, type WorkspaceLeaf } from "obsidian";
 import { parseCardSpec } from "./card-spec";
 import type FinancialCanvasPlugin from "../main";
-import type { AssetType } from "../types";
-import { resolveDateRange, formatIsoDate, parseDateYmd } from "../utils/date";
 
 export class CanvasToolbar {
   private plugin: FinancialCanvasPlugin;
@@ -25,9 +23,7 @@ export class CanvasToolbar {
     this.toolbarEl = container.createEl("div", { cls: "financial-canvas-toolbar" });
 
     this.createMenuButton("database", "自有数据库", [
-      { text: "插入股票", icon: "trending-up", onClick: () => this.insertCard("stock") },
-      { text: "插入基金", icon: "piggy-bank", onClick: () => this.insertCard("fund") },
-      { text: "插入指数", icon: "bar-chart", onClick: () => this.insertCard("index") },
+      { text: "插入资产数据", icon: "trending-up", onClick: () => this.insertAsset() },
     ]);
     this.createMenuButton("code", "TradingView Widgets", [
       { text: "插入TradingView Widgets", icon: "code", onClick: () => this.insertWidget() },
@@ -128,27 +124,8 @@ export class CanvasToolbar {
     }
   }
 
-  private insertCard(assetType: AssetType) {
-    this.plugin.openSymbolSearch(assetType, async (item) => {
-      const { start, end } = resolveDateRange(this.plugin.pluginSettings.defaultRange.trim() || "1y");
-      const range = `${formatIsoDate(parseDateYmd(start))}~${formatIsoDate(parseDateYmd(end))}`;
-      const spec = {
-        symbol: item.tsCode,
-        assetType,
-        freq: this.plugin.pluginSettings.defaultFreq,
-        range,
-        version: 1,
-        height: this.plugin.pluginSettings.defaultChartHeight,
-        headerCollapsed: true,
-      };
-
-      try {
-        const file = await this.plugin.cardService.createOrReuse(spec);
-        this.placeFileNode(file);
-      } catch (e) {
-        new Notice(`创建卡片失败：${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
+  private insertAsset() {
+    this.plugin.openSymbolSearch((item) => this.plugin.insertCard(item));
   }
 
   private insertWidget() {

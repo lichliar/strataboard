@@ -2,11 +2,15 @@ import { MarkdownRenderChild } from "obsidian";
 import {
   createChart,
   CandlestickSeries,
+  HistogramSeries,
   LineSeries,
+  LineStyle,
   PriceScaleMode,
   type IChartApi,
   type IPaneApi,
+  type ISeriesApi,
   type CandlestickData,
+  type HistogramData,
   type LineData,
   type Time,
 } from "lightweight-charts";
@@ -62,6 +66,26 @@ function formatPercent(n: number | undefined): string {
   return `${n.toFixed(2)}%`;
 }
 
+// MA overlay palette, chosen to stay readable on both dark and light themes.
+const MA_PERIODS: { period: number; color: string }[] = [
+  { period: 5, color: "#f59e0b" },
+  { period: 10, color: "#ec4899" },
+  { period: 20, color: "#8b5cf6" },
+  { period: 60, color: "#14b8a6" },
+];
+
+// DOM handles for the crosshair legend; open/high/low only exist on
+// candlestick charts.
+interface LegendRefs {
+  date: HTMLElement;
+  open: HTMLElement | null;
+  high: HTMLElement | null;
+  low: HTMLElement | null;
+  close: HTMLElement;
+  change: HTMLElement;
+  vol: HTMLElement;
+}
+
 export class ChartRenderer extends MarkdownRenderChild {
   private options: ChartRendererOptions;
   private chart: IChartApi | null = null;
@@ -69,17 +93,18 @@ export class ChartRenderer extends MarkdownRenderChild {
   private themeObserver: MutationObserver | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private initialVisibleRange: { from: Time; to: Time } | null = null;
-  private isHeaderCollapsed = false;
 
   // DOM refs
   private headerEl: HTMLElement | null = null;
   private periodTabsEl: HTMLElement | null = null;
   private chartStackEl: HTMLElement | null = null;
+  private priceSeries: ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null = null;
+  private legendRefs: LegendRefs | null = null;
+  private dataIndexByTime = new Map<string, number>();
 
   constructor(containerEl: HTMLElement, options: ChartRendererOptions) {
     super(containerEl);
     this.options = options;
-    this.isHeaderCollapsed = options.spec.headerCollapsed ?? false;
   }
 
   onload() {
@@ -123,8 +148,14 @@ export class ChartRenderer extends MarkdownRenderChild {
 
     this.chart = createChart(this.chartContainerEl, this.buildChartOptions(isDark));
 
-    this.addPriceSeries(0, data, isDark);
+    this.priceSeries = this.addPriceSeries(0, data, isDark);
+    this.addMovingAverages(0, data);
+    this.addVolumeSeries(1, data);
     this.configurePane(this.chart.panes()[0], { leftVisible: false, rightVisible: true }, isDark);
+    this.configureVolumePane(this.chart.panes()[1]);
+    this.applyPaneRatios();
+    this.addLatestPriceLine(data);
+    this.addLegend(data);
 
     const visibleRange = this.options.spec.visibleRange;
     if (visibleRange) {
@@ -165,6 +196,9 @@ export class ChartRenderer extends MarkdownRenderChild {
     this.headerEl = null;
     this.periodTabsEl = null;
     this.chartStackEl = null;
+    this.priceSeries = null;
+    this.legendRefs = null;
+    this.dataIndexByTime.clear();
   }
 
   // ===== Header =====
@@ -194,12 +228,6 @@ export class ChartRenderer extends MarkdownRenderChild {
     const refreshBtn = actions.createEl("button", { cls: "financial-canvas-header-refresh", text: "🔄" });
     refreshBtn.addEventListener("click", () => this.options.onRefresh?.());
 
-    const collapseBtn = actions.createEl("button", {
-      cls: "financial-canvas-header-collapse",
-      text: this.isHeaderCollapsed ? "展开" : "折叠",
-      attr: { "aria-label": this.isHeaderCollapsed ? "展开详细信息" : "折叠详细信息" },
-    });
-
     const quoteRow = this.headerEl.createEl("div", { cls: "financial-canvas-header-quote" });
     quoteRow.createEl("span", {
       cls: "financial-canvas-header-price",
@@ -218,12 +246,12 @@ export class ChartRenderer extends MarkdownRenderChild {
     });
 
     // daily_basic only covers stocks; funds and indexes would show a row of
-    // "--", so skip the market data row (and its collapse toggle) for them.
+    // "--", so the market data row is only offered for them. Visibility is
+    // controlled by the card's 显示市场数据 setting (double-click editor).
     const showMarketData = this.options.spec.showMarketData !== false && this.options.spec.assetType === "stock";
-    let marketRow: HTMLElement | null = null;
 
     if (showMarketData) {
-      marketRow = this.headerEl.createEl("div", { cls: "financial-canvas-header-market" });
+      const marketRow = this.headerEl.createEl("div", { cls: "financial-canvas-header-market" });
       const marketData = await this.loadMarketData(latest.tradeDate);
 
       const marketItems = [
@@ -240,21 +268,6 @@ export class ChartRenderer extends MarkdownRenderChild {
         wrap.createEl("span", { cls: "financial-canvas-header-market-label", text: `${item.label} ` });
         wrap.createEl("span", { cls: "financial-canvas-header-market-value", text: item.value });
       }
-
-      marketRow.style.display = this.isHeaderCollapsed ? "none" : "flex";
-    }
-
-    collapseBtn.addEventListener("click", () => {
-      this.isHeaderCollapsed = !this.isHeaderCollapsed;
-      if (marketRow) {
-        marketRow.style.display = this.isHeaderCollapsed ? "none" : "flex";
-      }
-      collapseBtn.textContent = this.isHeaderCollapsed ? "展开" : "折叠";
-      collapseBtn.setAttribute("aria-label", this.isHeaderCollapsed ? "展开详细信息" : "折叠详细信息");
-    });
-
-    if (!marketRow) {
-      collapseBtn.style.display = "none";
     }
   }
 
@@ -298,7 +311,11 @@ export class ChartRenderer extends MarkdownRenderChild {
 
   // ===== Series creation =====
 
-  private addPriceSeries(paneIndex: number, data: OhlcvRow[], isDark: boolean) {
+  private addPriceSeries(
+    paneIndex: number,
+    data: OhlcvRow[],
+    isDark: boolean
+  ): ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> {
     if (this.options.chartType === "line") {
       const lineData: LineData[] = data.map((row) => ({
         time: toChartTime(row.tradeDate) as Time,
@@ -314,29 +331,191 @@ export class ChartRenderer extends MarkdownRenderChild {
         paneIndex
       );
       series.setData(lineData);
-    } else {
-      const candleData: CandlestickData[] = data.map((row) => ({
-        time: toChartTime(row.tradeDate) as Time,
-        open: row.open,
-        high: row.high,
-        low: row.low,
-        close: row.close,
-      }));
+      return series;
+    }
+
+    const candleData: CandlestickData[] = data.map((row) => ({
+      time: toChartTime(row.tradeDate) as Time,
+      open: row.open,
+      high: row.high,
+      low: row.low,
+      close: row.close,
+    }));
+    const series = this.chart!.addSeries(
+      CandlestickSeries,
+      {
+        upColor: this.options.riseColor,
+        downColor: this.options.fallColor,
+        borderUpColor: this.options.riseColor,
+        borderDownColor: this.options.fallColor,
+        wickUpColor: this.options.riseColor,
+        wickDownColor: this.options.fallColor,
+        priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+      },
+      paneIndex
+    );
+    series.setData(candleData);
+    return series;
+  }
+
+  private addMovingAverages(paneIndex: number, data: OhlcvRow[]) {
+    for (const { period, color } of MA_PERIODS) {
+      const maData: LineData[] = [];
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        sum += data[i].close;
+        if (i >= period) {
+          sum -= data[i - period].close;
+        }
+        if (i >= period - 1) {
+          maData.push({
+            time: toChartTime(data[i].tradeDate) as Time,
+            value: sum / period,
+          });
+        }
+      }
       const series = this.chart!.addSeries(
-        CandlestickSeries,
+        LineSeries,
         {
-          upColor: this.options.riseColor,
-          downColor: this.options.fallColor,
-          borderUpColor: this.options.riseColor,
-          borderDownColor: this.options.fallColor,
-          wickUpColor: this.options.riseColor,
-          wickDownColor: this.options.fallColor,
-          priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+          color,
+          lineWidth: 1,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
         },
         paneIndex
       );
-      series.setData(candleData);
+      series.setData(maData);
     }
+  }
+
+  private addVolumeSeries(paneIndex: number, data: OhlcvRow[]) {
+    const volumeData: HistogramData[] = data.map((row, i) => ({
+      time: toChartTime(row.tradeDate) as Time,
+      value: row.vol,
+      // Color by change vs the previous close (same convention as the
+      // header quote); the first bar falls back to close vs open.
+      color: (i > 0 ? row.close >= data[i - 1].close : row.close >= row.open)
+        ? this.options.riseColor
+        : this.options.fallColor,
+    }));
+    const series = this.chart!.addSeries(
+      HistogramSeries,
+      {
+        priceFormat: { type: "volume" },
+        priceLineVisible: false,
+        lastValueVisible: false,
+      },
+      paneIndex
+    );
+    series.setData(volumeData);
+  }
+
+  private configureVolumePane(pane: IPaneApi<Time>) {
+    pane.priceScale("left").applyOptions({ visible: false });
+    // The right scale must stay visible on EVERY pane: the chart-level
+    // rightPriceScale.visible=true makes adjustSizeImpl() call
+    // ensureNotNull(rightPriceAxisWidget) on each pane, and a pane whose
+    // right scale is hidden has no axis widget — the chart then throws
+    // "Value is null" and renders nothing at all.
+    pane.priceScale("right").applyOptions({
+      visible: true,
+      borderVisible: false,
+      scaleMargins: { top: 0.1, bottom: 0 },
+    });
+  }
+
+  private applyPaneRatios() {
+    const ratios = this.options.spec.paneRatios;
+    const panes = this.chart!.panes();
+    panes[0].setStretchFactor(ratios?.[0] ?? 3);
+    panes[1]?.setStretchFactor(ratios?.[1] ?? 1);
+  }
+
+  private addLatestPriceLine(data: OhlcvRow[]) {
+    if (!this.priceSeries || data.length === 0) return;
+    const latest = data[data.length - 1];
+    const prev = data.length > 1 ? data[data.length - 2] : latest;
+    this.priceSeries.createPriceLine({
+      price: latest.close,
+      color: latest.close >= prev.close ? this.options.riseColor : this.options.fallColor,
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: "",
+    });
+  }
+
+  // ===== Crosshair legend =====
+
+  private addLegend(data: OhlcvRow[]) {
+    const legendEl = this.chartContainerEl!.createEl("div", {
+      cls: "financial-canvas-chart-legend",
+    });
+    const isCandle = this.options.chartType !== "line";
+
+    const dateEl = legendEl.createEl("span", { cls: "financial-canvas-chart-legend-date" });
+    const mkItem = (label: string): HTMLElement => {
+      const wrap = legendEl.createEl("span", { cls: "financial-canvas-chart-legend-item" });
+      wrap.createEl("span", { cls: "financial-canvas-chart-legend-label", text: label });
+      return wrap.createEl("span", { cls: "financial-canvas-chart-legend-value" });
+    };
+
+    this.legendRefs = {
+      date: dateEl,
+      open: isCandle ? mkItem("开") : null,
+      high: isCandle ? mkItem("高") : null,
+      low: isCandle ? mkItem("低") : null,
+      close: mkItem("收"),
+      change: mkItem("涨跌"),
+      vol: mkItem("量"),
+    };
+
+    this.dataIndexByTime = new Map(
+      data.map((row, i) => [toChartTime(row.tradeDate), i])
+    );
+    this.updateLegend(data.length - 1);
+
+    this.chart!.subscribeCrosshairMove((param) => {
+      let index = data.length - 1;
+      if (param.time != null) {
+        const found = this.dataIndexByTime.get(String(param.time));
+        if (found != null) {
+          index = found;
+        }
+      }
+      this.updateLegend(index);
+    });
+  }
+
+  private updateLegend(index: number) {
+    const refs = this.legendRefs;
+    const data = this.options.data;
+    const row = data[index];
+    if (!refs || !row) return;
+
+    const prev = index > 0 ? data[index - 1] : row;
+    const change = prev.close !== 0 ? ((row.close - prev.close) / prev.close) * 100 : 0;
+    const color = change >= 0 ? this.options.riseColor : this.options.fallColor;
+
+    refs.date.textContent = toChartTime(row.tradeDate);
+    if (refs.open) {
+      refs.open.textContent = formatNumber(row.open, 2);
+      refs.open.style.color = color;
+    }
+    if (refs.high) {
+      refs.high.textContent = formatNumber(row.high, 2);
+      refs.high.style.color = color;
+    }
+    if (refs.low) {
+      refs.low.textContent = formatNumber(row.low, 2);
+      refs.low.style.color = color;
+    }
+    refs.close.textContent = formatNumber(row.close, 2);
+    refs.close.style.color = color;
+    refs.change.textContent = `${change >= 0 ? "+" : ""}${formatPercent(change)}`;
+    refs.change.style.color = color;
+    refs.vol.textContent = formatBigNumber(row.vol);
   }
 
   // ===== Helpers =====

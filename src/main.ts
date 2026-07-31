@@ -21,7 +21,8 @@ import { CanvasToolbar } from "./modules/toolbar";
 import { SymbolSearchModal } from "./ui/symbol-search-modal";
 import { WidgetInputModal } from "./ui/widget-input-modal";
 import { TimelineEditModal, type TimelineEditResult } from "./ui/timeline-edit-modal";
-import type { AssetType, ParsedCardSpec, SymbolItem } from "./types";
+import { TushareCardEditModal } from "./ui/tushare-card-edit-modal";
+import type { ParsedCardSpec, SymbolItem } from "./types";
 import { resolveDateRange, formatIsoDate, parseDateYmd } from "./utils/date";
 import { onAttached } from "./utils/dom";
 
@@ -42,6 +43,22 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
 
   onload() {
     this.render();
+
+    // Double-click on a canvas file node natively enters the embedded edit
+    // mode; capture the event before that handler so the settings modal wins.
+    this.registerDomEvent(
+      this.containerEl,
+      "dblclick",
+      (event) => {
+        // Let header buttons (refresh / period tabs) keep their
+        // own behavior.
+        if ((event.target as HTMLElement | null)?.closest("button")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.openEditModal();
+      },
+      { capture: true }
+    );
   }
 
   private async render() {
@@ -58,6 +75,13 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
     }
 
     const spec = this.result.spec;
+
+    // Placeholder while OHLCV data is fetched; ChartRenderer (or the error
+    // path below) empties the container when done.
+    this.containerEl.createEl("div", {
+      cls: "financial-canvas-empty",
+      text: `正在加载数据：${spec.symbol}…`,
+    });
 
     try {
       const data = await this.loadData(spec);
@@ -77,10 +101,18 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
       });
       this.addChild(this.chartRenderer);
     } catch (e) {
-      this.containerEl.createEl("div", {
-        cls: "financial-canvas-empty",
+      this.containerEl.empty();
+      const errorEl = this.containerEl.createEl("div", {
+        cls: "financial-canvas-empty financial-canvas-load-error",
+      });
+      errorEl.createEl("div", {
         text: `加载数据失败：${e instanceof Error ? e.message : String(e)}`,
       });
+      const retryBtn = errorEl.createEl("button", {
+        cls: "financial-canvas-retry-btn",
+        text: "重试",
+      });
+      retryBtn.addEventListener("click", () => void this.render());
     }
   }
 
@@ -128,14 +160,35 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
 
   private async switchFrequency(freq: "D" | "W" | "M") {
     if (!this.result.ok) return;
-    const newSpec: ParsedCardSpec = { ...this.result.spec, freq };
+    await this.saveSpec({ ...this.result.spec, freq });
+  }
 
+  private openEditModal() {
+    if (!this.result.ok) return;
+    const spec = this.result.spec;
+    const settings = this.plugin.pluginSettings;
+    // Resolve every display field against the plugin defaults so the modal
+    // shows the values the card is actually rendered with.
+    const resolved: ParsedCardSpec = {
+      ...spec,
+      chartType: spec.chartType ?? settings.chartType,
+      theme: spec.theme ?? settings.chartTheme,
+      riseColor: spec.riseColor ?? settings.riseColor,
+      fallColor: spec.fallColor ?? settings.fallColor,
+      height: spec.height ?? settings.defaultChartHeight,
+    };
+    new TushareCardEditModal(this.plugin.app, resolved, (newSpec) => {
+      void this.saveSpec(newSpec);
+    }).open();
+  }
+
+  private async saveSpec(newSpec: ParsedCardSpec) {
     try {
       await this.plugin.cardService.updateCardSpec(this.sourcePath, newSpec);
       this.result = { ok: true, spec: newSpec };
       await this.render();
     } catch (e) {
-      new Notice(`切换周期失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(`保存卡片设置失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }
 }
@@ -424,12 +477,12 @@ export default class FinancialCanvasPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-financial-card",
-      name: "插入金融卡片",
+      name: "插入资产数据卡片",
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(ItemView);
         if (view?.getViewType() === "canvas") {
           if (!checking) {
-            this.openSymbolSearch("stock", (item) => this.insertCard(item, "stock"));
+            this.openSymbolSearch((item) => this.insertCard(item));
           }
           return true;
         }
@@ -534,29 +587,29 @@ export default class FinancialCanvasPlugin extends Plugin {
     this.toolbar?.updatePosition();
   }
 
-  openSymbolSearch(assetType: AssetType, onSelect: (item: SymbolItem) => void) {
-    new SymbolSearchModal({
-      app: this.app,
-      symbolIndex: this.symbolIndex,
-      assetType,
-      onSelect,
-    }).open();
-  }
-
-  async insertCard(item: SymbolItem, assetType: AssetType) {
+  // Single entry point for the asset search modal (toolbar menu + command).
+  // The token check lives here so both paths fail with the same guidance
+  // instead of an empty search modal.
+  openSymbolSearch(onSelect: (item: SymbolItem) => void) {
     if (!this.pluginSettings.tushareToken) {
       new Notice("请先在金融卡片设置中配置 Tushare Token。");
       return;
     }
+    new SymbolSearchModal({
+      app: this.app,
+      symbolIndex: this.symbolIndex,
+      onSelect,
+    }).open();
+  }
 
+  async insertCard(item: SymbolItem) {
     const spec: ParsedCardSpec = {
       symbol: item.tsCode,
-      assetType,
+      assetType: item.assetType,
       freq: this.pluginSettings.defaultFreq,
       range: this.resolveDefaultRange(),
       version: 1,
       height: this.pluginSettings.defaultChartHeight,
-      headerCollapsed: true,
     };
 
     try {

@@ -1,4 +1,5 @@
-import type { AssetType, SymbolItem } from "../types";
+import { Notice } from "obsidian";
+import { ASSET_TYPE_LABELS, type AssetType, type SymbolItem } from "../types";
 import { SqliteCache } from "./sqlite-cache";
 import { TushareApiClient } from "./tushare-api-client";
 
@@ -34,9 +35,30 @@ export class SymbolIndex {
       return items;
     }
 
-    const fresh = await this.fetchAssetType(assetType);
-    await this.cache.saveSymbols(assetType, fresh);
-    return fresh;
+    try {
+      const fresh = await this.fetchAssetType(assetType);
+      await this.cache.saveSymbols(assetType, fresh);
+      return fresh;
+    } catch (e) {
+      // A stale cache is better than nothing: fall back to it when the
+      // refresh fails (network down, bad token, ...).
+      if (items.length > 0) {
+        console.error(`SymbolIndex: failed to refresh ${assetType} list, using stale cache`, e);
+        new Notice(`${ASSET_TYPE_LABELS[assetType]}列表更新失败，使用本地缓存。`);
+        return items;
+      }
+      throw e;
+    }
+  }
+
+  // Loads stocks, funds and indices in parallel for the unified search modal.
+  async loadAll(): Promise<SymbolItem[]> {
+    const groups = await Promise.all([
+      this.loadAssetType("stock"),
+      this.loadAssetType("fund"),
+      this.loadAssetType("index"),
+    ]);
+    return groups.flat();
   }
 
   async lookup(tsCode: string, assetType: AssetType): Promise<SymbolItem | undefined> {
