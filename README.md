@@ -1,116 +1,100 @@
-# Financial Canvas
+<p align="center">
+  <img src="docs/logo.svg" width="72" alt="StrataBoard logo">
+</p>
 
-An Obsidian plugin that brings financial data cards to your Canvas whiteboard.
+<h1 align="center">StrataBoard · Financial Canvas</h1>
 
-## Features
+<p align="center">
+  把金融数据卡片放上 Obsidian Canvas 白板——行情、宏观、组件，一板尽览。<br>
+  仅支持桌面端 Obsidian。
+</p>
 
-- Insert K-line and line-chart cards directly onto Obsidian Canvas.
-- Data powered by [Tushare Pro](https://tushare.pro).
-- Supports stocks, funds, and indices at daily / weekly / monthly frequency.
-- Local JSON cache with incremental updates.
-- Symbol search with lazy-loaded local index.
-- Floating Canvas toolbar + command palette integration.
-- Customizable chart theme and rise/fall colors.
-- Per-card YAML overrides for chart type, theme, layout, and scale.
+## 演示
 
-## Project layout
+**插入资产卡片** —— 搜索符号（支持名称/代码），选中即建卡并放上画布：
 
-- Source code lives in `strataboard/` (this project folder).
-- Compiled/runtime artifacts (`main.js`, `manifest.json`, `styles.css`, `versions.json`) are copied to the Obsidian plugin directory on build:
-  `/Users/izzy/Nutstore Files/荔枝-知识中枢/.obsidian/plugins/obsidian-financial-canvas/`
+![插入资产卡片](docs/videos/insert-card.mp4)
 
-## Installation
+**插入 FRED 宏观数据卡** —— 直接搜索 FRED 序列（如美债收益率）建卡：
 
-1. Build the plugin from the `strataboard/` project folder.
-2. Ensure the compiled files are present in your vault's `.obsidian/plugins/obsidian-financial-canvas/` directory.
-3. Enable the plugin in Obsidian.
-4. Open plugin settings and enter your Tushare Pro token.
+![插入 FRED 卡片](docs/videos/fred-card.mp4)
 
-## Usage
+**插入 TradingView 小组件** —— 从 TradingView Widgets 页面复制嵌入代码即可建卡：
 
-### Create a card
+![插入 TradingView 小组件](docs/videos/tradingview-widget.mp4)
 
-- Click the floating toolbar button on a Canvas, or
-- Use the command palette: **Insert financial card**, or
-- Right-click on an empty area of a Canvas.
+## 功能特性
 
-Search for a symbol (e.g., "平安银行" or "000001"), select it, and a card will be created in the `金融卡片/` folder and placed on the Canvas.
+**卡片类型**（每张卡片就是一个 Markdown 文件，YAML 即配置，可直接编辑）
 
-### Card source
+- 资产行情卡：K 线 / 折线，日/周/月周期
+- 宏观数据卡：中国宏观（CPI/PMI/社融/国债收益率曲线…）与 FRED 序列
+- 数据叠加卡：多序列同图对比
+- 数据计算卡：对序列做四则运算（如 `A-B`、`(A+B)/2`）
+- TradingView 小组件卡、日历卡（联动日记）、时间线卡
 
-Each card is a markdown file containing a `tushare` code block:
+**数据源**
 
-```markdown
-```tushare
-symbol: 000001.SZ
-type: stock
-freq: D
-range: 2025-07-06~2026-07-06
-height: 500
-chartType: candlestick
-theme: auto
-visibleRange: 3m
-logScale: false
-showHeader: true
-showMarketData: true
-riseColor: "#ef4444"
-fallColor: "#22c55e"
-```
-```
+- Tushare Pro：A 股/基金/指数/港股/可转债/期货/外汇/申万行业/南华指数/中国宏观
+- FRED：美联储宏观序列，支持服务端单位变换（环比/同比/对数…）
+- 腾讯行情、东方财富：免密钥，覆盖 A 股/港股/美股/指数/ETF
 
-You can edit this code block directly to change the card.
+**其他**
 
-| Field | Description |
-|---|---|
-| `symbol` | Tushare symbol, e.g. `000001.SZ`. |
-| `type` | Asset type: `stock`, `fund`, or `index`. |
-| `freq` | Frequency: `D` (daily), `W` (weekly), or `M` (monthly). |
-| `range` | Date range to fetch in `yyyy-mm-dd~yyyy-mm-dd` format. You can also use shortcuts `1y`, `3y`, `5y`, `ytd`, or `max`. Default: roughly 1 year up to today. |
-| `height` | Chart height in pixels. Default: `400`. |
-| `chartType` | Per-card chart type: `candlestick` or `line`. |
-| `theme` | Per-card theme: `auto`, `dark`, or `light`. |
-| `riseColor` | Per-card rising candle color. |
-| `fallColor` | Per-card falling candle color. |
-| `showHeader` | Show the header block. Default: `true`. |
-| `showMarketData` | Show the market-data row inside the header. Default: `true`. |
-| `visibleRange` | Initial viewport: `1m`, `3m`, `6m`, `1y`, `ytd`, or `max`. Omit to fit all data. |
-| `logScale` | Use logarithmic price scale. Default: `false`. |
+- 画布浮动工具栏：图标/文字两种样式，图标大小、按钮排序、宽度、位置均可自定义
+- 本地 SQLite 缓存（sql.js WASM），增量更新，离线可读
+- 所有数据源均可从「插入资产数据」入口直达各自选择器，也可用于叠加卡与计算卡
 
-### Refresh data
+## 安装
 
-- Hover over a card and click the refresh icon.
-- Use the toolbar **Refresh all cards** button.
-- Data refreshes automatically when you open a card or Canvas (can be disabled in settings).
-
-### Switch frequency
-
-Hover over a card and click the frequency switcher to create a new card at daily / weekly / monthly frequency, placed next to the original.
-
-## Settings
-
-| Setting | Description |
-|---|---|
-| Tushare Token | Your Tushare Pro API token. |
-| Card Library Path | Folder where card markdown files are stored. Default: `金融卡片/`. |
-| Data Cache Path | Folder where downloaded OHLCV data is cached. |
-| Symbol Cache Path | Folder where symbol lists are cached. |
-| Auto Refresh on Open | Automatically refresh cards when opened. |
-| Default Range | Default date range for new cards. Accepts `yyyy-mm-dd~yyyy-mm-dd` or shortcuts `1y`, `3y`, `5y`, `ytd`, `max`. Default: `1y`. |
-| Default Frequency | Default K-line frequency for new cards: `D`, `W`, or `M`. |
-| Chart Theme | Follow Obsidian theme, or force dark/light. |
-| Rise / Fall Color | Candle colors. Defaults to Chinese A-share convention (red rise, green fall). |
-| Default Chart Height | Default total chart height in pixels for new cards. |
-| Toolbar Position | Corner of the Canvas where the toolbar floats. |
-
-## Development
+本插件尚未上架社区市场，需手动构建：
 
 ```bash
-cd strataboard
+git clone https://github.com/lichliar/obsidian-financial-canvas.git
+cd obsidian-financial-canvas
 npm install
-npm run build
+OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/obsidian-financial-canvas npm run build
 ```
 
-`npm run build` compiles `main.js` and copies `manifest.json`, `styles.css`, and `versions.json` into the Obsidian plugin directory.
+然后在 Obsidian 设置 → 第三方插件中启用 **Financial Canvas**，并在插件设置中填入 Tushare Token（以及可选的 FRED API Key）。
+
+## 使用
+
+建卡入口任选其一：
+
+- 画布上的浮动工具栏（按数据源分组）
+- 命令面板：插入金融卡片 / 插入资产叠加卡 / …
+- 画布空白处右键菜单
+- Markdown 编辑器右键「插入金融卡片」（在光标处写入代码块）
+
+每张卡片是 `金融卡片/`（可在设置中修改）下的一个 Markdown 文件，内容为一个代码块，例如：
+
+    ```tushare
+    symbol: 600519.SH
+    type: stock
+    freq: D
+    range: 1y
+    chartType: candlestick
+    ```
+
+双击卡片进入图表交互模式，再次双击打开统合编辑弹窗（周期/时间范围/图表类型/主题/涨跌色/高度均按卡片独立保存）。
+
+## 设置
+
+插件设置分为四个标签页：
+
+- **数据源设置**：Tushare Token（含接口积分要求速查）、FRED API Key、免费行情源说明、股票列表刷新间隔
+- **路径设置**：图表卡片 / Widget / 组件 / 缓存文件夹
+- **卡片与组件**：打开自动刷新、Widget iframe 高度、日历与时间线外观
+- **工具栏设置**：位置、图标/文字样式、图标大小、按钮排序、各数据源显隐
+
+## 开发
+
+- `npm run dev` —— 监听模式构建（内联 sourcemap）
+- `npm run build` —— 类型检查 + 生产构建 + 拷贝资源到插件目录
+- `npm run version` —— 同步 manifest/versions 版本号
+
+构建产物直接写入 `OBSIDIAN_PLUGIN_DIR` 指定的插件目录。代码结构与设计约定见 [AGENTS.md](AGENTS.md)。
 
 ## License
 

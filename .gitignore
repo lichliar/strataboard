@@ -7,3 +7,8 @@ data.json
 cache/
 *.db
 sql-wasm.wasm
+# Local-only reference material, not part of the plugin (see AGENTS.md)
+app.js
+.od-skills/
+# Raw screen recordings; the README uses the converted docs/videos/*.mp4
+录频/

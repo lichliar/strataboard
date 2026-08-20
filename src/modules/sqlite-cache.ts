@@ -1,6 +1,6 @@
 import { Notice, type Vault } from "obsidian";
 import initSqlJs, { type Database } from "sql.js";
-import type { AssetType, Freq, MarketData, OhlcvRow, ParsedCardSpec, SymbolItem } from "../types";
+import type { AssetType, Freq, MarketData, OhlcvRow, ParsedCardSpec, SeriesPoint, SymbolItem } from "../types";
 import { CacheStore } from "./cache-store";
 
 export interface SqliteCacheOptions {
@@ -109,6 +109,16 @@ export class SqliteCache {
         amount REAL,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (symbol, asset_type, trade_date)
+      )
+    `);
+
+    this.marketDb!.run(`
+      CREATE TABLE IF NOT EXISTS macro_series (
+        source TEXT NOT NULL,
+        series_id TEXT NOT NULL,
+        obs_date TEXT NOT NULL,
+        value REAL,
+        PRIMARY KEY (source, series_id, obs_date)
       )
     `);
 
@@ -397,6 +407,34 @@ export class SqliteCache {
     };
   }
 
+  // Merges individual symbols without clearing the asset type's list — used
+  // for the token-free tx/em sources, whose "symbol list" is just the items
+  // the user has picked from remote search (so the chart header can resolve
+  // their names later via lookupSymbol).
+  async upsertSymbols(items: SymbolItem[]): Promise<void> {
+    const db = this.symbolsDb!;
+    const refreshedAt = new Date().toISOString();
+    const insertStmt = db.prepare(`
+      INSERT OR REPLACE INTO symbols
+      (ts_code, symbol, name, enname, exchange, list_date, asset_type, refreshed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const item of items) {
+      insertStmt.run([
+        item.tsCode,
+        item.symbol,
+        item.name,
+        item.enname ?? null,
+        item.exchange,
+        item.listDate ?? null,
+        item.assetType,
+        refreshedAt,
+      ]);
+    }
+    insertStmt.free();
+    this.markDirty("symbols");
+  }
+
   // ==================== Market Data ====================
 
   async loadMarketData(spec: ParsedCardSpec, tradeDate: string): Promise<MarketData | null> {
@@ -457,6 +495,64 @@ export class SqliteCache {
       turnoverRateF: (r.turnover_rate_f as number | undefined | null) ?? undefined,
       amount: (r.amount as number | undefined | null) ?? undefined,
     };
+  }
+
+  // ==================== Macro Series ====================
+
+  // Generic point-in-time series cache (cn_m money supply, FRED, ...),
+  // keyed by (source, series_id). obs_date is YYYY-MM-DD.
+  async loadMacroSeries(source: string, seriesId: string, startDate: string, endDate: string): Promise<SeriesPoint[]> {
+    const stmt = this.marketDb!.prepare(`
+      SELECT obs_date, value
+      FROM macro_series
+      WHERE source = ? AND series_id = ? AND obs_date >= ? AND obs_date <= ?
+      ORDER BY obs_date ASC
+    `);
+    stmt.bind([source, seriesId, startDate, endDate]);
+    const rows: SeriesPoint[] = [];
+    while (stmt.step()) {
+      const r = stmt.getAsObject() as Record<string, unknown>;
+      const value = Number(r.value);
+      if (!Number.isFinite(value)) continue;
+      rows.push({ date: r.obs_date as string, value });
+    }
+    stmt.free();
+    return rows;
+  }
+
+  async mergeMacroSeriesRows(source: string, seriesId: string, rows: SeriesPoint[]): Promise<void> {
+    if (rows.length === 0) return;
+    const db = this.marketDb!;
+    db.run("BEGIN TRANSACTION");
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO macro_series
+      (source, series_id, obs_date, value)
+      VALUES (?, ?, ?, ?)
+    `);
+    for (const row of rows) {
+      // Skip rows with null/NaN values on ingest.
+      if (!Number.isFinite(row.value)) continue;
+      stmt.run([source, seriesId, row.date, row.value]);
+    }
+    stmt.free();
+    db.run("COMMIT");
+    this.markDirty("market");
+  }
+
+  async getMacroSeriesMaxDate(source: string, seriesId: string): Promise<string | null> {
+    const stmt = this.marketDb!.prepare(`
+      SELECT MAX(obs_date) as max_date
+      FROM macro_series
+      WHERE source = ? AND series_id = ?
+    `);
+    stmt.bind([source, seriesId]);
+    if (!stmt.step()) {
+      stmt.free();
+      return null;
+    }
+    const r = stmt.getAsObject() as Record<string, unknown>;
+    stmt.free();
+    return (r.max_date as string | undefined | null) ?? null;
   }
 
   // ==================== Migration ====================

@@ -1,8 +1,11 @@
 import { Notice } from "obsidian";
-import type { AssetType, Freq, MarketData, OhlcvRow, ParsedCardSpec } from "../types";
+import type { AssetType, Freq, MacroSeriesDef, MarketData, OhlcvRow, ParsedCardSpec, SeriesPoint } from "../types";
+import { MACRO_SERIES_OPTIONS, findMacroSeriesDef } from "../types";
 import { resolveDateRange, formatDate, parseDateYmd, nextTradingDate, prevTradingDate } from "../utils/date";
 import { SqliteCache } from "./sqlite-cache";
 import { TushareApiClient, TushareApiError } from "./tushare-api-client";
+import { TencentApiClient } from "./tencent-api-client";
+import { EastmoneyApiClient } from "./eastmoney-api-client";
 
 interface DataAdapterOptions {
   cache: SqliteCache;
@@ -11,6 +14,8 @@ interface DataAdapterOptions {
 
 export class DataAdapter {
   private client: TushareApiClient;
+  private txClient = new TencentApiClient();
+  private emClient = new EastmoneyApiClient();
   private cache: SqliteCache;
 
   constructor(options: DataAdapterOptions) {
@@ -22,20 +27,44 @@ export class DataAdapter {
     this.client.setToken(token);
   }
 
+  // Server-side quote search for the token-free sources (tx/em), used by
+  // RemoteQuoteSearchModal. Local-index types never reach this.
+  async searchRemoteQuotes(assetType: "tx" | "em", text: string) {
+    return assetType === "tx" ? this.txClient.searchQuotes(text) : this.emClient.searchQuotes(text);
+  }
+
+  // Asset types whose quote API only has daily bars (fund_daily,
+  // fut_index_daily, hk_daily, index_global, cb_daily, fut_daily, fx_daily,
+  // sw_daily — and the token-free tx/em endpoints, which this plugin pulls
+  // daily-only): always cached as daily rows and resampled to W/M at read
+  // time. Caching resampled rows broke incremental refresh: the trailing
+  // partial week/month re-fetched from "last cached date + 1" would overwrite
+  // the complete period row with an incomplete one.
+  private static isDailyOnly(assetType: AssetType): boolean {
+    return (
+      assetType === "fund" ||
+      assetType === "nhindex" ||
+      assetType === "hk" ||
+      assetType === "gbindex" ||
+      assetType === "cb" ||
+      assetType === "fut" ||
+      assetType === "fx" ||
+      assetType === "sw" ||
+      assetType === "tx" ||
+      assetType === "em"
+    );
+  }
+
   private toKey(spec: ParsedCardSpec) {
     return {
       symbol: spec.symbol,
       assetType: spec.assetType,
-      // Funds are always cached as daily rows and resampled to W/M at read
-      // time. Caching resampled rows broke incremental refresh: the trailing
-      // partial week/month re-fetched from "last cached date + 1" would
-      // overwrite the complete period row with an incomplete one.
-      freq: spec.assetType === "fund" ? ("D" as Freq) : spec.freq,
+      freq: DataAdapter.isDailyOnly(spec.assetType) ? ("D" as Freq) : spec.freq,
     };
   }
 
   private maybeResample(spec: ParsedCardSpec, rows: OhlcvRow[]): OhlcvRow[] {
-    if (spec.assetType === "fund" && spec.freq !== "D") {
+    if (DataAdapter.isDailyOnly(spec.assetType) && spec.freq !== "D") {
       return this.resample(rows, spec.freq);
     }
     return rows;
@@ -92,6 +121,14 @@ export class DataAdapter {
   }
 
   private async fetchOhlcv(spec: ParsedCardSpec, start: string, end: string): Promise<OhlcvRow[]> {
+    // Token-free sources return ready-mapped rows and bypass Tushare entirely.
+    if (spec.assetType === "tx") {
+      return this.txClient.fetchKline(spec.symbol, start, end);
+    }
+    if (spec.assetType === "em") {
+      return this.emClient.fetchKline(spec.symbol, start, end);
+    }
+
     const { apiName, params } = this.buildTushareRequest(spec, start, end);
     const response = await this.client.query(apiName, params);
 
@@ -102,14 +139,22 @@ export class DataAdapter {
     const fields = response.data.fields;
     const items = response.data.items as unknown[];
 
+    // fx_daily has no plain OHLC columns — only bid/ask OHLC; the bid side is
+    // the quote convention for FX charts. tick_qty (tick count) stands in for
+    // volume; there is no turnover amount.
+    const names =
+      spec.assetType === "fx"
+        ? { open: "bid_open", high: "bid_high", low: "bid_low", close: "bid_close", vol: "tick_qty", amount: "" }
+        : { open: "open", high: "high", low: "low", close: "close", vol: "vol", amount: "amount" };
+
     const getIndex = (name: string) => fields.findIndex((f) => f.toLowerCase() === name.toLowerCase());
     const tradeDateIdx = getIndex("trade_date");
-    const openIdx = getIndex("open");
-    const highIdx = getIndex("high");
-    const lowIdx = getIndex("low");
-    const closeIdx = getIndex("close");
-    const volIdx = getIndex("vol");
-    const amountIdx = getIndex("amount");
+    const openIdx = getIndex(names.open);
+    const highIdx = getIndex(names.high);
+    const lowIdx = getIndex(names.low);
+    const closeIdx = getIndex(names.close);
+    const volIdx = names.vol ? getIndex(names.vol) : -1;
+    const amountIdx = names.amount ? getIndex(names.amount) : -1;
 
     if (tradeDateIdx < 0 || openIdx < 0 || highIdx < 0 || lowIdx < 0 || closeIdx < 0) {
       throw new TushareApiError("Unexpected Tushare response format: missing required fields.");
@@ -148,6 +193,34 @@ export class DataAdapter {
         break;
       case "index":
         apiName = spec.freq === "W" ? "index_weekly" : spec.freq === "M" ? "index_monthly" : "index_daily";
+        break;
+      case "nhindex":
+        // 南华期货指数只有日线；W/M 由读取端重采样。
+        apiName = "fut_index_daily";
+        break;
+      case "hk":
+        // 港股只有日线（hk_daily）；W/M 由读取端重采样。
+        apiName = "hk_daily";
+        break;
+      case "gbindex":
+        // 国际指数只有日线（index_global）；W/M 由读取端重采样。
+        apiName = "index_global";
+        break;
+      case "cb":
+        // 可转债只有日线（cb_daily）；W/M 由读取端重采样。
+        apiName = "cb_daily";
+        break;
+      case "fut":
+        // 期货合约只有日线（fut_daily）；W/M 由读取端重采样。
+        apiName = "fut_daily";
+        break;
+      case "fx":
+        // 外汇只有日线（fx_daily，bid 侧 OHLC）；W/M 由读取端重采样。
+        apiName = "fx_daily";
+        break;
+      case "sw":
+        // 申万行业指数只有日线（sw_daily）；W/M 由读取端重采样。
+        apiName = "sw_daily";
         break;
     }
 
@@ -247,4 +320,163 @@ export class DataAdapter {
       turnoverRateF: get("turnover_rate_f"),
     };
   }
+
+  // ==================== Macro (Tushare 国内宏观) ====================
+
+  // Ensures the series' API table is fresh in the cache, then reads the
+  // series back out. Each API's full table is fetched in one call and every
+  // cataloged field of it is cached, so first use of one series warms the
+  // whole group.
+  async loadMacroSeries(seriesId: string, startDate: string, endDate: string): Promise<SeriesPoint[]> {
+    const def = findMacroSeriesDef(seriesId);
+    if (!def) {
+      throw new TushareApiError(`未知的宏观序列：${seriesId}`);
+    }
+    const maxDate = await this.cache.getMacroSeriesMaxDate(def.api, seriesId);
+    if (!maxDate || maxDate < DataAdapter.expectedLatestDate(def.freq)) {
+      try {
+        await this.fetchMacroApi(def.api);
+      } catch (e) {
+        console.error(`Failed to refresh macro data (${def.api}):`, e);
+        new Notice("Financial Canvas: 宏观数据刷新失败，显示缓存数据。");
+      }
+    }
+    return this.cache.loadMacroSeries(def.api, seriesId, startDate, endDate);
+  }
+
+  // The latest observation date a fresh cache should hold, as YYYY-MM-DD:
+  // daily series (yc_cb yields) publish every trading day, monthly series
+  // publish the previous calendar month with a lag, quarterly series (GDP)
+  // the previous quarter; the latter two are stored at period start.
+  private static expectedLatestDate(freq: "D" | "M" | "Q"): string {
+    const today = new Date();
+    if (freq === "D") {
+      return formatDate(today);
+    }
+    const y = today.getFullYear();
+    const m = today.getMonth(); // 0-based
+    if (freq === "Q") {
+      const curQuarterStart = Math.floor(m / 3) * 3; // 0-based month of this quarter's start
+      const prev = new Date(y, curQuarterStart - 3, 1);
+      return formatDate(prev);
+    }
+    return formatDate(new Date(y, m - 1, 1));
+  }
+
+  // Fetches one API's data and merges it into the series cache (keyed by
+  // api + series id). Most APIs are pulled as one full table covering every
+  // cataloged field; yc_cb rows are keyed by date × curve tenor, so it is
+  // fetched per cataloged tenor instead (see fetchYcCbSeries).
+  private async fetchMacroApi(api: string): Promise<void> {
+    const defs = MACRO_SERIES_OPTIONS.filter((o) => o.api === api);
+    if (defs.length === 0) {
+      throw new TushareApiError(`未知的宏观接口：${api}`);
+    }
+    if (api === "yc_cb") {
+      await this.fetchYcCbSeries(defs);
+      return;
+    }
+    const params: Record<string, unknown> = {};
+    if (api === "cn_gdp") {
+      params.start_q = "1992Q1";
+    } else if (api === "shibor_lpr") {
+      params.start_date = "20100101";
+    } else if (api === "cn_m" || api === "sf_month") {
+      params.start_month = "199001";
+    } else {
+      params.start_m = "199001";
+    }
+
+    const response = await this.client.query(api, params);
+    if (!response.data || !response.data.items || response.data.items.length === 0) {
+      return;
+    }
+
+    const fields = response.data.fields;
+    const items = response.data.items as unknown[];
+    const getIndex = (name: string) => fields.findIndex((f) => f.toLowerCase() === name.toLowerCase());
+    const dateIdx = getIndex(api === "cn_gdp" ? "quarter" : api === "shibor_lpr" ? "date" : "month");
+    if (dateIdx < 0) {
+      throw new TushareApiError("Unexpected Tushare response format: missing date field.");
+    }
+
+    for (const def of defs) {
+      const valueIdx = getIndex(def.field);
+      if (valueIdx < 0) continue;
+
+      const points: SeriesPoint[] = [];
+      for (const item of items as any[]) {
+        const date = normalizeMacroDate(String(item[dateIdx]));
+        if (!date) continue;
+        const value = Number(item[valueIdx]);
+        if (!Number.isFinite(value)) continue;
+        points.push({ date, value });
+      }
+      await this.cache.mergeMacroSeriesRows(api, def.id, points);
+    }
+  }
+
+  // yc_cb (中债收益率曲线) is fetched per cataloged tenor, incrementally:
+  // from the cached max date (or 20020101, the curve's history start) up to
+  // today, in 5-year windows — one row per trading day per tenor keeps every
+  // window far below the 2000-row per-call cap. def.params carries
+  // ts_code / curve_type / curve_term.
+  private async fetchYcCbSeries(defs: MacroSeriesDef[]): Promise<void> {
+    const today = new Date();
+    const end = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
+    for (const def of defs) {
+      const cachedMax = await this.cache.getMacroSeriesMaxDate(def.api, def.id);
+      let cursor = cachedMax ? cachedMax.replace(/-/g, "") : "20020101";
+      const points: SeriesPoint[] = [];
+      while (cursor <= end) {
+        const cursorDate = parseDateYmd(cursor);
+        const windowEnd = new Date(cursorDate.getFullYear() + 5, cursorDate.getMonth(), cursorDate.getDate());
+        const windowEndYmd = formatDate(windowEnd).replace(/-/g, "");
+        const chunkEnd = windowEndYmd > end ? end : windowEndYmd;
+        const response = await this.client.query("yc_cb", {
+          ...def.params,
+          start_date: cursor,
+          end_date: chunkEnd,
+        });
+        if (response.data && response.data.items && response.data.items.length > 0) {
+          const fields = response.data.fields;
+          const dateIdx = fields.findIndex((f) => f.toLowerCase() === "trade_date");
+          const valueIdx = fields.findIndex((f) => f.toLowerCase() === def.field.toLowerCase());
+          if (dateIdx < 0 || valueIdx < 0) {
+            throw new TushareApiError("Unexpected Tushare response format: missing trade_date/yield field.");
+          }
+          for (const item of response.data.items as any[]) {
+            const date = normalizeMacroDate(String(item[dateIdx]));
+            if (!date) continue;
+            const value = Number(item[valueIdx]);
+            if (!Number.isFinite(value)) continue;
+            points.push({ date, value });
+          }
+        }
+        // Next window starts the day after this chunk's end.
+        const next = parseDateYmd(chunkEnd);
+        next.setDate(next.getDate() + 1);
+        cursor = formatDate(next).replace(/-/g, "");
+      }
+      await this.cache.mergeMacroSeriesRows(def.api, def.id, points);
+    }
+  }
+}
+
+// Normalizes a Tushare period key to YYYY-MM-DD: YYYYMM and YYYYMMDD pass
+// through (monthly data at month start), quarters ("2023Q4") map to the
+// quarter's first month. Returns "" for unrecognized shapes.
+function normalizeMacroDate(raw: string): string {
+  const quarter = raw.match(/^(\d{4})Q([1-4])$/);
+  if (quarter) {
+    const month = String((Number(quarter[2]) - 1) * 3 + 1).padStart(2, "0");
+    return `${quarter[1]}-${month}-01`;
+  }
+  if (/^\d{6}$/.test(raw)) {
+    return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-01`;
+  }
+  if (/^\d{8}$/.test(raw)) {
+    return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
+  }
+  return "";
 }

@@ -3,7 +3,9 @@ import type { ParsedCardSpec } from "../types";
 import { buildCardFileName } from "../utils/slug";
 import { buildCardFrontmatter, canonicalKey, stringifyCardSpec } from "./card-spec";
 
-function codeBlockTypeFor(spec: ParsedCardSpec): string {
+// Exported so the md-editor insertion path (main.ts) can fence a spec with
+// the same block type a card file would use.
+export function codeBlockTypeFor(spec: ParsedCardSpec): string {
   if (spec.contentType === "calendar") return "calendar";
   if (spec.contentType === "widget" || spec.widgetType) return "financial-widget";
   return "tushare";
@@ -12,16 +14,33 @@ function codeBlockTypeFor(spec: ParsedCardSpec): string {
 interface CardServiceOptions {
   app: App;
   cardLibraryPath: string;
+  widgetCardPath: string;
+  componentCardPath: string;
 }
 
 export class CardService {
   constructor(private options: CardServiceOptions) {}
 
-  setLibraryPath(path: string): void {
-    this.options.cardLibraryPath = path;
+  setPaths(paths: { cardLibraryPath: string; widgetCardPath: string; componentCardPath: string }): void {
+    this.options.cardLibraryPath = paths.cardLibraryPath;
+    this.options.widgetCardPath = paths.widgetCardPath;
+    this.options.componentCardPath = paths.componentCardPath;
   }
 
-  async createOrReuse(spec: ParsedCardSpec, savePath?: string): Promise<TFile> {
+  // Default save folder per card kind: calendar/timeline go to the component
+  // path, widgets to the widget path, everything else (tushare, overlay,
+  // spread, fred) to the chart card library.
+  private defaultPathForSpec(spec: ParsedCardSpec): string {
+    if (spec.contentType === "calendar") return this.options.componentCardPath;
+    if (spec.contentType === "widget" || spec.widgetType) return this.options.widgetCardPath;
+    return this.options.cardLibraryPath;
+  }
+
+  private defaultPathForBlock(blockType: string): string {
+    return blockType === "timeline" ? this.options.componentCardPath : this.options.cardLibraryPath;
+  }
+
+  async createOrReuse(spec: ParsedCardSpec, savePath?: string, displayName?: string): Promise<TFile> {
     const key = canonicalKey(spec);
     const existing = await this.findExistingCard(key);
     if (existing) {
@@ -29,11 +48,11 @@ export class CardService {
       return existing;
     }
 
-    return this.createCard(spec, savePath);
+    return this.createCard(spec, savePath, displayName);
   }
 
-  async createCard(spec: ParsedCardSpec, savePath?: string): Promise<TFile> {
-    const libraryPath = normalizePath(savePath || this.options.cardLibraryPath);
+  async createCard(spec: ParsedCardSpec, savePath?: string, displayName?: string): Promise<TFile> {
+    const libraryPath = normalizePath(savePath || this.defaultPathForSpec(spec));
     await this.ensureFolder(libraryPath);
 
     const baseName =
@@ -41,7 +60,7 @@ export class CardService {
         ? "日历.md"
         : spec.widgetType
           ? this.buildWidgetFileName(spec)
-          : buildCardFileName(spec.symbol, spec.assetType, spec.freq);
+          : buildCardFileName(displayName, spec.symbol, spec.assetType);
     const filePath = await this.uniqueFilePath(libraryPath, baseName);
 
     const blockType = codeBlockTypeFor(spec);
@@ -61,7 +80,7 @@ export class CardService {
   // lives outside ParsedCardSpec (currently the timeline ruler). No fc-*
   // frontmatter and no reuse: every insert produces a fresh card.
   async createRawCard(baseName: string, blockType: string, blockBody: string, savePath?: string): Promise<TFile> {
-    const libraryPath = normalizePath(savePath || this.options.cardLibraryPath);
+    const libraryPath = normalizePath(savePath || this.defaultPathForBlock(blockType));
     await this.ensureFolder(libraryPath);
 
     const filePath = await this.uniqueFilePath(libraryPath, baseName);
@@ -92,12 +111,28 @@ export class CardService {
   }
 
   async findExistingCard(key: string): Promise<TFile | null> {
-    const libraryPath = normalizePath(this.options.cardLibraryPath);
-    if (!(await this.options.app.vault.adapter.exists(libraryPath))) {
+    // Reuse lookups span every card folder (chart / widget / component), so a
+    // card created before its folder setting changed is still found.
+    const roots = [
+      ...new Set(
+        [this.options.cardLibraryPath, this.options.widgetCardPath, this.options.componentCardPath].map((p) =>
+          normalizePath(p)
+        )
+      ),
+    ];
+    const existingRoots: string[] = [];
+    for (const root of roots) {
+      if (root && (await this.options.app.vault.adapter.exists(root))) {
+        existingRoots.push(root);
+      }
+    }
+    if (existingRoots.length === 0) {
       return null;
     }
 
-    const files = this.options.app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(libraryPath + "/"));
+    const files = this.options.app.vault
+      .getMarkdownFiles()
+      .filter((f) => existingRoots.some((root) => f.path.startsWith(root + "/")));
 
     for (const file of files) {
       try {

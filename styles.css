@@ -1,3 +1,632 @@
+/* ==========================================================================
+   Design tokens — StrataBoard UI redesign (IMPLEMENTATION.md phase 0).
+   Source of truth: strataboard-wireframe.html `:root` / `[data-theme="dark"]`.
+   The six wireframe tokens (bg / surface / fg / muted / border / accent) are
+   mapped onto Obsidian's semantic variables so plugin UI follows the active
+   theme in both light and dark mode; tokens with no Obsidian equivalent
+   (market up/down, error recipe) keep the wireframe's OKLch values, which
+   the wireframe itself shares across both themes.
+   ========================================================================== */
+body {
+  --fc-bg: var(--background-primary);
+  --fc-surface: var(--background-primary);
+  --fc-fg: var(--text-normal);
+  --fc-muted: var(--text-muted);
+  --fc-border: var(--background-modifier-border);
+  --fc-accent: var(--accent-color, var(--color-accent));
+  --fc-on-accent: var(--text-on-accent, #fff);
+
+  /* Recessed surfaces: disabled/readonly fields, code blocks, placeholder
+     areas (wireframe --wf-empty / --wf-chart). */
+  --fc-empty: var(--background-secondary);
+  --fc-chart: var(--background-secondary-alt, var(--background-secondary));
+
+  /* Market up/down colors — no Obsidian equivalent, wireframe OKLch. */
+  --fc-positive: oklch(58% 0.16 145);
+  --fc-negative: oklch(50% 0.20 25);
+
+  /* Error recipe (wireframe 数据计算卡): red outline + inline hint text. */
+  --fc-error-border: oklch(58% 0.2 25);
+  --fc-error-text: oklch(52% 0.19 25);
+
+  --fc-radius-sm: 6px;
+  --fc-radius-md: 10px;
+  --fc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --fc-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+body.theme-dark {
+  --fc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --fc-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* ==========================================================================
+   fc-hermes scope — the plugin's own dark instrument-panel palette (深青灰底
+   + 琥珀 accent), applied to every card surface (chart / series / calendar /
+   timeline / widget) and the canvas toolbar. Cards carry this class
+   regardless of the Obsidian theme; only a card explicitly set to 浅色主题
+   opts out. Canvas drawing colors live in CHART_PALETTE (chart-renderer.ts)
+   and must be kept in sync with the values here.
+   ========================================================================== */
+.fc-hermes {
+  --fc-bg: #10141a;
+  --fc-surface: #161c24;
+  --fc-fg: #d7dbe0;
+  --fc-muted: #868e99;
+  --fc-border: #272e38;
+  --fc-accent: #f59e0b;
+  --fc-on-accent: #10141a;
+  --fc-empty: #1a2029;
+  --fc-chart: #10141a;
+  --fc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --fc-shadow-md: 0 4px 14px rgba(0, 0, 0, 0.45);
+
+  /* Card chrome reads several Obsidian variables directly; pin them to the
+     hermes values inside the scope so the two variable families agree. */
+  --background-primary: #10141a;
+  --background-secondary: #161c24;
+  --background-modifier-border: #272e38;
+  --text-normal: #d7dbe0;
+  --text-muted: #868e99;
+  --text-faint: #5c6470;
+  --text-error: #f26d6d;
+
+  background-color: #10141a;
+  color: #d7dbe0;
+}
+
+/* ==========================================================================
+   Control recipes (wireframe inline styles are the spec). Shared by the
+   settings page and all edit modals; later phases consume these classes.
+   ========================================================================== */
+
+/* Chip — preset pill (timeline range presets, widget template chips). */
+.fc-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  font-size: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface);
+  color: var(--fc-muted);
+  cursor: pointer;
+  user-select: none;
+  box-shadow: none;
+  white-space: nowrap;
+}
+
+.fc-chip:hover {
+  color: var(--fc-fg);
+}
+
+.fc-chip.is-active {
+  background: var(--fc-accent);
+  border-color: var(--fc-accent);
+  color: var(--fc-on-accent);
+}
+
+/* Segmented control — direct single choice (timeline 颗粒度, widget params). */
+.fc-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--fc-border);
+  border-radius: 8px;
+  padding: 2px;
+  background: var(--fc-empty);
+}
+
+.fc-segmented-item {
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--fc-muted);
+  cursor: pointer;
+  user-select: none;
+  box-shadow: none;
+  white-space: nowrap;
+}
+
+.fc-segmented-item:hover {
+  color: var(--fc-fg);
+}
+
+.fc-segmented-item.is-active {
+  background: var(--fc-accent);
+  color: var(--fc-on-accent);
+  font-weight: 600;
+}
+
+/* Stepper — minus / value / plus in one bordered box (出血尺寸). */
+.fc-stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-sm);
+  overflow: hidden;
+  background: var(--fc-surface);
+}
+
+.fc-stepper-btn {
+  padding: 4px 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--fc-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.fc-stepper-btn:first-child {
+  border-right: 1px solid var(--fc-border);
+  border-radius: 0;
+}
+
+.fc-stepper-btn:last-child {
+  border-left: 1px solid var(--fc-border);
+  border-radius: 0;
+}
+
+.fc-stepper-btn:hover {
+  color: var(--fc-fg);
+  background: var(--fc-empty);
+}
+
+.fc-stepper-value {
+  padding: 4px 6px;
+  font-size: 12px;
+  min-width: 52px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--fc-fg);
+}
+
+.fc-stepper-unit {
+  color: var(--fc-muted);
+  margin-left: 2px;
+}
+
+/* Toggle — 36×20 switch, knob slides right when on. */
+.fc-toggle {
+  position: relative;
+  box-sizing: border-box;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-border);
+  cursor: pointer;
+  box-shadow: none;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.fc-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fc-surface);
+  box-shadow: var(--fc-shadow-sm);
+  transition: left 0.2s;
+}
+
+.fc-toggle.is-on {
+  background: var(--fc-accent);
+  border-color: var(--fc-accent);
+}
+
+.fc-toggle.is-on::after {
+  left: 18px;
+}
+
+/* Color swatch — 20×20 preview square (涨色/跌色, 线条颜色). */
+.fc-swatch {
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid var(--fc-border);
+  flex-shrink: 0;
+}
+
+/* Detected pill — accent status badge with optional leading dot
+   (「已识别：…」); .fc-pill-sm is the compact badge (「自动识别」),
+   .fc-pill-muted is the neutral variant (「无需密钥」). */
+.fc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fc-accent);
+  border: 1px solid var(--fc-accent);
+  border-radius: 12px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+
+.fc-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fc-accent);
+  flex-shrink: 0;
+}
+
+.fc-pill.fc-pill-sm {
+  font-size: 10px;
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+
+.fc-pill.fc-pill-muted {
+  color: var(--fc-muted);
+  border-color: var(--fc-border);
+}
+
+.fc-pill.fc-pill-muted .fc-pill-dot {
+  background: var(--fc-muted);
+}
+
+/* Error state — red outline on the offending input, inline hint with a
+   warning icon below it, and the primary button disabled (all three
+   together, per the wireframe 数据计算卡 error demo). */
+.fc-input-error,
+.fc-input-error:focus {
+  border-color: var(--fc-error-border) !important;
+}
+
+.fc-error-hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--fc-error-text);
+}
+
+.fc-error-hint svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+.fc-btn-primary {
+  background: var(--fc-accent);
+  border-color: var(--fc-accent);
+  color: var(--fc-on-accent);
+}
+
+.fc-btn-primary:disabled,
+.fc-btn-primary.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Muted 11px hint under a field (wireframe's recurring explainer line). */
+.fc-field-hint {
+  font-size: 11px;
+  color: var(--fc-muted);
+}
+
+/* Folder path picker (settings + card edit modals): a field-looking button
+   that opens a searchable vault-folder list (src/ui/folder-suggester.ts). */
+.fc-folder-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 190px;
+  max-width: 100%;
+  padding: 4px 10px;
+  font-size: var(--font-ui-small);
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-sm);
+  background: var(--fc-surface);
+  color: var(--fc-fg);
+  cursor: pointer;
+  box-shadow: none;
+  text-align: left;
+}
+
+.fc-folder-select::after {
+  content: "\25BE";
+  font-size: 10px;
+  color: var(--fc-muted);
+  flex-shrink: 0;
+}
+
+.fc-folder-select:hover {
+  background: var(--fc-empty);
+}
+
+.fc-folder-select-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fc-folder-select-text.is-empty {
+  color: var(--fc-muted);
+}
+
+/* The pinned 手动输入路径… entry at the bottom of the folder list. */
+.fc-folder-manual-entry {
+  color: var(--fc-muted);
+}
+
+/* ===== Unified card edit modal (wireframe #screen-unified) ===== */
+
+/* Sub-page tabs (基础设置 / 显示设置 / 均线系统). */
+.fc-subtabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--fc-border);
+  margin: 12px 0 4px;
+}
+
+.fc-subtab {
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fc-muted);
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: none;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.fc-subtab:hover {
+  color: var(--fc-fg);
+}
+
+.fc-subtab.is-active {
+  color: var(--fc-accent);
+  border-bottom-color: var(--fc-accent);
+}
+
+/* Data-source selector grid. */
+.fc-source-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.fc-source-card {
+  padding: 12px;
+  border: 2px solid var(--fc-border);
+  border-radius: var(--fc-radius-sm);
+  background: var(--fc-surface);
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.fc-source-card.selected {
+  border-color: var(--fc-accent);
+}
+
+.fc-source-card.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.fc-source-card.fc-source-card-placeholder {
+  border-style: dashed;
+  opacity: 0.5;
+  cursor: default;
+}
+
+.fc-source-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fc-fg);
+}
+
+.fc-source-card-desc {
+  font-size: 11px;
+  color: var(--fc-muted);
+  margin-top: 2px;
+}
+
+/* Canvas 显示逻辑 group inside 显示设置 (dashed separator + title). */
+.fc-canvas-logic-group {
+  border-top: 1px dashed var(--fc-border);
+  margin-top: 6px;
+  padding-top: 12px;
+}
+
+.fc-canvas-logic-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fc-fg);
+  margin-bottom: 8px;
+}
+
+/* MA preview box on the 均线系统 sub-page; chip border colors come inline
+   from the chart's MA palette. */
+.fc-ma-preview {
+  margin-top: 8px;
+  padding: 12px;
+  background: var(--fc-empty);
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-sm);
+}
+
+.fc-ma-preview-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fc-fg);
+  margin-bottom: 6px;
+}
+
+.fc-ma-preview-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fc-ma-chip {
+  padding: 3px 10px;
+  font-size: 11px;
+  border-radius: 10px;
+  background: var(--fc-surface);
+  border: 1px solid var(--fc-border);
+  color: var(--fc-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Modal footer with right-aligned 取消 / 保存. */
+.fc-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--fc-border);
+  margin-top: 12px;
+}
+
+/* Disabled primary action (wireframe 数据计算卡 error state). */
+.fc-modal-footer button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ===== 数据计算卡 modal (wireframe #screen-calc) ===== */
+
+/* Expression error hint sits right under the 公式 input. */
+.fc-calc-expr-error {
+  margin: -6px 0 0 4px;
+}
+
+.fc-calc-expr-help {
+  margin: 4px 0 0 4px;
+}
+
+.fc-calc-series-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Series row: accent letter badge + the shared series-ref editor grid. */
+.fc-calc-series-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fc-calc-letter {
+  width: 28px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--fc-accent);
+  flex-shrink: 0;
+}
+
+.fc-calc-series-row .fc-series-ref-editor {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Dashed "+ 新增系列（D）" row. */
+.fc-add-row {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--fc-accent);
+  border: 1px dashed var(--fc-border);
+  border-radius: var(--fc-radius-sm);
+  background: var(--fc-surface);
+  text-align: center;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.fc-add-row:hover {
+  border-color: var(--fc-accent);
+}
+
+.fc-add-row:disabled {
+  color: var(--fc-muted);
+  cursor: default;
+}
+
+.fc-add-row:disabled:hover {
+  border-color: var(--fc-border);
+}
+
+/* Settings page: small group label (免费行情源 / 工具栏显示的数据源) and the
+   dashed info note (图表设置 tab, wireframe #screen-settings). */
+.fc-settings-group-label {
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  color: var(--fc-muted);
+  letter-spacing: 0.02em;
+  margin: 14px 0 2px;
+}
+
+/* Settings page: collapsible sub-groups (Tushare 设置 and its nested 积分要求). */
+.fc-settings-sub {
+  border: 1px solid var(--fc-border);
+  border-radius: 8px;
+  padding: 4px 12px 8px;
+  margin: 8px 0;
+}
+
+.fc-settings-sub > summary {
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 0;
+  color: var(--fc-fg);
+}
+
+.fc-settings-sub-nested {
+  border-style: dashed;
+  margin: 4px 0 8px;
+}
+
+.fc-settings-note {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px dashed var(--fc-border);
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--fc-muted);
+}
+
+/* Uniform tabular figures for numeric readouts across plugin surfaces;
+   monospace for code / API keys / symbol codes (apply .fc-mono). */
+.financial-canvas-card,
+.financial-series-chart,
+.financial-calendar,
+.financial-timeline {
+  font-variant-numeric: tabular-nums;
+}
+
+.fc-mono {
+  font-family: var(--font-monospace);
+}
+
 .financial-canvas-card-note.markdown-preview-view {
   padding: 0 !important;
 }
@@ -102,6 +731,14 @@
   background-color: transparent;
   min-height: 0;
   height: 100% !important;
+}
+
+/* Hermes cards paint their own dark background inside canvas nodes too —
+   the node background follows the vault theme and would otherwise show
+   through the transparent card. */
+.financial-canvas-card-note .financial-canvas-card.fc-hermes {
+  background-color: var(--fc-bg);
+  border-radius: 6px;
 }
 
 /* Hide raw YAML source when the card is rendered in Canvas.
@@ -234,6 +871,21 @@
   display: none !important;
 }
 
+/* Same chrome-hiding fallback for series chart (overlay / spread) cards.
+   Needed even in the empty/error state, when no chart container exists yet
+   but the .financial-series-chart root class is already on the card. */
+.canvas-node:not(.is-editing):has(.financial-series-chart) .metadata-container,
+.canvas-node:not(.is-editing):has(.financial-series-chart) .frontmatter-container,
+.canvas-node:not(.is-editing):has(.financial-series-chart) .frontmatter,
+.canvas-node:not(.is-editing):has(.financial-series-chart) .properties-heading,
+.canvas-node:not(.is-editing):has(.financial-series-chart) .mod-header,
+.canvas-node:not(.is-editing):has(.financial-series-chart) .inline-title,
+.canvas-node:not(.is-editing):has(.financial-series-chart) .markdown-preview-pusher,
+.canvas-node:not(.is-editing):has(.financial-series-chart) pre,
+.canvas-node:not(.is-editing):has(.financial-series-chart) pre code {
+  display: none !important;
+}
+
 .canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .canvas-node-content,
 .canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-embed-content:not([style*="display: none"]) {
   padding: 0 !important;
@@ -273,6 +925,24 @@
   background-color: transparent !important;
   min-height: 0 !important;
   height: 100% !important;
+}
+
+/* Canvas interaction model for chart cards (see TushareCodeBlockRenderer):
+   - inactive (default): Obsidian's .canvas-node-content-blocker (absolute,
+     full-size, z-index: --layer-cover) covers the card, so single click/drag
+     selects and moves the canvas node;
+   - active (double-click adds .fc-chart-active to the node): the blocker is
+     hidden, so hover drives the crosshair and dragging pans the K-line;
+   - double-click while active opens the settings modal; chart mode exits on
+     outside click or Escape. */
+.canvas-node.fc-chart-active .canvas-node-content-blocker {
+  display: none !important;
+}
+
+/* Accent outline marks chart mode so the active state is visible. */
+.canvas-node.fc-chart-active .financial-canvas-card {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
 }
 
 /* Remove default paragraph margins inside widget cards. */
@@ -338,17 +1008,28 @@
 }
 
 .financial-canvas-header-refresh {
-  background: transparent;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
-  padding: 2px 6px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  background: var(--fc-surface);
+  border: 1px solid var(--fc-border);
+  border-radius: 5px;
   cursor: pointer;
-  font-size: 12px;
-  color: var(--text-normal);
+  color: var(--fc-muted);
+  box-shadow: none;
+}
+
+.financial-canvas-header-refresh svg {
+  width: 14px;
+  height: 14px;
 }
 
 .financial-canvas-header-refresh:hover {
-  background: var(--background-modifier-hover);
+  background: var(--fc-empty);
+  color: var(--fc-fg);
 }
 
 .financial-canvas-header-quote {
@@ -395,10 +1076,7 @@
 .financial-canvas-period-tabs {
   display: flex;
   gap: 4px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--background-modifier-border);
   flex-shrink: 0;
-  background-color: var(--background-primary-alt);
 }
 
 .financial-canvas-card-note .financial-canvas-period-tabs {
@@ -425,6 +1103,52 @@
   border-color: var(--background-modifier-border);
   color: var(--text-normal);
   font-weight: 600;
+}
+
+/* Card footer (wireframe #screen-card): freq tabs left, SVG tool buttons right. */
+.financial-canvas-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--fc-border);
+  flex-shrink: 0;
+}
+
+.financial-canvas-card-note .financial-canvas-card-footer {
+  padding: 4px 6px;
+}
+
+.financial-canvas-card-tools {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.financial-canvas-tool-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  border-radius: 5px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface);
+  color: var(--fc-muted);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.financial-canvas-tool-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.financial-canvas-tool-btn:hover {
+  background: var(--fc-empty);
+  color: var(--fc-fg);
 }
 
 /* Chart stack */
@@ -463,6 +1187,16 @@
   width: 100%;
 }
 
+/* This plugin never shows the left price axis (configurePane hides it), but
+   lightweight-charts keeps the axis' <td> in its layout table regardless —
+   a dead ~60px column that shows up as a black strip on the chart's left.
+   The left axis cell is the first td of pane rows (and the left stub of the
+   time-axis row), so hide it outright. The pane-separator row's single cell
+   carries colspan=3 — excluding it keeps the pane divider intact. */
+.financial-canvas-chart-container .tv-lightweight-charts tr > td:first-child:not([colspan]) {
+  display: none !important;
+}
+
 .financial-canvas-chart-container {
   width: 100%;
   height: 100%;
@@ -498,6 +1232,64 @@
 .financial-canvas-chart-legend-value {
   color: var(--text-normal);
   font-variant-numeric: tabular-nums;
+}
+
+/* Series chart card (overlay / spread): container + header. The chart
+   itself reuses .financial-canvas-chart-stack / -container / -legend. */
+.financial-series-chart {
+  width: 100%;
+}
+
+.financial-series-chart-header {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary-alt);
+  flex-shrink: 0;
+  min-height: 0;
+}
+
+.financial-canvas-card-note .financial-series-chart-header {
+  padding: 4px 6px;
+}
+
+.financial-series-chart-title {
+  font-weight: 600;
+  color: var(--text-normal);
+  line-height: 1.3;
+}
+
+/* Subtitle under the title, e.g. the normalization base date. */
+.financial-series-chart-subtitle {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.3;
+}
+
+/* Series row editor in the overlay/spread edit modals: fixed grid tracks so
+   the 类型 / value / 名称 / 删除 controls line up in columns across rows,
+   regardless of which control type the value column holds (picker input,
+   macro dropdown or card dropdown). */
+.fc-series-ref-row .setting-item-info {
+  display: none;
+}
+
+.fc-series-ref-row .setting-item-control {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.fc-series-ref-row .setting-item-control select,
+.fc-series-ref-row .setting-item-control input {
+  width: 100%;
+  min-width: 0;
+}
+
+/* The read-only quote input opens the symbol search modal on click. */
+.fc-series-ref-row input[readonly] {
+  cursor: pointer;
 }
 
 
@@ -540,9 +1332,18 @@
 }
 
 .financial-canvas-retry-btn {
-  padding: 4px 16px;
-  border-radius: 6px;
+  padding: 5px 16px;
+  border-radius: var(--fc-radius-sm);
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface);
+  color: var(--fc-fg);
+  font-size: 12px;
   cursor: pointer;
+  box-shadow: none;
+}
+
+.financial-canvas-retry-btn:hover {
+  background: var(--fc-empty);
 }
 
 /* Asset-type badge in the symbol search modal */
@@ -553,39 +1354,141 @@
   font-size: var(--font-ui-smaller);
 }
 
-/* Toolbar */
+/* Canvas toolbar (wireframe #screen-toolbar): vertical icon bar, strata-layers
+   logo mark on top (click to collapse), drag handle, width-resize strip on the   canvas-facing edge, reorderable entry buttons, spacer, then refresh +
+   settings pinned to the bottom of the full-height bar. Width and icon size
+   come from the --fc-tb-w / --fc-tb-icon vars set by applyPosition(). */
 .financial-canvas-toolbar {
   position: absolute;
   display: flex;
-  gap: 6px;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
   z-index: 100;
-  background: var(--background-primary-alt);
-  border: 1px solid var(--background-modifier-border);
+  width: var(--fc-tb-w, 44px);
+  padding: 5px;
+  background: var(--fc-surface);
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-md);
+  box-shadow: var(--fc-shadow-md);
+}
+
+.fc-tb-logo {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 8px;
-  padding: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-bottom: 4px;
+  color: var(--fc-accent);
+}
+
+.fc-tb-logo svg {
+  width: 24px;
+  height: 24px;
+}
+
+.fc-tb-logo:hover {
+  background: var(--fc-empty);
+}
+
+.fc-tb-drag {
+  width: 28px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--fc-border);
+  margin: 2px auto 6px;
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.fc-tb-drag:active {
+  cursor: grabbing;
+}
+
+/* Width-resize strip: hugs the canvas-facing edge (right edge by default;
+   .fc-tb-anchor-right flips it to the left edge). */
+.fc-tb-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -5px;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 1;
+}
+
+.financial-canvas-toolbar.fc-tb-anchor-right .fc-tb-resize {
+  right: auto;
+  left: -5px;
 }
 
 .financial-canvas-toolbar button {
   display: flex;
   align-items: center;
   justify-content: center;
+  width: calc(var(--fc-tb-icon, 16px) + 18px);
+  height: calc(var(--fc-tb-icon, 16px) + 18px);
+  padding: 0;
   background: transparent;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
-  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  box-shadow: none;
   cursor: pointer;
-  font-size: 12px;
-  color: var(--text-normal);
+  color: var(--fc-muted);
+  flex-shrink: 0;
 }
 
 .financial-canvas-toolbar button svg {
-  width: 16px;
-  height: 16px;
+  width: var(--fc-tb-icon, 16px);
+  height: var(--fc-tb-icon, 16px);
 }
 
 .financial-canvas-toolbar button:hover {
-  background: var(--background-modifier-hover);
+  background: var(--fc-empty);
+  color: var(--fc-fg);
+}
+
+.fc-tb-spacer {
+  flex: 1 1 auto;
+}
+
+/* Text mode (显示效果=文字): labels instead of icons, left-aligned; the
+   dragged width acts as the minimum, content may widen the bar. */
+.financial-canvas-toolbar:has(.fc-tb-text-btn) {
+  width: auto;
+  min-width: var(--fc-tb-w, 44px);
+  align-items: stretch;
+}
+
+.financial-canvas-toolbar button.fc-tb-text-btn {
+  width: auto;
+  height: auto;
+  padding: 5px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+/* Collapsed: shrink to the logo + drag handle (wireframe 折叠状态). */
+.financial-canvas-toolbar.is-collapsed {
+  width: auto;
+  min-width: 44px;
+  padding: 6px 5px;
+}
+
+.financial-canvas-toolbar.is-collapsed button,
+.financial-canvas-toolbar.is-collapsed .fc-tb-spacer {
+  display: none;
+}
+
+.financial-canvas-toolbar.is-collapsed .fc-tb-logo {
+  margin-bottom: 0;
 }
 
 /* Legacy overlay - kept minimal in case other code references it */
@@ -593,23 +1496,79 @@
   display: none;
 }
 
-/* Widget input modal: stack the HTML / iframe URL label above the textarea
-   so the input area gets the full width. */
-.fc-widget-input-url-setting {
-  flex-direction: column !important;
-  align-items: stretch !important;
+/* ===== Widget insert modal (wireframe #screen-widget) ===== */
+
+/* Stacked field: label row (label + badge/link) above the control. */
+.fc-widget-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.fc-widget-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.fc-widget-label {
+  display: inline-flex;
+  align-items: center;
   gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fc-fg);
 }
 
-.fc-widget-input-url-setting .setting-item-info,
-.fc-widget-input-url-setting .setting-item-control {
-  width: 100% !important;
-  margin-right: 0 !important;
+.fc-widget-link {
+  font-size: 11px;
+  color: var(--fc-accent);
+  text-decoration: none;
 }
 
-.fc-widget-input-url-setting textarea {
+.fc-widget-field .setting-item {
+  border: none;
+  padding: 0;
+}
+
+.fc-widget-code-setting textarea {
   width: 100%;
   min-height: 160px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.fc-widget-path-setting .setting-item-control {
+  justify-content: flex-start;
+}
+
+.fc-widget-pill-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 10px;
+}
+
+/* 常用组件模板 group (dashed separator + title + chips). */
+.fc-widget-group {
+  border-top: 1px dashed var(--fc-border);
+  margin: 6px 0 10px;
+  padding-top: 12px;
+}
+
+.fc-widget-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fc-fg);
+  margin-bottom: 8px;
+}
+
+.fc-widget-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 /* Calendar card */
@@ -641,38 +1600,171 @@
   background: var(--background-modifier-hover);
 }
 
-.financial-calendar-title.is-editing {
+/* Month-grid picker + timeline range box (edit modals, phase 6). */
+.fc-timeline-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fc-fg);
+  margin-bottom: 8px;
+}
+
+.fc-timeline-range-box {
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-sm);
+  background: var(--fc-surface);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.fc-timeline-dates {
   display: flex;
   align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.fc-timeline-date-setting {
+  flex: 1;
+  border: none;
+  padding: 0;
+}
+
+.fc-timeline-date-setting input {
+  width: 100%;
+}
+
+.fc-timeline-dates-arrow {
+  color: var(--fc-muted);
+  font-size: 12px;
+}
+
+/* Range preview bar: accent segment + start dot + today hollow marker. */
+.fc-range-preview {
+  margin-top: 14px;
+  padding: 0 2px;
+}
+
+.fc-range-preview-bar {
+  position: relative;
+  height: 22px;
+}
+
+.fc-range-preview-track,
+.fc-range-preview-span {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 9px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--fc-border);
+}
+
+.fc-range-preview-span {
+  background: var(--fc-accent);
+  opacity: 0.85;
+}
+
+.fc-range-preview-start {
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--fc-accent);
+  transform: translateX(-2px);
+}
+
+.fc-range-preview-today {
+  position: absolute;
+  right: 0;
+  top: 4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fc-surface);
+  border: 3px solid var(--fc-accent);
+  transform: translateX(2px);
+  box-sizing: border-box;
+}
+
+.fc-range-preview-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--fc-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Month-grid picker (calendar edit modal): year nav + 4×3 cells. */
+.fc-month-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.fc-month-nav-btn {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
-  gap: 4px;
-  cursor: default;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--fc-border);
+  border-radius: 6px;
+  background: var(--fc-surface);
+  color: var(--fc-muted);
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: none;
+  user-select: none;
 }
 
-.financial-calendar-title.is-editing:hover {
-  background: transparent;
+.fc-month-nav-btn:hover {
+  color: var(--fc-fg);
+  background: var(--fc-empty);
 }
 
-/* Specificity must beat Obsidian's global input[type="text"] rules, which
-   would otherwise shrink the font and, via em units, the width too. */
-.financial-calendar-title.is-editing input.financial-calendar-year-input,
-.financial-calendar-title.is-editing input.financial-calendar-month-input {
-  font-size: inherit;
-  font-weight: inherit;
-  color: var(--text-normal);
+.fc-month-nav-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fc-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.fc-month-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.fc-month-grid.is-disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.fc-month-cell {
+  padding: 7px 0;
   text-align: center;
-  background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
-  padding: 0 4px;
+  font-size: 12px;
+  border: none;
+  border-radius: 6px;
+  background: var(--fc-empty);
+  color: var(--fc-fg);
+  cursor: pointer;
+  box-shadow: none;
 }
 
-.financial-calendar-title.is-editing input.financial-calendar-year-input {
-  width: 3.2em;
+.fc-month-cell:hover {
+  color: var(--fc-fg);
+  filter: brightness(0.97);
 }
 
-.financial-calendar-title.is-editing input.financial-calendar-month-input {
-  width: 1.8em;
+.fc-month-cell.is-selected {
+  background: var(--fc-accent);
+  color: var(--fc-on-accent);
+  font-weight: 600;
 }
 
 .financial-calendar-nav,
@@ -848,4 +1940,36 @@
   width: 2px;
   margin-left: -1px;
   background: var(--interactive-accent);
+}
+
+/* Settings page topbar (tab switcher) */
+.fc-settings-tabbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.fc-settings-tab {
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.fc-settings-tab:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.fc-settings-tab.fc-settings-tab-active {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  font-weight: 600;
 }

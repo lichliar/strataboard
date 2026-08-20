@@ -51,6 +51,14 @@ export function resolveDateRange(range: string): { start: string; end: string } 
       startDate = new Date(today.getFullYear() - 5, today.getMonth(), today.getDate());
       break;
     }
+    case "10y": {
+      startDate = new Date(today.getFullYear() - 10, today.getMonth(), today.getDate());
+      break;
+    }
+    case "20y": {
+      startDate = new Date(today.getFullYear() - 20, today.getMonth(), today.getDate());
+      break;
+    }
     case "max": {
       startDate = new Date(1990, 0, 1);
       break;
