@@ -168,7 +168,7 @@ export class SqliteCache {
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       this.flushPromise = this.flushDirty().catch((e) => {
-        console.error("Financial Canvas: failed to persist SQLite cache", e);
+        console.error("StrataBoard: failed to persist SQLite cache", e);
       });
       void this.flushPromise.finally(() => {
         this.flushPromise = null;
@@ -571,9 +571,9 @@ export class SqliteCache {
       // leave the flag set while the data never reached disk.
       await this.flushDirty();
       await this.setMigrationDone();
-      console.log(`Financial Canvas: SQLite migration completed in ${Date.now() - start}ms`);
+      console.log(`StrataBoard: SQLite migration completed in ${Date.now() - start}ms`);
     } catch (e) {
-      console.error("Financial Canvas: SQLite migration failed", e);
+      console.error("StrataBoard: SQLite migration failed", e);
       new Notice(`金融卡片：JSON 缓存迁移到 SQLite 失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }

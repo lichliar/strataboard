@@ -109,14 +109,14 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
   private render() {
     this.cleanup();
     this.containerEl.empty();
-    this.containerEl.addClass("financial-canvas-card");
+    this.containerEl.addClass("strataboard-card");
     this.containerEl.addClass("financial-series-chart");
     onAttached(this.containerEl, () => suppressMarkdownChrome(this.containerEl));
 
     const lines = this.options.lines.filter((line) => line.points.length > 0);
     if (lines.length === 0) {
       this.containerEl.createEl("div", {
-        cls: "financial-canvas-empty",
+        cls: "strataboard-empty",
         text: "暂无数据：所选系列在该时间范围内没有数据。",
       });
       return;
@@ -135,10 +135,10 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
 
     // Chart stack: the inline height acts as the flex basis (same sizing
     // model as the tushare chart card).
-    const stackEl = this.containerEl.createEl("div", { cls: "financial-canvas-chart-stack" });
+    const stackEl = this.containerEl.createEl("div", { cls: "strataboard-chart-stack" });
     this.stackEl = stackEl;
     stackEl.style.height = `${this.options.height ?? DEFAULT_HEIGHT}px`;
-    this.chartContainerEl = stackEl.createEl("div", { cls: "financial-canvas-chart-container" });
+    this.chartContainerEl = stackEl.createEl("div", { cls: "strataboard-chart-container" });
 
     const theme = this.options.theme ?? "auto";
     const isDark = resolveEffectiveTheme(theme) === "dark";
@@ -248,20 +248,20 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
 
   private addLegend(lines: SeriesChartLine[]) {
     const legendEl = this.chartContainerEl!.createEl("div", {
-      cls: "financial-canvas-chart-legend",
+      cls: "strataboard-chart-legend",
     });
-    this.legendDateEl = legendEl.createEl("span", { cls: "financial-canvas-chart-legend-date" });
+    this.legendDateEl = legendEl.createEl("span", { cls: "strataboard-chart-legend-date" });
 
     this.legendLines = lines.map((line) => {
-      const wrap = legendEl.createEl("span", { cls: "financial-canvas-chart-legend-item" });
+      const wrap = legendEl.createEl("span", { cls: "strataboard-chart-legend-item" });
       const labelEl = wrap.createEl("span", {
-        cls: "financial-canvas-chart-legend-label",
+        cls: "strataboard-chart-legend-label",
         text: line.name,
       });
       // Labels are colored to match their lines, so each line is
       // identifiable from the legend.
       labelEl.style.color = line.color!;
-      const valueEl = wrap.createEl("span", { cls: "financial-canvas-chart-legend-value" });
+      const valueEl = wrap.createEl("span", { cls: "strataboard-chart-legend-value" });
       return { points: line.points, valueEl };
     });
 

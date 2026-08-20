@@ -1,7 +1,7 @@
 import { Menu, Notice, TFile, setTooltip, type WorkspaceLeaf } from "obsidian";
 import { parseCardSpec } from "./card-spec";
 import { TB_ICONS } from "./toolbar-icons";
-import type FinancialCanvasPlugin from "../main";
+import type StrataBoardPlugin from "../main";
 import type { ToolbarEntryId, ToolbarSourceId } from "../types";
 
 // StrataBoard logo mark: rounded square + three "strata" lines, the top one
@@ -29,11 +29,11 @@ interface ToolbarEntryDef {
 }
 
 export class CanvasToolbar {
-  private plugin: FinancialCanvasPlugin;
+  private plugin: StrataBoardPlugin;
   private toolbarEl: HTMLElement | null = null;
   private activeLeaf: WorkspaceLeaf | null = null;
 
-  constructor(plugin: FinancialCanvasPlugin) {
+  constructor(plugin: StrataBoardPlugin) {
     this.plugin = plugin;
   }
 
@@ -47,7 +47,7 @@ export class CanvasToolbar {
     this.activeLeaf = leaf;
     const container = view.containerEl as HTMLElement;
     // The toolbar always renders on the hermes dark palette.
-    this.toolbarEl = container.createEl("div", { cls: "financial-canvas-toolbar fc-hermes" });
+    this.toolbarEl = container.createEl("div", { cls: "strataboard-toolbar fc-hermes" });
 
     // Logo: strata-layers mark; click to collapse/expand the toolbar (state
     // persists in settings).

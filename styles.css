@@ -616,7 +616,7 @@ body.theme-dark {
 
 /* Uniform tabular figures for numeric readouts across plugin surfaces;
    monospace for code / API keys / symbol codes (apply .fc-mono). */
-.financial-canvas-card,
+.strataboard-card,
 .financial-series-chart,
 .financial-calendar,
 .financial-timeline {
@@ -627,39 +627,39 @@ body.theme-dark {
   font-family: var(--font-monospace);
 }
 
-.financial-canvas-card-note.markdown-preview-view {
+.strataboard-card-note.markdown-preview-view {
   padding: 0 !important;
 }
 
-.financial-canvas-card-note .metadata-container,
-.financial-canvas-card-note .frontmatter-container,
-.financial-canvas-card-note .frontmatter,
-.financial-canvas-card-note .mod-header,
-.financial-canvas-card-note .markdown-preview-pusher,
-.financial-canvas-card-note .inline-title,
-.financial-canvas-card-note .properties-heading {
+.strataboard-card-note .metadata-container,
+.strataboard-card-note .frontmatter-container,
+.strataboard-card-note .frontmatter,
+.strataboard-card-note .mod-header,
+.strataboard-card-note .markdown-preview-pusher,
+.strataboard-card-note .inline-title,
+.strataboard-card-note .properties-heading {
   display: none !important;
 }
 
-.financial-canvas-card-note .markdown-preview-sizer,
-.financial-canvas-card-note .markdown-preview-section {
+.strataboard-card-note .markdown-preview-sizer,
+.strataboard-card-note .markdown-preview-section {
   padding: 0 !important;
   min-height: 0 !important;
 }
 
-.financial-canvas-card-note .financial-canvas-card {
+.strataboard-card-note .strataboard-card {
   padding: 0;
   border-radius: 0;
   border: none;
   background-color: transparent;
 }
 
-.financial-canvas-card-note.markdown-preview-view,
-.financial-canvas-card-note:not(.is-editing) .canvas-node-content,
-.financial-canvas-card-note:not(.is-editing) .markdown-embed-content,
-.financial-canvas-card-note .markdown-preview-view,
-.financial-canvas-card-note .markdown-preview-sizer,
-.financial-canvas-card-note .markdown-preview-section {
+.strataboard-card-note.markdown-preview-view,
+.strataboard-card-note:not(.is-editing) .canvas-node-content,
+.strataboard-card-note:not(.is-editing) .markdown-embed-content,
+.strataboard-card-note .markdown-preview-view,
+.strataboard-card-note .markdown-preview-sizer,
+.strataboard-card-note .markdown-preview-section {
   height: 100% !important;
   min-height: 0 !important;
 }
@@ -672,8 +672,8 @@ body.theme-dark {
    scoped with :not([style*="display: none"]): Obsidian keeps stale embed
    shells across node re-renders (node-insert-event) and hides them inline —
    resurrecting one paints an empty duplicate box over the chart. */
-.financial-canvas-card-note:not(.is-editing) .canvas-node-content,
-.financial-canvas-card-note:not(.is-editing) .markdown-embed-content:not([style*="display: none"]) {
+.strataboard-card-note:not(.is-editing) .canvas-node-content,
+.strataboard-card-note:not(.is-editing) .markdown-embed-content:not([style*="display: none"]) {
   padding: 0 !important;
   margin: 0 !important;
   border: none !important;
@@ -686,28 +686,28 @@ body.theme-dark {
    is a plain block div. Without stretching it, the whole height chain below
    collapses to content height and the chart leaves dead space at the bottom
    when the canvas node is dragged taller than the card. */
-.financial-canvas-card-note:not(.is-editing) .markdown-embed,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-embed {
+.strataboard-card-note:not(.is-editing) .markdown-embed,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .markdown-embed {
   height: 100% !important;
   min-height: 0 !important;
   display: flex !important;
   flex-direction: column !important;
 }
 
-.financial-canvas-card-note .markdown-preview-view {
+.strataboard-card-note .markdown-preview-view {
   overflow: hidden !important;
   display: flex !important;
   flex-direction: column !important;
 }
 
-.financial-canvas-card-note .markdown-preview-sizer,
-.financial-canvas-card-note .markdown-preview-section {
+.strataboard-card-note .markdown-preview-sizer,
+.strataboard-card-note .markdown-preview-section {
   display: flex !important;
   flex-direction: column !important;
 }
 
 /* Card container */
-.financial-canvas-card {
+.strataboard-card {
   padding: 8px;
   border-radius: 6px;
   border: 1px solid var(--background-modifier-border);
@@ -724,7 +724,7 @@ body.theme-dark {
 
 /* Inside a canvas node the card keeps a uniform gap to the node border on
    all four sides (same bleed as the widget card). */
-.financial-canvas-card-note .financial-canvas-card {
+.strataboard-card-note .strataboard-card {
   padding: 8px;
   border-radius: 0;
   border: none;
@@ -736,7 +736,7 @@ body.theme-dark {
 /* Hermes cards paint their own dark background inside canvas nodes too —
    the node background follows the vault theme and would otherwise show
    through the transparent card. */
-.financial-canvas-card-note .financial-canvas-card.fc-hermes {
+.strataboard-card-note .strataboard-card.fc-hermes {
   background-color: var(--fc-bg);
   border-radius: 6px;
 }
@@ -747,18 +747,18 @@ body.theme-dark {
    with different classes. We hide all of them aggressively — but only
    while NOT editing, so the source stays visible and editable when the
    user double-clicks into the node. */
-.financial-canvas-card-note:not(.is-editing) pre,
-.financial-canvas-card-note:not(.is-editing) pre code,
-.financial-canvas-card-note:not(.is-editing) .HyperMD-codeblock,
-.financial-canvas-card-note:not(.is-editing) .HyperMD-codeblock-begin,
-.financial-canvas-card-note:not(.is-editing) .HyperMD-codeblock-end,
-.financial-canvas-card-note:not(.is-editing) .HyperMD-codeblock-bg,
-.financial-canvas-card-note:not(.is-editing) .markdown-source-view.mod-cm6 .cm-line:has(.HyperMD-codeblock) {
+.strataboard-card-note:not(.is-editing) pre,
+.strataboard-card-note:not(.is-editing) pre code,
+.strataboard-card-note:not(.is-editing) .HyperMD-codeblock,
+.strataboard-card-note:not(.is-editing) .HyperMD-codeblock-begin,
+.strataboard-card-note:not(.is-editing) .HyperMD-codeblock-end,
+.strataboard-card-note:not(.is-editing) .HyperMD-codeblock-bg,
+.strataboard-card-note:not(.is-editing) .markdown-source-view.mod-cm6 .cm-line:has(.HyperMD-codeblock) {
   display: none !important;
 }
 
 /* Widget card */
-.financial-canvas-widget {
+.strataboard-widget {
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -766,7 +766,7 @@ body.theme-dark {
   flex-direction: column;
 }
 
-.financial-canvas-widget-iframe {
+.strataboard-widget-iframe {
   width: 100%;
   height: 100%;
   border: none;
@@ -777,33 +777,33 @@ body.theme-dark {
 /* The widget iframe keeps the fixed height from settings in every context
    (canvas reading view, node edit view, regular notes) so the widget looks
    identical everywhere. Here we only guarantee width and border. */
-.financial-canvas-card-note .financial-canvas-widget-iframe,
-.canvas-node:has(.financial-canvas-widget) .financial-canvas-widget-iframe {
+.strataboard-card-note .strataboard-widget-iframe,
+.canvas-node:has(.strataboard-widget) .strataboard-widget-iframe {
   width: 100% !important;
   border: none !important;
 }
 
 /* Fallback: if the JS class was not applied (e.g. old build cached),
    use :has() to target any canvas node that contains our widget. */
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .metadata-container,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .frontmatter-container,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .frontmatter,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .properties-heading,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .properties-view-multiple-container,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .mod-header,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .inline-title,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-preview-pusher,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) pre,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) pre code,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .HyperMD-codeblock,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .HyperMD-codeblock-begin,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .HyperMD-codeblock-end,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .HyperMD-codeblock-bg,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-source-view.mod-cm6 .cm-line:has(.HyperMD-codeblock) {
+.canvas-node:not(.is-editing):has(.strataboard-widget) .metadata-container,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .frontmatter-container,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .frontmatter,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .properties-heading,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .properties-view-multiple-container,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .mod-header,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .inline-title,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .markdown-preview-pusher,
+.canvas-node:not(.is-editing):has(.strataboard-widget) pre,
+.canvas-node:not(.is-editing):has(.strataboard-widget) pre code,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .HyperMD-codeblock,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .HyperMD-codeblock-begin,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .HyperMD-codeblock-end,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .HyperMD-codeblock-bg,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .markdown-source-view.mod-cm6 .cm-line:has(.HyperMD-codeblock) {
   display: none !important;
 }
 
-.canvas-node:has(.financial-canvas-widget) .financial-canvas-widget-iframe {
+.canvas-node:has(.strataboard-widget) .strataboard-widget-iframe {
   width: 100% !important;
   border: none !important;
 }
@@ -811,8 +811,8 @@ body.theme-dark {
 /* Widget container fills the card in Canvas so the ResizeObserver measures
    the real card height; the padding gives the widget a small bleed so its
    edges don't touch the card border. */
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .financial-canvas-widget,
-.financial-canvas-card-note:not(.is-editing) .financial-canvas-widget {
+.canvas-node:not(.is-editing):has(.strataboard-widget) .strataboard-widget,
+.strataboard-card-note:not(.is-editing) .strataboard-widget {
   height: 100% !important;
   min-height: 0 !important;
   padding: 8px !important;
@@ -822,34 +822,34 @@ body.theme-dark {
 /* Belt and braces: never resurrect an embed shell Obsidian hid inline.
    Without this, a stale empty shell gets un-hidden by the layout rules
    above and overlaps the card as a dead duplicate box. */
-.financial-canvas-card-note .markdown-embed-content[style*="display: none"],
-.canvas-node:has(.financial-canvas-widget) .markdown-embed-content[style*="display: none"],
-.canvas-node:has(.financial-canvas-chart-container) .markdown-embed-content[style*="display: none"] {
+.strataboard-card-note .markdown-embed-content[style*="display: none"],
+.canvas-node:has(.strataboard-widget) .markdown-embed-content[style*="display: none"],
+.canvas-node:has(.strataboard-chart-container) .markdown-embed-content[style*="display: none"] {
   display: none !important;
 }
 
 /* Ensure the widget card content area fills the card; if the node ends up
    shorter than the widget's fixed height, the card content scrolls instead
    of clipping. */
-.canvas-node:has(.financial-canvas-widget) .canvas-node-content,
-.financial-canvas-card-note .canvas-node-content {
+.canvas-node:has(.strataboard-widget) .canvas-node-content,
+.strataboard-card-note .canvas-node-content {
   overflow: auto !important;
 }
 
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .canvas-node-content,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-embed-content,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-preview-view,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-preview-sizer,
-.canvas-node:not(.is-editing):has(.financial-canvas-widget) .markdown-preview-section {
+.canvas-node:not(.is-editing):has(.strataboard-widget) .canvas-node-content,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .markdown-embed-content,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .markdown-preview-view,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .markdown-preview-sizer,
+.canvas-node:not(.is-editing):has(.strataboard-widget) .markdown-preview-section {
   height: 100% !important;
   min-height: 0 !important;
 }
 
-.canvas-node:has(.financial-canvas-widget) .markdown-preview-view,
-.canvas-node:has(.financial-canvas-widget) .markdown-preview-sizer,
-.canvas-node:has(.financial-canvas-widget) .markdown-preview-section,
-.canvas-node:has(.financial-canvas-widget) .financial-canvas-card,
-.canvas-node:has(.financial-canvas-widget) .financial-canvas-widget {
+.canvas-node:has(.strataboard-widget) .markdown-preview-view,
+.canvas-node:has(.strataboard-widget) .markdown-preview-sizer,
+.canvas-node:has(.strataboard-widget) .markdown-preview-section,
+.canvas-node:has(.strataboard-widget) .strataboard-card,
+.canvas-node:has(.strataboard-widget) .strataboard-widget {
   display: block !important;
   min-height: 0 !important;
 }
@@ -857,17 +857,17 @@ body.theme-dark {
 /* Fallback for chart (tushare) cards, same idea as the widget fallback
    above: Obsidian runs code block processors while the element is still
    detached from the canvas node, so the JS class tagging can miss. These
-   :has() rules replicate the .financial-canvas-card-note layout so the card
+   :has() rules replicate the .strataboard-card-note layout so the card
    fills the node (and the chart's time axis is not clipped) regardless. */
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .metadata-container,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .frontmatter-container,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .frontmatter,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .properties-heading,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .mod-header,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .inline-title,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-preview-pusher,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) pre,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) pre code {
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .metadata-container,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .frontmatter-container,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .frontmatter,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .properties-heading,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .mod-header,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .inline-title,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .markdown-preview-pusher,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) pre,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) pre code {
   display: none !important;
 }
 
@@ -886,8 +886,8 @@ body.theme-dark {
   display: none !important;
 }
 
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .canvas-node-content,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-embed-content:not([style*="display: none"]) {
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .canvas-node-content,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .markdown-embed-content:not([style*="display: none"]) {
   padding: 0 !important;
   margin: 0 !important;
   border: none !important;
@@ -895,30 +895,30 @@ body.theme-dark {
   flex-direction: column !important;
 }
 
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .canvas-node-content,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-embed-content,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-preview-view,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-preview-sizer,
-.canvas-node:not(.is-editing):has(.financial-canvas-chart-container) .markdown-preview-section {
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .canvas-node-content,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .markdown-embed-content,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .markdown-preview-view,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .markdown-preview-sizer,
+.canvas-node:not(.is-editing):has(.strataboard-chart-container) .markdown-preview-section {
   height: 100% !important;
   min-height: 0 !important;
 }
 
-.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-view {
+.canvas-node:has(.strataboard-chart-container) .markdown-preview-view {
   padding: 0 !important;
   overflow: hidden !important;
   display: flex !important;
   flex-direction: column !important;
 }
 
-.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-sizer,
-.canvas-node:has(.financial-canvas-chart-container) .markdown-preview-section {
+.canvas-node:has(.strataboard-chart-container) .markdown-preview-sizer,
+.canvas-node:has(.strataboard-chart-container) .markdown-preview-section {
   padding: 0 !important;
   display: flex !important;
   flex-direction: column !important;
 }
 
-.canvas-node:has(.financial-canvas-chart-container) .financial-canvas-card {
+.canvas-node:has(.strataboard-chart-container) .strataboard-card {
   padding: 8px !important;
   border-radius: 0 !important;
   border: none !important;
@@ -940,19 +940,19 @@ body.theme-dark {
 }
 
 /* Accent outline marks chart mode so the active state is visible. */
-.canvas-node.fc-chart-active .financial-canvas-card {
+.canvas-node.fc-chart-active .strataboard-card {
   outline: 1px solid var(--color-accent);
   outline-offset: -1px;
 }
 
 /* Remove default paragraph margins inside widget cards. */
-.financial-canvas-card-note p,
-.canvas-node:has(.financial-canvas-widget) p {
+.strataboard-card-note p,
+.canvas-node:has(.strataboard-widget) p {
   margin: 0 !important;
 }
 
 /* Header */
-.financial-canvas-header {
+.strataboard-header {
   padding: 6px 8px;
   border-bottom: 1px solid var(--background-modifier-border);
   background-color: var(--background-primary-alt);
@@ -963,22 +963,22 @@ body.theme-dark {
   gap: 4px;
 }
 
-.financial-canvas-card-note .financial-canvas-header {
+.strataboard-card-note .strataboard-header {
   padding: 4px 6px;
 }
 
-.financial-canvas-header-top {
+.strataboard-header-top {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
 }
 
-.financial-canvas-header-title-wrap {
+.strataboard-header-title-wrap {
   min-width: 0;
 }
 
-.financial-canvas-header-title {
+.strataboard-header-title {
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -988,26 +988,26 @@ body.theme-dark {
   flex-wrap: wrap;
 }
 
-.financial-canvas-header-enname {
+.strataboard-header-enname {
   color: var(--text-muted);
   font-weight: 400;
   font-size: var(--font-ui-smaller);
 }
 
-.financial-canvas-header-code {
+.strataboard-header-code {
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   line-height: 1.3;
 }
 
-.financial-canvas-header-actions {
+.strataboard-header-actions {
   display: flex;
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
 }
 
-.financial-canvas-header-refresh {
+.strataboard-header-refresh {
   width: 28px;
   height: 28px;
   display: flex;
@@ -1022,36 +1022,36 @@ body.theme-dark {
   box-shadow: none;
 }
 
-.financial-canvas-header-refresh svg {
+.strataboard-header-refresh svg {
   width: 14px;
   height: 14px;
 }
 
-.financial-canvas-header-refresh:hover {
+.strataboard-header-refresh:hover {
   background: var(--fc-empty);
   color: var(--fc-fg);
 }
 
-.financial-canvas-header-quote {
+.strataboard-header-quote {
   display: flex;
   align-items: baseline;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.financial-canvas-header-price {
+.strataboard-header-price {
   font-size: 24px;
   font-weight: 700;
   line-height: 1.1;
 }
 
-.financial-canvas-header-change,
-.financial-canvas-header-change-pct {
+.strataboard-header-change,
+.strataboard-header-change-pct {
   font-size: var(--font-ui-small);
   font-weight: 600;
 }
 
-.financial-canvas-header-market {
+.strataboard-header-market {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
@@ -1059,31 +1059,31 @@ body.theme-dark {
   font-size: var(--font-ui-smaller);
 }
 
-.financial-canvas-header-market-item {
+.strataboard-header-market-item {
   display: inline-flex;
   gap: 2px;
 }
 
-.financial-canvas-header-market-label {
+.strataboard-header-market-label {
   color: var(--text-faint);
 }
 
-.financial-canvas-header-market-value {
+.strataboard-header-market-value {
   color: var(--text-muted);
 }
 
 /* Period tabs */
-.financial-canvas-period-tabs {
+.strataboard-period-tabs {
   display: flex;
   gap: 4px;
   flex-shrink: 0;
 }
 
-.financial-canvas-card-note .financial-canvas-period-tabs {
+.strataboard-card-note .strataboard-period-tabs {
   padding: 4px 6px;
 }
 
-.financial-canvas-period-tabs button {
+.strataboard-period-tabs button {
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -1093,12 +1093,12 @@ body.theme-dark {
   color: var(--text-muted);
 }
 
-.financial-canvas-period-tabs button:hover {
+.strataboard-period-tabs button:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
-.financial-canvas-period-tabs button.is-active {
+.strataboard-period-tabs button.is-active {
   background: var(--background-primary);
   border-color: var(--background-modifier-border);
   color: var(--text-normal);
@@ -1106,7 +1106,7 @@ body.theme-dark {
 }
 
 /* Card footer (wireframe #screen-card): freq tabs left, SVG tool buttons right. */
-.financial-canvas-card-footer {
+.strataboard-card-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1116,17 +1116,17 @@ body.theme-dark {
   flex-shrink: 0;
 }
 
-.financial-canvas-card-note .financial-canvas-card-footer {
+.strataboard-card-note .strataboard-card-footer {
   padding: 4px 6px;
 }
 
-.financial-canvas-card-tools {
+.strataboard-card-tools {
   display: flex;
   gap: 6px;
   align-items: center;
 }
 
-.financial-canvas-tool-btn {
+.strataboard-tool-btn {
   width: 28px;
   height: 28px;
   display: flex;
@@ -1141,18 +1141,18 @@ body.theme-dark {
   box-shadow: none;
 }
 
-.financial-canvas-tool-btn svg {
+.strataboard-tool-btn svg {
   width: 14px;
   height: 14px;
 }
 
-.financial-canvas-tool-btn:hover {
+.strataboard-tool-btn:hover {
   background: var(--fc-empty);
   color: var(--fc-fg);
 }
 
 /* Chart stack */
-.financial-canvas-chart-stack {
+.strataboard-chart-stack {
   display: flex;
   flex-direction: column;
   /* Grow/shrink to fill whatever the card leaves after the header and tabs.
@@ -1172,16 +1172,16 @@ body.theme-dark {
    math — the time axis row gets pushed out of the visible area and its
    labels render squashed. Shield the chart's internals from ambient table
    CSS. (Reproduced with td { border; padding } and verified fixed.) */
-.financial-canvas-chart-container .tv-lightweight-charts table,
-.financial-canvas-chart-container .tv-lightweight-charts tr,
-.financial-canvas-chart-container .tv-lightweight-charts td {
+.strataboard-chart-container .tv-lightweight-charts table,
+.strataboard-chart-container .tv-lightweight-charts tr,
+.strataboard-chart-container .tv-lightweight-charts td {
   margin: 0 !important;
   padding: 0 !important;
   border: none !important;
   background: none !important;
 }
 
-.financial-canvas-chart-container .tv-lightweight-charts table {
+.strataboard-chart-container .tv-lightweight-charts table {
   border-collapse: collapse !important;
   border-spacing: 0 !important;
   width: 100%;
@@ -1193,11 +1193,11 @@ body.theme-dark {
    The left axis cell is the first td of pane rows (and the left stub of the
    time-axis row), so hide it outright. The pane-separator row's single cell
    carries colspan=3 — excluding it keeps the pane divider intact. */
-.financial-canvas-chart-container .tv-lightweight-charts tr > td:first-child:not([colspan]) {
+.strataboard-chart-container .tv-lightweight-charts tr > td:first-child:not([colspan]) {
   display: none !important;
 }
 
-.financial-canvas-chart-container {
+.strataboard-chart-container {
   width: 100%;
   height: 100%;
   position: relative;
@@ -1206,7 +1206,7 @@ body.theme-dark {
 
 /* Crosshair legend: readout of the hovered (or latest) bar, overlaid on the
    top-left of the chart. pointer-events: none so it never blocks pan/zoom. */
-.financial-canvas-chart-legend {
+.strataboard-chart-legend {
   position: absolute;
   top: 4px;
   left: 8px;
@@ -1220,22 +1220,22 @@ body.theme-dark {
   color: var(--text-muted);
 }
 
-.financial-canvas-chart-legend-date {
+.strataboard-chart-legend-date {
   color: var(--text-normal);
   font-weight: 600;
 }
 
-.financial-canvas-chart-legend-label {
+.strataboard-chart-legend-label {
   margin-right: 2px;
 }
 
-.financial-canvas-chart-legend-value {
+.strataboard-chart-legend-value {
   color: var(--text-normal);
   font-variant-numeric: tabular-nums;
 }
 
 /* Series chart card (overlay / spread): container + header. The chart
-   itself reuses .financial-canvas-chart-stack / -container / -legend. */
+   itself reuses .strataboard-chart-stack / -container / -legend. */
 .financial-series-chart {
   width: 100%;
 }
@@ -1248,7 +1248,7 @@ body.theme-dark {
   min-height: 0;
 }
 
-.financial-canvas-card-note .financial-series-chart-header {
+.strataboard-card-note .financial-series-chart-header {
   padding: 4px 6px;
 }
 
@@ -1295,9 +1295,9 @@ body.theme-dark {
 
 /* Legacy per-chart wrappers are no longer emitted; keep minimal rules in case
    cached DOM or external CSS still references them. */
-.financial-canvas-price-chart,
-.financial-canvas-volume-chart,
-.financial-canvas-macd-chart {
+.strataboard-price-chart,
+.strataboard-volume-chart,
+.strataboard-macd-chart {
   width: 100%;
   position: relative;
   overflow: hidden;
@@ -1305,12 +1305,12 @@ body.theme-dark {
 }
 
 /* Crosshair sync line */
-.financial-canvas-crosshair-line {
+.strataboard-crosshair-line {
   display: none;
 }
 
 /* Empty / error */
-.financial-canvas-empty {
+.strataboard-empty {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1320,18 +1320,18 @@ body.theme-dark {
   text-align: center;
 }
 
-.financial-canvas-error {
+.strataboard-error {
   color: var(--text-error);
   font-weight: 500;
 }
 
 /* Load-failure state with retry */
-.financial-canvas-load-error {
+.strataboard-load-error {
   flex-direction: column;
   gap: 8px;
 }
 
-.financial-canvas-retry-btn {
+.strataboard-retry-btn {
   padding: 5px 16px;
   border-radius: var(--fc-radius-sm);
   border: 1px solid var(--fc-border);
@@ -1342,7 +1342,7 @@ body.theme-dark {
   box-shadow: none;
 }
 
-.financial-canvas-retry-btn:hover {
+.strataboard-retry-btn:hover {
   background: var(--fc-empty);
 }
 
@@ -1358,7 +1358,7 @@ body.theme-dark {
    logo mark on top (click to collapse), drag handle, width-resize strip on the   canvas-facing edge, reorderable entry buttons, spacer, then refresh +
    settings pinned to the bottom of the full-height bar. Width and icon size
    come from the --fc-tb-w / --fc-tb-icon vars set by applyPosition(). */
-.financial-canvas-toolbar {
+.strataboard-toolbar {
   position: absolute;
   display: flex;
   flex-direction: column;
@@ -1421,12 +1421,12 @@ body.theme-dark {
   z-index: 1;
 }
 
-.financial-canvas-toolbar.fc-tb-anchor-right .fc-tb-resize {
+.strataboard-toolbar.fc-tb-anchor-right .fc-tb-resize {
   right: auto;
   left: -5px;
 }
 
-.financial-canvas-toolbar button {
+.strataboard-toolbar button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1442,12 +1442,12 @@ body.theme-dark {
   flex-shrink: 0;
 }
 
-.financial-canvas-toolbar button svg {
+.strataboard-toolbar button svg {
   width: var(--fc-tb-icon, 16px);
   height: var(--fc-tb-icon, 16px);
 }
 
-.financial-canvas-toolbar button:hover {
+.strataboard-toolbar button:hover {
   background: var(--fc-empty);
   color: var(--fc-fg);
 }
@@ -1458,13 +1458,13 @@ body.theme-dark {
 
 /* Text mode (显示效果=文字): labels instead of icons, left-aligned; the
    dragged width acts as the minimum, content may widen the bar. */
-.financial-canvas-toolbar:has(.fc-tb-text-btn) {
+.strataboard-toolbar:has(.fc-tb-text-btn) {
   width: auto;
   min-width: var(--fc-tb-w, 44px);
   align-items: stretch;
 }
 
-.financial-canvas-toolbar button.fc-tb-text-btn {
+.strataboard-toolbar button.fc-tb-text-btn {
   width: auto;
   height: auto;
   padding: 5px 10px;
@@ -1476,23 +1476,23 @@ body.theme-dark {
 }
 
 /* Collapsed: shrink to the logo + drag handle (wireframe 折叠状态). */
-.financial-canvas-toolbar.is-collapsed {
+.strataboard-toolbar.is-collapsed {
   width: auto;
   min-width: 44px;
   padding: 6px 5px;
 }
 
-.financial-canvas-toolbar.is-collapsed button,
-.financial-canvas-toolbar.is-collapsed .fc-tb-spacer {
+.strataboard-toolbar.is-collapsed button,
+.strataboard-toolbar.is-collapsed .fc-tb-spacer {
   display: none;
 }
 
-.financial-canvas-toolbar.is-collapsed .fc-tb-logo {
+.strataboard-toolbar.is-collapsed .fc-tb-logo {
   margin-bottom: 0;
 }
 
 /* Legacy overlay - kept minimal in case other code references it */
-.financial-canvas-overlay {
+.strataboard-overlay {
   display: none;
 }
 

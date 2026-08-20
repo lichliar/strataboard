@@ -1,11 +1,11 @@
 import { MarkdownRenderChild } from "obsidian";
 import type { ParsedCardSpec } from "../types";
-import type FinancialCanvasPlugin from "../main";
+import type StrataBoardPlugin from "../main";
 import { onAttached } from "../utils/dom";
 
 export interface WidgetRendererOptions {
   height?: number;
-  plugin: FinancialCanvasPlugin;
+  plugin: StrataBoardPlugin;
   sourcePath: string;
 }
 
@@ -36,7 +36,7 @@ export class WidgetRenderer extends MarkdownRenderChild {
 
   private render() {
     this.containerEl.empty();
-    this.containerEl.addClass("financial-canvas-card", "financial-canvas-widget");
+    this.containerEl.addClass("strataboard-card", "strataboard-widget");
     // Same chrome rule as chart cards: hermes dark unless the card explicitly
     // opts into light (the iframe content itself is third-party and unaffected).
     this.containerEl.toggleClass("fc-hermes", this.spec.theme !== "light");
@@ -48,14 +48,14 @@ export class WidgetRenderer extends MarkdownRenderChild {
     const src = this.resolveSrc();
     if (!src) {
       this.containerEl.createEl("div", {
-        cls: "financial-canvas-empty",
+        cls: "strataboard-empty",
         text: "未配置 iframe URL 或 HTML 内容。",
       });
       return;
     }
 
     this.iframe = this.containerEl.createEl("iframe", {
-      cls: "financial-canvas-widget-iframe",
+      cls: "strataboard-widget-iframe",
       attr: {
         sandbox: "allow-scripts allow-same-origin allow-popups",
         allow: "fullscreen",
@@ -139,9 +139,9 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
     }
 
     if (canvasNode) {
-      canvasNode.classList.add("financial-canvas-card-note");
+      canvasNode.classList.add("strataboard-card-note");
       if (markdownPreview) {
-        markdownPreview.classList.add("financial-canvas-card-note");
+        markdownPreview.classList.add("strataboard-card-note");
       }
     }
   }

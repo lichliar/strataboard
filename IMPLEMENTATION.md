@@ -27,7 +27,7 @@
 
 **线框图锚点**：`#screen-settings`
 
-**涉及文件**：`src/settings.ts`（界面 + `FinancialCanvasSettings` 字段）、`data.json`（存量数据迁移）
+**涉及文件**：`src/settings.ts`（界面 + `StrataBoardSettings` 字段）、`data.json`（存量数据迁移）
 
 - [ ] **数据源设置页签 · 新增数据源**：在 Tushare / FRED 密钥行下方加「常用数据源 · 按需启用」组
   - Yahoo Finance（美股 / ETF / 全球指数）、东方财富（A股 / 港股 / 基金）：免密钥，启用开关

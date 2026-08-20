@@ -239,7 +239,7 @@ export class TimelineRenderer extends MarkdownRenderChild {
         }
         canvas.requestSave?.();
       } catch (e) {
-        console.error("Financial Canvas: failed to grow timeline canvas node", e);
+        console.error("StrataBoard: failed to grow timeline canvas node", e);
       }
     });
   }

@@ -142,14 +142,14 @@ export class ChartRenderer extends MarkdownRenderChild {
   private async render() {
     this.cleanup();
     this.containerEl.empty();
-    this.containerEl.addClass("financial-canvas-card");
+    this.containerEl.addClass("strataboard-card");
     onAttached(this.containerEl, () => suppressMarkdownChrome(this.containerEl));
 
     const { spec, data } = this.options;
 
     if (data.length === 0) {
       this.containerEl.createEl("div", {
-        cls: "financial-canvas-empty",
+        cls: "strataboard-empty",
         text: `暂无数据：${spec.symbol} 在所选时间范围内没有数据。`,
       });
       return;
@@ -167,7 +167,7 @@ export class ChartRenderer extends MarkdownRenderChild {
 
     this.chartStackEl!.style.height = `${this.options.height}px`;
     this.chartContainerEl = this.chartStackEl!.createEl("div", {
-      cls: "financial-canvas-chart-container",
+      cls: "strataboard-chart-container",
     });
 
     this.chart = createChart(this.chartContainerEl, buildChartOptions(isDark));
@@ -284,31 +284,31 @@ export class ChartRenderer extends MarkdownRenderChild {
     const isRise = change >= 0;
     const color = isRise ? this.options.riseColor : this.options.fallColor;
 
-    this.headerEl = this.containerEl.createEl("div", { cls: "financial-canvas-header" });
+    this.headerEl = this.containerEl.createEl("div", { cls: "strataboard-header" });
 
-    const topRow = this.headerEl.createEl("div", { cls: "financial-canvas-header-top" });
+    const topRow = this.headerEl.createEl("div", { cls: "strataboard-header-top" });
 
-    const titleWrap = topRow.createEl("div", { cls: "financial-canvas-header-title-wrap" });
-    const title = titleWrap.createEl("div", { cls: "financial-canvas-header-title" });
-    title.createEl("span", { cls: "financial-canvas-header-name", text: symbol?.name ?? this.options.spec.symbol });
+    const titleWrap = topRow.createEl("div", { cls: "strataboard-header-title-wrap" });
+    const title = titleWrap.createEl("div", { cls: "strataboard-header-title" });
+    title.createEl("span", { cls: "strataboard-header-name", text: symbol?.name ?? this.options.spec.symbol });
     if (symbol?.enname) {
-      title.createEl("span", { cls: "financial-canvas-header-enname", text: ` · ${symbol.enname}` });
+      title.createEl("span", { cls: "strataboard-header-enname", text: ` · ${symbol.enname}` });
     }
-    titleWrap.createEl("div", { cls: "financial-canvas-header-code", text: symbol?.tsCode ?? this.options.spec.symbol });
+    titleWrap.createEl("div", { cls: "strataboard-header-code", text: symbol?.tsCode ?? this.options.spec.symbol });
 
-    const quoteRow = this.headerEl.createEl("div", { cls: "financial-canvas-header-quote" });
+    const quoteRow = this.headerEl.createEl("div", { cls: "strataboard-header-quote" });
     quoteRow.createEl("span", {
-      cls: "financial-canvas-header-price",
+      cls: "strataboard-header-price",
       text: formatNumber(latest.close, 2),
       attr: { style: `color: ${color}` },
     });
     quoteRow.createEl("span", {
-      cls: "financial-canvas-header-change",
+      cls: "strataboard-header-change",
       text: `${change >= 0 ? "+" : ""}${formatNumber(change, 2)}`,
       attr: { style: `color: ${color}` },
     });
     quoteRow.createEl("span", {
-      cls: "financial-canvas-header-change-pct",
+      cls: "strataboard-header-change-pct",
       text: `${change >= 0 ? "+" : ""}${formatPercent(changePct)}`,
       attr: { style: `color: ${color}` },
     });
@@ -319,7 +319,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     const showMarketData = this.options.spec.showMarketData !== false && this.options.spec.assetType === "stock";
 
     if (showMarketData) {
-      const marketRow = this.headerEl.createEl("div", { cls: "financial-canvas-header-market" });
+      const marketRow = this.headerEl.createEl("div", { cls: "strataboard-header-market" });
       const marketData = await this.loadMarketData(latest.tradeDate);
 
       const marketItems = [
@@ -332,9 +332,9 @@ export class ChartRenderer extends MarkdownRenderChild {
       ];
 
       for (const item of marketItems) {
-        const wrap = marketRow.createEl("span", { cls: "financial-canvas-header-market-item" });
-        wrap.createEl("span", { cls: "financial-canvas-header-market-label", text: `${item.label} ` });
-        wrap.createEl("span", { cls: "financial-canvas-header-market-value", text: item.value });
+        const wrap = marketRow.createEl("span", { cls: "strataboard-header-market-item" });
+        wrap.createEl("span", { cls: "strataboard-header-market-label", text: `${item.label} ` });
+        wrap.createEl("span", { cls: "strataboard-header-market-value", text: item.value });
       }
     }
   }
@@ -351,8 +351,8 @@ export class ChartRenderer extends MarkdownRenderChild {
   // ===== Footer: freq tabs + SVG tool buttons (wireframe #screen-card) =====
 
   private addFooter() {
-    const footerEl = this.containerEl.createEl("div", { cls: "financial-canvas-card-footer" });
-    this.periodTabsEl = footerEl.createEl("div", { cls: "financial-canvas-period-tabs" });
+    const footerEl = this.containerEl.createEl("div", { cls: "strataboard-card-footer" });
+    this.periodTabsEl = footerEl.createEl("div", { cls: "strataboard-period-tabs" });
     const freqs: { id: "D" | "W" | "M"; label: string }[] = [
       { id: "D", label: "日K" },
       { id: "W", label: "周K" },
@@ -371,9 +371,9 @@ export class ChartRenderer extends MarkdownRenderChild {
       });
     }
 
-    const tools = footerEl.createEl("div", { cls: "financial-canvas-card-tools" });
+    const tools = footerEl.createEl("div", { cls: "strataboard-card-tools" });
     const addTool = (icon: string, tooltip: string, onClick?: () => void) => {
-      const btn = tools.createEl("button", { cls: "financial-canvas-tool-btn" });
+      const btn = tools.createEl("button", { cls: "strataboard-tool-btn" });
       setIcon(btn, icon);
       setTooltip(btn, tooltip);
       if (onClick) {
@@ -394,7 +394,7 @@ export class ChartRenderer extends MarkdownRenderChild {
   // ===== Chart stack =====
 
   private addChartStack() {
-    this.chartStackEl = this.containerEl.createEl("div", { cls: "financial-canvas-chart-stack" });
+    this.chartStackEl = this.containerEl.createEl("div", { cls: "strataboard-chart-stack" });
   }
 
   // ===== Series creation =====
@@ -547,16 +547,16 @@ export class ChartRenderer extends MarkdownRenderChild {
 
   private addLegend(data: OhlcvRow[]) {
     const legendEl = this.chartContainerEl!.createEl("div", {
-      cls: "financial-canvas-chart-legend",
+      cls: "strataboard-chart-legend",
     });
     const isCandle = this.options.chartType !== "line";
 
-    const dateEl = legendEl.createEl("span", { cls: "financial-canvas-chart-legend-date" });
+    const dateEl = legendEl.createEl("span", { cls: "strataboard-chart-legend-date" });
     const mkItem = (label: string, labelColor?: string): HTMLElement => {
-      const wrap = legendEl.createEl("span", { cls: "financial-canvas-chart-legend-item" });
-      const labelEl = wrap.createEl("span", { cls: "financial-canvas-chart-legend-label", text: label });
+      const wrap = legendEl.createEl("span", { cls: "strataboard-chart-legend-item" });
+      const labelEl = wrap.createEl("span", { cls: "strataboard-chart-legend-label", text: label });
       if (labelColor) labelEl.style.color = labelColor;
-      return wrap.createEl("span", { cls: "financial-canvas-chart-legend-value" });
+      return wrap.createEl("span", { cls: "strataboard-chart-legend-value" });
     };
 
     this.legendRefs = {

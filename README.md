@@ -37,6 +37,7 @@
 
 - Tushare Pro：A 股/基金/指数/港股/可转债/期货/外汇/申万行业/南华指数/中国宏观
 - FRED：美联储宏观序列，支持服务端单位变换（环比/同比/对数…）
+  - This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
 - 腾讯行情、东方财富：免密钥，覆盖 A 股/港股/美股/指数/ETF
 
 **其他**
@@ -52,16 +53,16 @@
 **方式一：下载 Release（推荐）**
 
 1. 从 [Releases](../../releases/latest) 下载 `main.js`、`manifest.json`、`styles.css`、`sql-wasm.wasm` 四个文件。
-2. 在你的库目录下新建文件夹 `.obsidian/plugins/obsidian-financial-canvas/`，把四个文件放进去。
-3. 重启 Obsidian，在 设置 → 第三方插件 中启用 **Financial Canvas**。
+2. 在你的库目录下新建文件夹 `.obsidian/plugins/strataboard/`，把四个文件放进去。
+3. 重启 Obsidian，在 设置 → 第三方插件 中启用 **StrataBoard**。
 
 **方式二：从源码构建**
 
 ```bash
-git clone https://github.com/lichliar/obsidian-financial-canvas.git
-cd obsidian-financial-canvas
+git clone https://github.com/lichliar/strataboard.git
+cd strataboard
 npm install
-OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/obsidian-financial-canvas npm run build
+OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/strataboard npm run build
 ```
 
 启用后在插件设置中填入 Tushare Token（以及可选的 FRED API Key）。
@@ -105,6 +106,14 @@ OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/obsidian-financial-can
 
 构建产物直接写入 `OBSIDIAN_PLUGIN_DIR` 指定的插件目录。代码结构与设计约定见 [AGENTS.md](AGENTS.md)。
 
+## 免责声明
+
+- 本插件仅供个人学习与研究使用，不构成任何投资建议。投资有风险，入市需谨慎。
+- 行情与宏观数据均来自第三方服务，可能存在延迟、错误或缺失，请以官方数据为准。
+- 腾讯自选股与东方财富为未公开的非官方接口，随时可能变更或失效，稳定性不做任何保证。
+- Tushare、FRED 等数据源需使用你自己的账号与密钥，使用时请遵守各平台的服务条款。
+- This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
+
 ## License
 
-MIT
+MIT（见 [LICENSE](LICENSE)）。第三方依赖的许可见 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)。

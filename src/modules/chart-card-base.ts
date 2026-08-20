@@ -77,7 +77,7 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
     // .interactive-child (the escape hatch its own bases embed uses; verified
     // against app.asar). Mark the card so clicks in chart mode can never
     // switch the node to source view; source is edited only in the md file.
-    this.containerEl.addClass("financial-canvas-card");
+    this.containerEl.addClass("strataboard-card");
     this.containerEl.addClass("interactive-child");
     onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
 
@@ -243,9 +243,9 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
     }
 
     if (canvasNode) {
-      canvasNode.classList.add("financial-canvas-card-note");
+      canvasNode.classList.add("strataboard-card-note");
       if (markdownPreview) {
-        markdownPreview.classList.add("financial-canvas-card-note");
+        markdownPreview.classList.add("strataboard-card-note");
       }
     }
   }

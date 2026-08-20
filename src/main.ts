@@ -10,7 +10,7 @@ import {
   type Editor,
   type WorkspaceLeaf,
 } from "obsidian";
-import { DEFAULT_SETTINGS, FinancialCanvasSettingTab, type FinancialCanvasSettings } from "./settings";
+import { DEFAULT_SETTINGS, StrataBoardSettingTab, type StrataBoardSettings } from "./settings";
 import { DEFAULT_CARD_HEIGHT, DEFAULT_CARD_BLEED, parseCardSpec, stringifyCardSpec, type ParseResult } from "./modules/card-spec";
 import { DataAdapter } from "./modules/data-adapter";
 import { SymbolIndex } from "./modules/symbol-index";
@@ -56,7 +56,7 @@ import { resolveDateRange, formatIsoDate, parseDateYmd } from "./utils/date";
 import { onAttached } from "./utils/dom";
 
 class TushareCodeBlockRenderer extends MarkdownRenderChild {
-  private plugin: FinancialCanvasPlugin;
+  private plugin: StrataBoardPlugin;
   private source: string;
   private sourcePath: string;
   private result: ParseResult;
@@ -66,7 +66,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
   // whether the user actually zoomed/panned during the session.
   private appliedRange: { from: string; to: string } | null = null;
 
-  constructor(plugin: FinancialCanvasPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
+  constructor(plugin: StrataBoardPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
     super(containerEl);
     this.plugin = plugin;
     this.source = source;
@@ -271,7 +271,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
 
   private async render() {
     this.containerEl.empty();
-    this.containerEl.addClass("financial-canvas-card");
+    this.containerEl.addClass("strataboard-card");
     this.appliedRange = null;
     // Obsidian's canvas file node enters its embedded edit mode when a click
     // lands on node content — UNLESS the target is inside an element marked
@@ -297,7 +297,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
     if (!this.result.ok) {
       this.containerEl.createEl("div", {
         text: `错误：${this.result.error.message}`,
-        cls: "financial-canvas-error",
+        cls: "strataboard-error",
       });
       return;
     }
@@ -307,7 +307,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
     // Placeholder while OHLCV data is fetched; ChartRenderer (or the error
     // path below) empties the container when done.
     this.containerEl.createEl("div", {
-      cls: "financial-canvas-empty",
+      cls: "strataboard-empty",
       text: `正在加载数据：${spec.symbol}…`,
     });
 
@@ -334,13 +334,13 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
     } catch (e) {
       this.containerEl.empty();
       const errorEl = this.containerEl.createEl("div", {
-        cls: "financial-canvas-empty financial-canvas-load-error",
+        cls: "strataboard-empty strataboard-load-error",
       });
       errorEl.createEl("div", {
         text: `加载数据失败：${e instanceof Error ? e.message : String(e)}`,
       });
       const retryBtn = errorEl.createEl("button", {
-        cls: "financial-canvas-retry-btn",
+        cls: "strataboard-retry-btn",
         text: "重试",
       });
       retryBtn.addEventListener("click", () => void this.render());
@@ -378,9 +378,9 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
     }
 
     if (canvasNode) {
-      canvasNode.classList.add("financial-canvas-card-note");
+      canvasNode.classList.add("strataboard-card-note");
       if (markdownPreview) {
-        markdownPreview.classList.add("financial-canvas-card-note");
+        markdownPreview.classList.add("strataboard-card-note");
       }
     }
   }
@@ -439,13 +439,13 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
 }
 
 class WidgetCodeBlockRenderer extends MarkdownRenderChild {
-  private plugin: FinancialCanvasPlugin;
+  private plugin: StrataBoardPlugin;
   private source: string;
   private sourcePath: string;
   private result: ParseResult;
   private widgetRenderer: WidgetRenderer | null = null;
 
-  constructor(plugin: FinancialCanvasPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
+  constructor(plugin: StrataBoardPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
     super(containerEl);
     this.plugin = plugin;
     this.source = source;
@@ -459,13 +459,13 @@ class WidgetCodeBlockRenderer extends MarkdownRenderChild {
 
   private render() {
     this.containerEl.empty();
-    this.containerEl.addClass("financial-canvas-card");
+    this.containerEl.addClass("strataboard-card");
     onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
 
     if (!this.result.ok) {
       this.containerEl.createEl("div", {
         text: `错误：${this.result.error.message}`,
-        cls: "financial-canvas-error",
+        cls: "strataboard-error",
       });
       return;
     }
@@ -495,21 +495,21 @@ class WidgetCodeBlockRenderer extends MarkdownRenderChild {
     }
 
     if (canvasNode) {
-      canvasNode.classList.add("financial-canvas-card-note");
+      canvasNode.classList.add("strataboard-card-note");
       if (markdownPreview) {
-        markdownPreview.classList.add("financial-canvas-card-note");
+        markdownPreview.classList.add("strataboard-card-note");
       }
     }
   }
 }
 
 class CalendarCodeBlockRenderer extends MarkdownRenderChild {
-  private plugin: FinancialCanvasPlugin;
+  private plugin: StrataBoardPlugin;
   private sourcePath: string;
   private result: ParseResult;
   private calendarRenderer: CalendarRenderer | null = null;
 
-  constructor(plugin: FinancialCanvasPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
+  constructor(plugin: StrataBoardPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
     super(containerEl);
     this.plugin = plugin;
     this.sourcePath = sourcePath;
@@ -522,13 +522,13 @@ class CalendarCodeBlockRenderer extends MarkdownRenderChild {
 
   private render() {
     this.containerEl.empty();
-    this.containerEl.addClass("financial-canvas-card");
+    this.containerEl.addClass("strataboard-card");
     onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
 
     if (!this.result.ok) {
       this.containerEl.createEl("div", {
         text: `错误：${this.result.error.message}`,
-        cls: "financial-canvas-error",
+        cls: "strataboard-error",
       });
       return;
     }
@@ -595,21 +595,21 @@ class CalendarCodeBlockRenderer extends MarkdownRenderChild {
     }
 
     if (canvasNode) {
-      canvasNode.classList.add("financial-canvas-card-note");
+      canvasNode.classList.add("strataboard-card-note");
       if (markdownPreview) {
-        markdownPreview.classList.add("financial-canvas-card-note");
+        markdownPreview.classList.add("strataboard-card-note");
       }
     }
   }
 }
 
 class TimelineCodeBlockRenderer extends MarkdownRenderChild {
-  private plugin: FinancialCanvasPlugin;
+  private plugin: StrataBoardPlugin;
   private sourcePath: string;
   private result: TimelineParseResult;
   private timelineRenderer: TimelineRenderer | null = null;
 
-  constructor(plugin: FinancialCanvasPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
+  constructor(plugin: StrataBoardPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
     super(containerEl);
     this.plugin = plugin;
     this.sourcePath = sourcePath;
@@ -635,13 +635,13 @@ class TimelineCodeBlockRenderer extends MarkdownRenderChild {
 
   private render() {
     this.containerEl.empty();
-    this.containerEl.addClass("financial-canvas-card");
+    this.containerEl.addClass("strataboard-card");
     onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
 
     if (!this.result.ok) {
       this.containerEl.createEl("div", {
         text: `错误：${this.result.error}`,
-        cls: "financial-canvas-error",
+        cls: "strataboard-error",
       });
       return;
     }
@@ -686,9 +686,9 @@ class TimelineCodeBlockRenderer extends MarkdownRenderChild {
     }
 
     if (canvasNode) {
-      canvasNode.classList.add("financial-canvas-card-note");
+      canvasNode.classList.add("strataboard-card-note");
       if (markdownPreview) {
-        markdownPreview.classList.add("financial-canvas-card-note");
+        markdownPreview.classList.add("strataboard-card-note");
       }
     }
   }
@@ -757,14 +757,14 @@ function buildOverlayLine(ref: SeriesRef, points: SeriesPoint[], normalize: bool
 }
 
 class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
-  private fcPlugin: FinancialCanvasPlugin;
+  private fcPlugin: StrataBoardPlugin;
   private result: SeriesSpecParseResult<OverlaySpec>;
   private chartRenderer: SeriesChartRenderer | null = null;
   // Baseline visible range captured on first chart-mode entry; used to tell
   // whether the user actually zoomed/panned during the session.
   private appliedRange: { from: string; to: string } | null = null;
 
-  constructor(plugin: FinancialCanvasPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
+  constructor(plugin: StrataBoardPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
     super(plugin, containerEl, source, sourcePath);
     this.fcPlugin = plugin;
     this.result = parseOverlaySpec(source);
@@ -781,7 +781,7 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     if (!this.result.spec) {
       this.containerEl.createEl("div", {
         text: `错误：${this.result.error ?? "无效的卡片配置。"}`,
-        cls: "financial-canvas-error",
+        cls: "strataboard-error",
       });
       return;
     }
@@ -800,7 +800,7 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     // Placeholder while series data is fetched; SeriesChartRenderer (or the
     // error path below) empties the container when done.
     this.containerEl.createEl("div", {
-      cls: "financial-canvas-empty",
+      cls: "strataboard-empty",
       text: "正在加载数据…",
     });
 
@@ -900,13 +900,13 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
   private renderLoadError(e: unknown) {
     this.containerEl.empty();
     const errorEl = this.containerEl.createEl("div", {
-      cls: "financial-canvas-empty financial-canvas-load-error",
+      cls: "strataboard-empty strataboard-load-error",
     });
     errorEl.createEl("div", {
       text: `加载数据失败：${e instanceof Error ? e.message : String(e)}`,
     });
     const retryBtn = errorEl.createEl("button", {
-      cls: "financial-canvas-retry-btn",
+      cls: "strataboard-retry-btn",
       text: "重试",
     });
     retryBtn.addEventListener("click", () => void this.renderBody());
@@ -914,12 +914,12 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 }
 
 class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
-  private fcPlugin: FinancialCanvasPlugin;
+  private fcPlugin: StrataBoardPlugin;
   private result: SeriesSpecParseResult<SpreadSpec>;
   private chartRenderer: SeriesChartRenderer | null = null;
   private appliedRange: { from: string; to: string } | null = null;
 
-  constructor(plugin: FinancialCanvasPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
+  constructor(plugin: StrataBoardPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
     super(plugin, containerEl, source, sourcePath);
     this.fcPlugin = plugin;
     this.result = parseSpreadSpec(source);
@@ -936,7 +936,7 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     if (!this.result.spec) {
       this.containerEl.createEl("div", {
         text: `错误：${this.result.error ?? "无效的卡片配置。"}`,
-        cls: "financial-canvas-error",
+        cls: "strataboard-error",
       });
       return;
     }
@@ -953,7 +953,7 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     });
 
     this.containerEl.createEl("div", {
-      cls: "financial-canvas-empty",
+      cls: "strataboard-empty",
       text: "正在加载数据…",
     });
 
@@ -1014,13 +1014,13 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
   private renderLoadError(e: unknown) {
     this.containerEl.empty();
     const errorEl = this.containerEl.createEl("div", {
-      cls: "financial-canvas-empty financial-canvas-load-error",
+      cls: "strataboard-empty strataboard-load-error",
     });
     errorEl.createEl("div", {
       text: `加载数据失败：${e instanceof Error ? e.message : String(e)}`,
     });
     const retryBtn = errorEl.createEl("button", {
-      cls: "financial-canvas-retry-btn",
+      cls: "strataboard-retry-btn",
       text: "重试",
     });
     retryBtn.addEventListener("click", () => void this.renderBody());
@@ -1030,12 +1030,12 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 // Standalone FRED card: tushare-asset-card-like presentation (header with
 // name/code/refresh, latest-value row, period tabs) over a single line chart.
 class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
-  private fcPlugin: FinancialCanvasPlugin;
+  private fcPlugin: StrataBoardPlugin;
   private result: SeriesSpecParseResult<FredCardSpec>;
   private chartRenderer: SeriesChartRenderer | null = null;
   private appliedRange: { from: string; to: string } | null = null;
 
-  constructor(plugin: FinancialCanvasPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
+  constructor(plugin: StrataBoardPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
     super(plugin, containerEl, source, sourcePath);
     this.fcPlugin = plugin;
     this.result = parseFredCardSpec(source);
@@ -1052,7 +1052,7 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     if (!this.result.spec) {
       this.containerEl.createEl("div", {
         text: `错误：${this.result.error ?? "无效的卡片配置。"}`,
-        cls: "financial-canvas-error",
+        cls: "strataboard-error",
       });
       return;
     }
@@ -1065,7 +1065,7 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     const valueSuffix = percentish ? "%" : undefined;
 
     this.containerEl.createEl("div", {
-      cls: "financial-canvas-empty",
+      cls: "strataboard-empty",
       text: "正在加载数据…",
     });
 
@@ -1082,35 +1082,35 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
     // Header, reusing the tushare card's CSS classes: name + code (+frequency)
     // + refresh button, then the latest observation.
-    const headerEl = this.containerEl.createEl("div", { cls: "financial-canvas-header" });
-    const topRow = headerEl.createEl("div", { cls: "financial-canvas-header-top" });
-    const titleWrap = topRow.createEl("div", { cls: "financial-canvas-header-title-wrap" });
-    const title = titleWrap.createEl("div", { cls: "financial-canvas-header-title" });
-    title.createEl("span", { cls: "financial-canvas-header-name", text: name });
+    const headerEl = this.containerEl.createEl("div", { cls: "strataboard-header" });
+    const topRow = headerEl.createEl("div", { cls: "strataboard-header-top" });
+    const titleWrap = topRow.createEl("div", { cls: "strataboard-header-title-wrap" });
+    const title = titleWrap.createEl("div", { cls: "strataboard-header-title" });
+    title.createEl("span", { cls: "strataboard-header-name", text: name });
     titleWrap.createEl("div", {
-      cls: "financial-canvas-header-code",
+      cls: "strataboard-header-code",
       text: [spec.seriesId, spec.frequency, spec.transform ? fredTransformLabel(spec.transform) : undefined]
         .filter(Boolean)
         .join(" · "),
     });
-    const actions = topRow.createEl("div", { cls: "financial-canvas-header-actions" });
-    const refreshBtn = actions.createEl("button", { cls: "financial-canvas-header-refresh" });
+    const actions = topRow.createEl("div", { cls: "strataboard-header-actions" });
+    const refreshBtn = actions.createEl("button", { cls: "strataboard-header-refresh" });
     setIcon(refreshBtn, "refresh-cw");
     setTooltip(refreshBtn, "刷新数据");
     refreshBtn.addEventListener("click", () => void this.renderBody(true));
 
     if (points.length > 0) {
       const latest = points[points.length - 1];
-      const quoteRow = headerEl.createEl("div", { cls: "financial-canvas-header-quote" });
+      const quoteRow = headerEl.createEl("div", { cls: "strataboard-header-quote" });
       quoteRow.createEl("span", {
-        cls: "financial-canvas-header-price",
+        cls: "strataboard-header-price",
         text: `${latest.value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${valueSuffix ?? ""}`,
       });
-      quoteRow.createEl("span", { cls: "financial-canvas-header-code", text: latest.date });
+      quoteRow.createEl("span", { cls: "strataboard-header-code", text: latest.date });
     }
 
     // Period tabs (resample granularity), reusing the tushare card's tabs.
-    const tabsEl = this.containerEl.createEl("div", { cls: "financial-canvas-period-tabs" });
+    const tabsEl = this.containerEl.createEl("div", { cls: "strataboard-period-tabs" });
     const periods: { id: SeriesPeriod; label: string }[] = [
       { id: "D", label: "日线" },
       { id: "M", label: "月线" },
@@ -1190,13 +1190,13 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
   private renderLoadError(e: unknown) {
     this.containerEl.empty();
     const errorEl = this.containerEl.createEl("div", {
-      cls: "financial-canvas-empty financial-canvas-load-error",
+      cls: "strataboard-empty strataboard-load-error",
     });
     errorEl.createEl("div", {
       text: `加载数据失败：${e instanceof Error ? e.message : String(e)}`,
     });
     const retryBtn = errorEl.createEl("button", {
-      cls: "financial-canvas-retry-btn",
+      cls: "strataboard-retry-btn",
       text: "重试",
     });
     retryBtn.addEventListener("click", () => void this.renderBody());
@@ -1207,12 +1207,12 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 // the same presentation as the FRED card. Display name, unit handling and
 // money scaling (万亿元) come from the MACRO_SERIES_OPTIONS catalog entry.
 class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
-  private fcPlugin: FinancialCanvasPlugin;
+  private fcPlugin: StrataBoardPlugin;
   private result: SeriesSpecParseResult<MacroCardSpec>;
   private chartRenderer: SeriesChartRenderer | null = null;
   private appliedRange: { from: string; to: string } | null = null;
 
-  constructor(plugin: FinancialCanvasPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
+  constructor(plugin: StrataBoardPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
     super(plugin, containerEl, source, sourcePath);
     this.fcPlugin = plugin;
     this.result = parseMacroCardSpec(source);
@@ -1229,7 +1229,7 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     if (!this.result.spec) {
       this.containerEl.createEl("div", {
         text: `错误：${this.result.error ?? "无效的卡片配置。"}`,
-        cls: "financial-canvas-error",
+        cls: "strataboard-error",
       });
       return;
     }
@@ -1238,7 +1238,7 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     if (!def) {
       this.containerEl.createEl("div", {
         text: `错误：未知的宏观序列 ${spec.seriesId}。`,
-        cls: "financial-canvas-error",
+        cls: "strataboard-error",
       });
       return;
     }
@@ -1250,7 +1250,7 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     }
 
     this.containerEl.createEl("div", {
-      cls: "financial-canvas-empty",
+      cls: "strataboard-empty",
       text: "正在加载数据…",
     });
 
@@ -1273,33 +1273,33 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
     // Header, reusing the tushare card's CSS classes: name + group/frequency
     // + refresh button, then the latest observation.
-    const headerEl = this.containerEl.createEl("div", { cls: "financial-canvas-header" });
-    const topRow = headerEl.createEl("div", { cls: "financial-canvas-header-top" });
-    const titleWrap = topRow.createEl("div", { cls: "financial-canvas-header-title-wrap" });
-    const title = titleWrap.createEl("div", { cls: "financial-canvas-header-title" });
-    title.createEl("span", { cls: "financial-canvas-header-name", text: name });
+    const headerEl = this.containerEl.createEl("div", { cls: "strataboard-header" });
+    const topRow = headerEl.createEl("div", { cls: "strataboard-header-top" });
+    const titleWrap = topRow.createEl("div", { cls: "strataboard-header-title-wrap" });
+    const title = titleWrap.createEl("div", { cls: "strataboard-header-title" });
+    title.createEl("span", { cls: "strataboard-header-name", text: name });
     titleWrap.createEl("div", {
-      cls: "financial-canvas-header-code",
+      cls: "strataboard-header-code",
       text: `${def.group} · ${def.freq === "Q" ? "季度" : def.freq === "D" ? "日度" : "月度"}`,
     });
-    const actions = topRow.createEl("div", { cls: "financial-canvas-header-actions" });
-    const refreshBtn = actions.createEl("button", { cls: "financial-canvas-header-refresh" });
+    const actions = topRow.createEl("div", { cls: "strataboard-header-actions" });
+    const refreshBtn = actions.createEl("button", { cls: "strataboard-header-refresh" });
     setIcon(refreshBtn, "refresh-cw");
     setTooltip(refreshBtn, "刷新数据");
     refreshBtn.addEventListener("click", () => void this.renderBody(true));
 
     if (points.length > 0) {
       const latest = points[points.length - 1];
-      const quoteRow = headerEl.createEl("div", { cls: "financial-canvas-header-quote" });
+      const quoteRow = headerEl.createEl("div", { cls: "strataboard-header-quote" });
       quoteRow.createEl("span", {
-        cls: "financial-canvas-header-price",
+        cls: "strataboard-header-price",
         text: `${latest.value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${valueSuffix ?? ""}`,
       });
-      quoteRow.createEl("span", { cls: "financial-canvas-header-code", text: latest.date });
+      quoteRow.createEl("span", { cls: "strataboard-header-code", text: latest.date });
     }
 
     // Period tabs (resample granularity), reusing the tushare card's tabs.
-    const tabsEl = this.containerEl.createEl("div", { cls: "financial-canvas-period-tabs" });
+    const tabsEl = this.containerEl.createEl("div", { cls: "strataboard-period-tabs" });
     const periods: { id: SeriesPeriod; label: string }[] = [
       { id: "D", label: "日线" },
       { id: "M", label: "月线" },
@@ -1379,21 +1379,21 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
   private renderLoadError(e: unknown) {
     this.containerEl.empty();
     const errorEl = this.containerEl.createEl("div", {
-      cls: "financial-canvas-empty financial-canvas-load-error",
+      cls: "strataboard-empty strataboard-load-error",
     });
     errorEl.createEl("div", {
       text: `加载数据失败：${e instanceof Error ? e.message : String(e)}`,
     });
     const retryBtn = errorEl.createEl("button", {
-      cls: "financial-canvas-retry-btn",
+      cls: "strataboard-retry-btn",
       text: "重试",
     });
     retryBtn.addEventListener("click", () => void this.renderBody());
   }
 }
 
-export default class FinancialCanvasPlugin extends Plugin {
-  pluginSettings!: FinancialCanvasSettings;
+export default class StrataBoardPlugin extends Plugin {
+  pluginSettings!: StrataBoardSettings;
   sqliteCache!: SqliteCache;
   dataAdapter!: DataAdapter;
   seriesAdapter!: SeriesAdapter;
@@ -1448,10 +1448,10 @@ export default class FinancialCanvasPlugin extends Plugin {
 
     this.toolbar = new CanvasToolbar(this);
 
-    this.addSettingTab(new FinancialCanvasSettingTab(this.app, this));
+    this.addSettingTab(new StrataBoardSettingTab(this.app, this));
 
     this.addCommand({
-      id: "open-financial-canvas-settings",
+      id: "open-strataboard-settings",
       name: "打开金融卡片设置",
       callback: () => {
         (this.app as any).setting.open();
@@ -1643,20 +1643,20 @@ export default class FinancialCanvasPlugin extends Plugin {
 
     this.attachToolbarToCanvas(this.app.workspace.activeLeaf);
 
-    console.log("Financial Canvas plugin loaded");
+    console.log("StrataBoard plugin loaded");
   }
 
   onunload() {
     this.toolbar.detach();
     this.sqliteCache?.save().then(() => this.sqliteCache?.close()).catch((e) => {
-      console.error("Financial Canvas: failed to save SQLite cache on unload", e);
+      console.error("StrataBoard: failed to save SQLite cache on unload", e);
       this.sqliteCache?.close();
     });
-    console.log("Financial Canvas plugin unloaded");
+    console.log("StrataBoard plugin unloaded");
   }
 
   async loadSettings() {
-    const stored = (await this.loadData()) as Partial<FinancialCanvasSettings> | null;
+    const stored = (await this.loadData()) as Partial<StrataBoardSettings> | null;
     this.pluginSettings = Object.assign({}, DEFAULT_SETTINGS, stored);
     // Merge per-source toolbar visibility so a stale data.json (missing
     // sources added later) still gets defaults, and the live settings never

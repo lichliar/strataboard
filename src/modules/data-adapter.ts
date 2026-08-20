@@ -113,7 +113,7 @@ export class DataAdapter {
     } catch (e) {
       const cachedRows = await this.cache.loadOhlcvRange(key, start, end);
       if (cachedRows.length > 0) {
-        new Notice(`Financial Canvas: failed to refresh data, showing cached data. ${e instanceof Error ? e.message : ""}`);
+        new Notice(`StrataBoard: failed to refresh data, showing cached data. ${e instanceof Error ? e.message : ""}`);
         return this.maybeResample(spec, cachedRows);
       }
       throw e;
@@ -338,7 +338,7 @@ export class DataAdapter {
         await this.fetchMacroApi(def.api);
       } catch (e) {
         console.error(`Failed to refresh macro data (${def.api}):`, e);
-        new Notice("Financial Canvas: 宏观数据刷新失败，显示缓存数据。");
+        new Notice("StrataBoard: 宏观数据刷新失败，显示缓存数据。");
       }
     }
     return this.cache.loadMacroSeries(def.api, seriesId, startDate, endDate);

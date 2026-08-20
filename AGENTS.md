@@ -24,7 +24,7 @@ Guidance for AI coding agents working in this repository.
 
 ## Project overview
 
-Obsidian desktop plugin (id `obsidian-financial-canvas`, name "Financial Canvas") that inserts financial data cards onto Obsidian Canvas whiteboards. Desktop only (`isDesktopOnly: true`), `minAppVersion: 0.15.3`.
+Obsidian desktop plugin (id `strataboard`, name "StrataBoard") that inserts financial data cards onto Obsidian Canvas whiteboards. Desktop only (`isDesktopOnly: true`), `minAppVersion: 0.15.3`.
 
 - Card types: K-line/line asset cards (Tushare), standalone FRED series cards, standalone Tushare China-macro series cards, multi-series overlay cards, arithmetic "spread/calc" cards (expression over lettered series, e.g. `A-B`, `(A+B)/2`), TradingView widget cards, calendar cards (linked to daily notes), timeline cards.
 - Each card is a plain markdown file (default folder `金融卡片/`) containing a fenced code block (` ```tushare `, ` ```fred `, ` ```macro `, ` ```overlay `, ` ```spread `, ` ```financial-widget `, ` ```calendar `, ` ```timeline `) whose YAML body is the card spec. Specs are parsed/serialized by `src/modules/card-spec.ts` and `src/modules/series-spec.ts` (js-yaml). FRED cards/refs support an optional `transform` field (server-side `units` transformation: chg/ch1/pch/pc1/pca/cch/cca/log; absent = raw levels), cached under a `seriesId@transform` cache key.
@@ -43,7 +43,7 @@ Obsidian desktop plugin (id `obsidian-financial-canvas`, name "Financial Canvas"
 - `npm run build` — typecheck (`tsc -noEmit -skipLibCheck`), production esbuild, copy assets.
 - `npm run version` — `version-bump.mjs` syncs `manifest.json` + `versions.json` with the npm package version (standard Obsidian release flow).
 - `npm run release` — build, then `scripts/release.mjs`: refuses a dirty tree, pushes the current branch, tags `v<manifest version>`, and creates a GitHub release (via `gh`, release notes auto-generated) with `main.js` / `manifest.json` / `styles.css` / `sql-wasm.wasm` from the deploy target.
-- Builds deploy **directly into an Obsidian vault's plugin directory**, not into the repo. The deploy target is defined once in `scripts/deploy-target.mjs` (currently a hard-coded absolute path under `~/Nutstore Files/`); override it with the `OBSIDIAN_PLUGIN_DIR` env var instead of editing code. esbuild writes `main.js` there; `scripts/copy-assets.mjs` copies `manifest.json`, `styles.css`, `versions.json`, and `node_modules/sql.js/dist/sql-wasm.wasm`.
+- Builds deploy **directly into an Obsidian vault's plugin directory**, not into the repo. The deploy target is defined once in `scripts/deploy-target.mjs` — there is no default; the `OBSIDIAN_PLUGIN_DIR` env var is required (the build fails fast with an explanatory error if it is unset). esbuild writes `main.js` there; `scripts/copy-assets.mjs` copies `manifest.json`, `styles.css`, `versions.json`, and `node_modules/sql.js/dist/sql-wasm.wasm`.
 - The root-level `main.js` is stale/gitignored output — the real artifact lands in the plugin dir.
 - There is no automated test suite. Verification = typecheck + running the plugin in Obsidian and checking both light and dark themes.
 
@@ -51,7 +51,7 @@ Obsidian desktop plugin (id `obsidian-financial-canvas`, name "Financial Canvas"
 
 - `src/main.ts` (~2k lines) — plugin entry: settings load/save, 8 commands (`insert-financial-card` opens the unified source picker — every source has its own standalone-card flow; `insert-widget-card`, `insert-calendar-card`, `insert-timeline-card`, `insert-overlay-card`, `insert-spread-card`, `insert-fred-card`, `insert-macro-card`), markdown code-block processors for each card type, canvas context menus, the md-editor「插入金融卡片」right-click entry (`insertCardIntoMd` — writes the fenced block at the cursor instead of creating a card file), refresh orchestration.
 - `src/types.ts` — shared domain types: `ParsedCardSpec`, `OverlaySpec`, `SpreadSpec`, `FredCardSpec`, `SeriesRef`, `OhlcvRow`, `SymbolItem`, etc. `ASSET_TYPES` is the single source of truth for valid asset types (validators and picker dropdowns derive from it).
-- `src/settings.ts` — `FinancialCanvasSettings`, defaults, and the settings tab UI.
+- `src/settings.ts` — `StrataBoardSettings`, defaults, and the settings tab UI.
 - `src/modules/` — core logic, one concern per file:
   - `card-spec.ts` / `series-spec.ts` — YAML spec parse/serialize (single source of truth for card file format).
   - `data-adapter.ts` — quote fetch + incremental cache fill; funds, Nanhua indices, HK stocks, global indices, convertible bonds, futures, FX, SW industry indices and the tx/em sources are always cached daily and resampled to W/M at read time. `yc_cb` yields are fetched per tenor in 5-year windows (2000-row per-call cap). tx/em quotes bypass Tushare entirely (`fetchOhlcv` branches to their clients).

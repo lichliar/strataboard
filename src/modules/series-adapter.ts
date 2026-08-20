@@ -106,7 +106,7 @@ export class SeriesAdapter {
       } catch (e) {
         console.error("Failed to refresh FRED series:", e);
         const reason = e instanceof Error ? e.message : String(e);
-        new Notice(`Financial Canvas: FRED 数据刷新失败（${reason}），显示缓存数据。`);
+        new Notice(`StrataBoard: FRED 数据刷新失败（${reason}），显示缓存数据。`);
       }
     }
     return this.cache.loadMacroSeries("fred", cacheId, startIso, endIso);

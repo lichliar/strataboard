@@ -1,9 +1,9 @@
 {
-  "id": "obsidian-financial-canvas",
-  "name": "Financial Canvas",
+  "id": "strataboard",
+  "name": "StrataBoard",
   "version": "0.1.0",
   "minAppVersion": "0.15.3",
-  "description": "Insert financial data cards into Obsidian Canvas, powered by Tushare.",
+  "description": "Financial Canvas: insert financial data cards onto Obsidian Canvas, powered by Tushare.",
   "author": "izzy",
   "authorUrl": "",
   "fundingUrl": "",

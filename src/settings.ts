@@ -1,10 +1,10 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
-import type FinancialCanvasPlugin from "./main";
+import type StrataBoardPlugin from "./main";
 import type { MacroSeriesDef, ToolbarEntryId, ToolbarPosition, ToolbarSourceId, ToolbarStyle } from "./types";
 import { MACRO_SERIES_OPTIONS } from "./types";
 import { FolderPathSelect } from "./ui/folder-suggester";
 
-export interface FinancialCanvasSettings {
+export interface StrataBoardSettings {
   tushareToken: string;
   fredApiKey: string;
   // Per-source toolbar visibility (数据源 API 设置 / 工具栏设置 both surface
@@ -37,7 +37,7 @@ export interface FinancialCanvasSettings {
   timelineFontSize: number;
 }
 
-export const DEFAULT_SETTINGS: FinancialCanvasSettings = {
+export const DEFAULT_SETTINGS: StrataBoardSettings = {
   tushareToken: "",
   fredApiKey: "",
   toolbarSources: { tushare: true, tencent: true, eastmoney: true, fred: true, tradingview: true },
@@ -92,11 +92,11 @@ const SETTINGS_TABS: { id: SettingsTabId; label: string }[] = [
   { id: "toolbar", label: "工具栏设置" },
 ];
 
-export class FinancialCanvasSettingTab extends PluginSettingTab {
-  plugin: FinancialCanvasPlugin;
+export class StrataBoardSettingTab extends PluginSettingTab {
+  plugin: StrataBoardPlugin;
   private activeTab: SettingsTabId = "data-source";
 
-  constructor(app: App, plugin: FinancialCanvasPlugin) {
+  constructor(app: App, plugin: StrataBoardPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
