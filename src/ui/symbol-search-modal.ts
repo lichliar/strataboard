@@ -1,11 +1,14 @@
 import { FuzzySuggestModal, type App, type FuzzyMatch } from "obsidian";
-import { ASSET_TYPE_LABELS, type SymbolItem } from "../types";
+import { ASSET_TYPE_LABELS, ASSET_TYPE_MIN_POINTS, type AssetType, type SymbolItem } from "../types";
 import { SymbolIndex } from "../modules/symbol-index";
 
 interface SymbolSearchModalOptions {
   app: App;
   symbolIndex: SymbolIndex;
   onSelect: (item: SymbolItem) => void;
+  // When set, only items of this asset type are listed/searched (used by the
+  // series-row editor so a row's 资产品类 constrains the picker).
+  assetType?: AssetType;
 }
 
 // Unified fuzzy picker across stocks, funds and indices. Each result shows an
@@ -13,13 +16,19 @@ interface SymbolSearchModalOptions {
 export class SymbolSearchModal extends FuzzySuggestModal<SymbolItem> {
   private symbolIndex: SymbolIndex;
   private onSelectCallback: (item: SymbolItem) => void;
+  private assetType?: AssetType;
   private items: SymbolItem[] = [];
 
   constructor(options: SymbolSearchModalOptions) {
     super(options.app);
     this.symbolIndex = options.symbolIndex;
     this.onSelectCallback = options.onSelect;
-    this.setPlaceholder("搜索股票 / 基金 / 指数的代码或名称…");
+    this.assetType = options.assetType;
+    this.setPlaceholder(
+      this.assetType
+        ? `搜索${ASSET_TYPE_LABELS[this.assetType]}的代码或名称…`
+        : "搜索股票 / 基金 / 指数的代码或名称…"
+    );
     this.setInstructions([
       { command: "↑↓", purpose: "选择" },
       { command: "↵", purpose: "确认" },
@@ -34,7 +43,8 @@ export class SymbolSearchModal extends FuzzySuggestModal<SymbolItem> {
     // Re-render the empty state now that emptyStateText is set.
     this.refreshSuggestions();
     try {
-      this.items = await this.symbolIndex.loadAll();
+      const all = await this.symbolIndex.loadAll();
+      this.items = this.assetType ? all.filter((item) => item.assetType === this.assetType) : all;
       this.emptyStateText = "没有找到匹配的资产。";
     } catch (e) {
       console.error("SymbolSearchModal: failed to load symbol lists", e);
@@ -54,10 +64,12 @@ export class SymbolSearchModal extends FuzzySuggestModal<SymbolItem> {
   renderSuggestion(match: FuzzyMatch<SymbolItem>, el: HTMLElement): void {
     const item = match.item;
     el.createSpan({ text: this.getItemText(item) });
-    const meta = item.exchange
-      ? `${ASSET_TYPE_LABELS[item.assetType]} · ${item.exchange}`
-      : ASSET_TYPE_LABELS[item.assetType];
-    el.createSpan({ cls: "fc-symbol-meta", text: meta });
+    const parts = [
+      ASSET_TYPE_LABELS[item.assetType],
+      item.exchange,
+      `积分≥${ASSET_TYPE_MIN_POINTS[item.assetType]}`,
+    ].filter(Boolean);
+    el.createSpan({ cls: "fc-symbol-meta", text: parts.join(" · ") });
   }
 
   onChooseItem(item: SymbolItem, _evt: MouseEvent | KeyboardEvent): void {

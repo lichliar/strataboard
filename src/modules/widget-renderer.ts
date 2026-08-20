@@ -37,6 +37,9 @@ export class WidgetRenderer extends MarkdownRenderChild {
   private render() {
     this.containerEl.empty();
     this.containerEl.addClass("financial-canvas-card", "financial-canvas-widget");
+    // Same chrome rule as chart cards: hermes dark unless the card explicitly
+    // opts into light (the iframe content itself is third-party and unaffected).
+    this.containerEl.toggleClass("fc-hermes", this.spec.theme !== "light");
     onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
     this.renderIframe();
   }

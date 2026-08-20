@@ -1,16 +1,17 @@
 import * as yaml from "js-yaml";
-import type { AssetType, Freq, ParsedCardSpec, RangePreset, VisibleRangePreset, WidgetType } from "../types";
+import { ASSET_TYPES, type AssetType, type Freq, type ParsedCardSpec, type RangePreset, type VisibleRangePreset, type WidgetType } from "../types";
 import { isDateRangeString } from "../utils/date";
 
-const VALID_ASSET_TYPES: AssetType[] = ["stock", "fund", "index"];
-const VALID_FREQS: Freq[] = ["D", "W", "M"];
-const VALID_RANGES: RangePreset[] = ["1y", "3y", "5y", "ytd", "max"];
+const VALID_ASSET_TYPES: AssetType[] = ASSET_TYPES;
+const VALID_FREQS: Freq[] = ["D", "W", "M"];const VALID_RANGES: RangePreset[] = ["1y", "3y", "5y", "ytd", "max"];
 const VALID_VISIBLE_RANGES: VisibleRangePreset[] = ["1m", "3m", "6m", "1y", "ytd", "max"];
 const VALID_WIDGET_TYPES: WidgetType[] = ["iframe", "html"];
 
 export const DEFAULT_CARD_HEIGHT = 400;
 export const MIN_CARD_HEIGHT = 200;
 export const MAX_CARD_HEIGHT = 1600;
+export const DEFAULT_CARD_BLEED = 8;
+export const MAX_CARD_BLEED = 40;
 
 export interface ParseError {
   message: string;
@@ -83,8 +84,21 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
   const fallColor = extractString(map, "跌色");
   const showHeader = extractBoolean(map, "显示标题");
   const showMarketData = extractBoolean(map, "显示市场数据");
+  const showVolume = extractBoolean(map, "显示成交量");
   const visibleRange = extractLiteral(map, "可见范围", VALID_VISIBLE_RANGES);
+  const visibleStart = extractIsoDate(map, "可见起点");
+  if (visibleStart instanceof Error) {
+    return { ok: false, error: { message: visibleStart.message } };
+  }
+  const visibleEnd = extractIsoDate(map, "可见终点");
+  if (visibleEnd instanceof Error) {
+    return { ok: false, error: { message: visibleEnd.message } };
+  }
   const logScale = extractBoolean(map, "对数坐标");
+  const maPeriods = extractPositiveIntegerArray(map, "均线");
+  const widthAuto = extractBoolean(map, "宽度自适应");
+  const heightAuto = extractBoolean(map, "高度自适应");
+  const bleed = extractBleed(map);
 
   return {
     ok: true,
@@ -102,8 +116,15 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
       fallColor,
       showHeader,
       showMarketData,
+      showVolume,
       visibleRange,
+      visibleStart,
+      visibleEnd,
       logScale,
+      maPeriods,
+      widthAuto,
+      heightAuto,
+      bleed,
     },
   };
 }
@@ -243,11 +264,35 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
   if (spec.showMarketData === false) {
     obj.显示市场数据 = false;
   }
+  if (spec.showVolume === false) {
+    obj.显示成交量 = false;
+  }
   if (spec.visibleRange != null) {
     obj.可见范围 = spec.visibleRange;
   }
+  if (spec.visibleStart != null) {
+    obj.可见起点 = spec.visibleStart;
+  }
+  if (spec.visibleEnd != null) {
+    obj.可见终点 = spec.visibleEnd;
+  }
   if (spec.logScale === true) {
     obj.对数坐标 = true;
+  }
+  if (spec.maPeriods != null && spec.maPeriods.length > 0) {
+    obj.均线 = spec.maPeriods;
+  }
+  // Canvas display fields are only written when they differ from the defaults
+  // (widthAuto/heightAuto default true, bleed defaults to DEFAULT_CARD_BLEED),
+  // so older cards and freshly created ones keep clean YAML.
+  if (spec.widthAuto === false) {
+    obj.宽度自适应 = false;
+  }
+  if (spec.heightAuto === false) {
+    obj.高度自适应 = false;
+  }
+  if (spec.bleed != null && spec.bleed !== DEFAULT_CARD_BLEED) {
+    obj.出血 = spec.bleed;
   }
   return yaml.dump(obj, { lineWidth: -1, noRefs: true }).trim();
 }
@@ -315,6 +360,18 @@ function extractLiteral<T extends string>(
   return valid.includes(raw as T) ? (raw as T) : undefined;
 }
 
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Loose YYYY-MM-DD extraction: absent → undefined, malformed → Error.
+function extractIsoDate(map: Record<string, unknown>, key: string): string | undefined | Error {
+  const raw = extractString(map, key);
+  if (!raw) return undefined;
+  if (!ISO_DATE_RE.test(raw)) {
+    return new Error(`Invalid ${key}: ${raw}. Use YYYY-MM-DD.`);
+  }
+  return raw;
+}
+
 function extractPositiveNumberArray(
   map: Record<string, unknown>,
   key: string
@@ -327,11 +384,32 @@ function extractPositiveNumberArray(
   return values.length > 0 ? values : undefined;
 }
 
+// Like extractPositiveNumberArray, but keeps only positive integers,
+// dedupes, sorts ascending, and caps the count — used for 均线 (MA periods).
+const MAX_MA_PERIODS = 8;
+
+function extractPositiveIntegerArray(
+  map: Record<string, unknown>,
+  key: string
+): number[] | undefined {
+  const raw = extractPositiveNumberArray(map, key);
+  if (!raw) return undefined;
+  const values = [...new Set(raw.filter((n) => Number.isInteger(n)))].sort((a, b) => a - b);
+  return values.length > 0 ? values.slice(0, MAX_MA_PERIODS) : undefined;
+}
+
 function extractHeight(map: Record<string, unknown>, defaultValue?: number): number {
   const raw = extractNumber(map, "高度");
   const value = raw ?? defaultValue ?? DEFAULT_CARD_HEIGHT;
   if (!Number.isFinite(value)) return DEFAULT_CARD_HEIGHT;
   return Math.max(MIN_CARD_HEIGHT, Math.min(MAX_CARD_HEIGHT, value));
+}
+
+// 出血: px gap between card content and the canvas node edge, 0–MAX_CARD_BLEED.
+function extractBleed(map: Record<string, unknown>): number | undefined {
+  const raw = extractNumber(map, "出血");
+  if (raw == null || !Number.isFinite(raw)) return undefined;
+  return Math.max(0, Math.min(MAX_CARD_BLEED, Math.round(raw)));
 }
 
 function isAssetType(value: string): value is AssetType {

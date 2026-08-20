@@ -132,6 +132,8 @@ export class TimelineRenderer extends MarkdownRenderChild {
   private render() {
     this.containerEl.empty();
     this.containerEl.addClass("financial-timeline");
+    // Timeline cards always render on the hermes dark palette.
+    this.containerEl.addClass("fc-hermes");
 
     const end = this.spec.end ?? parseIsoDate(this.todayIso);
     const count = unitCountBetween(this.spec.start, end, this.spec.unit);

@@ -1,97 +1,77 @@
-# AGENTS.md — Financial Canvas (obsidian-financial-canvas)
+# AGENTS.md — StrataBoard / Financial Canvas
+
+Guidance for AI coding agents working in this repository.
+
+## Core principles (项目原则，必须遵守)
+
+1. 不保留向后兼容。过时的直接删，别加兼容层、别写migration、别留fallback。
+
+2. 选能满足当前需求的最简单实现。不要预防性抽象，不要多此一举的配置层。
+
+3. 系统分层长。先跑通一个最小的端到端版本，再往上加东西。绝不为了未完成的复杂度拆掉能跑的东西。
+
+4. 组件保持模块化，关注点分离。
+
+5. 优先用成熟的、有人维护的库。没有明确理由别自己重写。
+
+6. 先翻项目里已有的依赖能做什么，再考虑加新包或自己写。别上来就假设库里没有。
+
+7. 架构决策往长了做。不接受"先这样以后再换"的临时方案。
+
+8. 先看成熟产品怎么解决同一个问题，用已验证的模式，别从零发明。
+
+9. 所有数据源都必须支持独立卡片（「插入资产数据」入口直达各自的选择器），不允许只在叠加卡/计算卡里可用。新增数据源时，独立卡、叠加卡、计算卡三条链路要同时接通。
 
 ## Project overview
 
-**Financial Canvas** is an Obsidian plugin that inserts financial data cards (K-line / line charts) into Obsidian Canvas whiteboards. Chart data comes from the [Tushare Pro](https://tushare.pro) API; charts are rendered with `lightweight-charts`. It also supports embedding arbitrary HTML / TradingView widgets as cards.
+Obsidian desktop plugin (id `obsidian-financial-canvas`, name "Financial Canvas") that inserts financial data cards onto Obsidian Canvas whiteboards. Desktop only (`isDesktopOnly: true`), `minAppVersion: 0.15.3`.
 
-- Plugin ID: `obsidian-financial-canvas` (see `manifest.json`), desktop only (`isDesktopOnly: true`).
-- The card is a Markdown file containing a YAML code block (```` ```tushare ````, ```` ```financial-widget ````, ```` ```calendar ````, or ```` ```timeline ````); the plugin registers Markdown code-block processors that render these blocks into interactive charts/widgets.
-- Cards support stocks, funds, and indices at daily / weekly / monthly frequency, with local SQLite (sql.js) caching and incremental updates.
-- Calendar cards show a month grid that aggregates the user's daily notes: days with an existing note get a marker, and clicking a day opens (or creates) the corresponding daily note.
+- Card types: K-line/line asset cards (Tushare), standalone FRED series cards, standalone Tushare China-macro series cards, multi-series overlay cards, arithmetic "spread/calc" cards (expression over lettered series, e.g. `A-B`, `(A+B)/2`), TradingView widget cards, calendar cards (linked to daily notes), timeline cards.
+- Each card is a plain markdown file (default folder `金融卡片/`) containing a fenced code block (` ```tushare `, ` ```fred `, ` ```macro `, ` ```overlay `, ` ```spread `, ` ```financial-widget `, ` ```calendar `, ` ```timeline `) whose YAML body is the card spec. Specs are parsed/serialized by `src/modules/card-spec.ts` and `src/modules/series-spec.ts` (js-yaml). FRED cards/refs support an optional `transform` field (server-side `units` transformation: chg/ch1/pch/pc1/pca/cch/cca/log; absent = raw levels), cached under a `seriesId@transform` cache key.
+- Data sources: Tushare Pro (A-share stocks/funds/indices OHLCV; Nanhua futures indices via `fut_index_daily` — asset type `nhindex`, symbol list hardcoded in `symbol-index.ts`; HK stocks via `hk_basic`/`hk_daily` — asset type `hk` (`hk_daily` is a separately granted permission, not a points tier); global indices via `index_global` — asset type `gbindex`, the 21 codes hardcoded in `symbol-index.ts`, ts_codes are bare with no `.XX` suffix; convertible bonds via `cb_basic`/`cb_daily` — asset type `cb`, live bonds only; futures contracts via `fut_basic`/`fut_daily` — asset type `fut`, six exchanges, non-delisted contracts only; FX pairs via `fx_obasic`/`fx_daily` — asset type `fx`, FXCM pairs, charts use the bid-side OHLC; SW industry indices via `index_classify`(src=SW2021)/`sw_daily` — asset type `sw`, published L1–L3 indices; China macro series: `cn_m` money supply, `cn_cpi`/`cn_ppi`, `cn_pmi` incl. sub-indices, `cn_gdp` incl. industry breakdown, `sf_month` social financing, `shibor_lpr` LPR, `yc_cb` ChinaBond treasury yield curve — catalog in `MACRO_SERIES_OPTIONS`, `src/types.ts`), the FRED API, and two token-free quote sources: 腾讯自选股 (asset type `tx`) and 东方财富 (asset type `em`) — thin clients in `tencent-api-client.ts` / `eastmoney-api-client.ts`, covering A-share/HK/US/index/ETF day bars plus server-side code search (`RemoteQuoteSearchModal`; there is no bulk symbol list, picked items are upserted into the symbol cache so card headers can resolve names). Tushare 美股 (`us_daily`) is NOT wired: it is a separately paid permission the current token lacks. Tokens are configured in plugin settings. Each cataloged API's minimum Tushare points are recorded on `MacroSeriesDef.points` / `ASSET_TYPE_MIN_POINTS` and surfaced in the pickers and the settings tab (`yc_cb` and `hk_daily` are separately granted permissions, not points tiers; core CPI is not available on Tushare).
+- Charts are rendered with `lightweight-charts` v5. OHLCV data is cached locally in SQLite via `sql.js` (WASM); `sql-wasm.wasm` is deployed next to `main.js`.
 
 ## Technology stack
 
-- **Language**: TypeScript (strict mode, ES2022 target, `moduleResolution: node`).
-- **Runtime**: Obsidian plugin API (`obsidian` package is external at runtime, provided by the app).
-- **Bundler**: esbuild (`esbuild.config.mjs`), CommonJS output, single bundle `main.js`.
-- **Key dependencies**:
-  - `lightweight-charts` — chart rendering.
-  - `sql.js` — in-memory SQLite compiled to WASM; used for OHLCV / market-data / symbol caches. `sql-wasm.wasm` must be shipped alongside the plugin.
-  - `js-yaml` — parsing card spec code blocks.
-- **No test framework is set up** — there are no unit tests, no test runner, no lint config. Verification is done via `tsc` typecheck and manual testing inside Obsidian.
+- TypeScript (strict, `strictNullChecks`, ES2022 target) → bundled by esbuild to a single CJS `main.js`.
+- Runtime deps: `obsidian` API (external at build time), `lightweight-charts`, `sql.js`, `js-yaml`.
+- No test framework, no linter/formatter config. `tsc -noEmit -skipLibCheck` is the only static check.
 
-## Build and development commands
+## Build, develop, deploy
 
-```bash
-npm install
-npm run dev      # copy assets once, then esbuild watch mode (writes directly into the plugin dir)
-npm run build    # tsc -noEmit -skipLibCheck typecheck, then production bundle, then copy assets
-npm run version  # bump version (version-bump.mjs) and stage manifest.json + versions.json
-```
+- `npm run dev` — copies assets, then esbuild in watch mode (inline sourcemaps).
+- `npm run build` — typecheck (`tsc -noEmit -skipLibCheck`), production esbuild, copy assets.
+- `npm run version` — `version-bump.mjs` syncs `manifest.json` + `versions.json` with the npm package version (standard Obsidian release flow).
+- Builds deploy **directly into an Obsidian vault's plugin directory**, not into the repo. The deploy target is defined once in `scripts/deploy-target.mjs` (currently a hard-coded absolute path under `~/Nutstore Files/`); override it with the `OBSIDIAN_PLUGIN_DIR` env var instead of editing code. esbuild writes `main.js` there; `scripts/copy-assets.mjs` copies `manifest.json`, `styles.css`, `versions.json`, and `node_modules/sql.js/dist/sql-wasm.wasm`.
+- The root-level `main.js` is stale/gitignored output — the real artifact lands in the plugin dir.
+- There is no automated test suite. Verification = typecheck + running the plugin in Obsidian and checking both light and dark themes.
 
-**Deployment model is unusual and important**: the build does *not* emit into the project directory. `esbuild.config.mjs` and `scripts/copy-assets.mjs` write `main.js`, `manifest.json`, `styles.css`, `versions.json`, and `sql-wasm.wasm` **directly into an Obsidian vault's plugin directory**. The target is defined in `scripts/deploy-target.mjs` and defaults to a hard-coded absolute path on the author's machine:
+## Code layout
 
-```
-/Users/izzy/Nutstore Files/经济与政治/.obsidian/plugins/obsidian-financial-canvas
-```
+- `src/main.ts` (~2k lines) — plugin entry: settings load/save, 8 commands (`insert-financial-card` opens the unified source picker — every source has its own standalone-card flow; `insert-widget-card`, `insert-calendar-card`, `insert-timeline-card`, `insert-overlay-card`, `insert-spread-card`, `insert-fred-card`, `insert-macro-card`), markdown code-block processors for each card type, canvas context menus, the md-editor「插入金融卡片」right-click entry (`insertCardIntoMd` — writes the fenced block at the cursor instead of creating a card file), refresh orchestration.
+- `src/types.ts` — shared domain types: `ParsedCardSpec`, `OverlaySpec`, `SpreadSpec`, `FredCardSpec`, `SeriesRef`, `OhlcvRow`, `SymbolItem`, etc. `ASSET_TYPES` is the single source of truth for valid asset types (validators and picker dropdowns derive from it).
+- `src/settings.ts` — `FinancialCanvasSettings`, defaults, and the settings tab UI.
+- `src/modules/` — core logic, one concern per file:
+  - `card-spec.ts` / `series-spec.ts` — YAML spec parse/serialize (single source of truth for card file format).
+  - `data-adapter.ts` — quote fetch + incremental cache fill; funds, Nanhua indices, HK stocks, global indices, convertible bonds, futures, FX, SW industry indices and the tx/em sources are always cached daily and resampled to W/M at read time. `yc_cb` yields are fetched per tenor in 5-year windows (2000-row per-call cap). tx/em quotes bypass Tushare entirely (`fetchOhlcv` branches to their clients).
+  - `series-adapter.ts` — resolves `SeriesRef`s (quote / macro / fred / card) to point series; `expression.ts` — arithmetic expression parsing/eval for spread cards.
+  - `tushare-api-client.ts` / `fred-api-client.ts` / `tencent-api-client.ts` / `eastmoney-api-client.ts` — thin HTTP clients. The tx/em parsers are pure exported functions (`parseTencentSearch` etc.) so they can be exercised from node.
+  - `sqlite-cache.ts` — primary cache backend (sql.js). `cache-store.ts` — legacy JSON cache, kept only for one-time migration into SQLite.
+  - `symbol-index.ts` — lazy-loaded local symbol search index (Nanhua indices come from the hardcoded `NANHUA_INDEX_LIST`, no remote basic-info endpoint exists).
+  - Renderers: `chart-renderer.ts` (also exports `CHART_PALETTE` + `buildChartOptions` — canvas colors, keep in sync with the `.fc-hermes` block in styles.css), `chart-card-base.ts` (shared card chrome + canvas display logic), `series-chart-renderer.ts`, `widget-renderer.ts`, `calendar-renderer.ts`, `timeline-renderer.ts`, `widget-parser.ts` (TradingView embed formats), `daily-notes.ts`, `canvas-locator.ts`, `toolbar.ts` (floating canvas toolbar: strata-layers logo mark toggles collapse; top-level entries — per-source ones gated by `toolbarSources`, cross-source 数据叠加/数据计算/组件 always shown — render inline Tabler SVGs from `toolbar-icons.ts` in the user-defined `toolbarOrder`; icon size `toolbarIconSize`, icon or text style via `toolbarStyle`, width draggable via `toolbarWidth`, position offset draggable), `card-service.ts` (card file create/update; chart card file names follow 资产名称-代码-数据源, e.g. 贵州茅台-sh600519-腾讯.md).
+- `src/ui/` — Obsidian modals: unified card edit modal, overlay/spread/widget/timeline/calendar editors, symbol & FRED & macro & remote-quote (tx/em) search modals, folder suggester, stepper.
+- `src/utils/` — `date.ts` (range presets, trading-day math), `dom.ts` (incl. `installZoomEventFix`/`toLayoutPoint` — the canvas CSS-zoom mouse-coordinate correction for lightweight-charts), `slug.ts`.
+- `styles.css` — all plugin styling (deployed as-is). Card surfaces and the toolbar carry the `fc-hermes` scope class: a fixed dark palette (deep blue-gray + amber accent) applied regardless of the Obsidian theme; only a card explicitly set to 浅色主题 opts out. The plugin never renders the chart's left price axis — the library keeps its dead `<td>` in the layout table, hidden by the `td:first-child:not([colspan])` rule (the colspan guard protects the pane separator).
 
-Override it with the `OBSIDIAN_PLUGIN_DIR` environment variable before building on any other machine:
+## Working conventions
 
-```bash
-OBSIDIAN_PLUGIN_DIR="/path/to/vault/.obsidian/plugins/obsidian-financial-canvas" npm run build
-```
-
-Note: the README's stated deploy path (`荔枝-知识中枢` vault) is outdated — `scripts/deploy-target.mjs` is the single source of truth.
-
-## Repository layout
-
-- `src/main.ts` — plugin entry point. Registers the `tushare`, `financial-widget`, `calendar`, and `timeline` code-block processors, commands (`insert-financial-card`, `insert-widget-card`, `insert-calendar-card`, `insert-timeline-card`, settings shortcut), and the floating Canvas toolbar. Cards are inserted via the toolbar/commands only — there is deliberately no Canvas right-click menu, because it conflicts with Obsidian's native canvas context menu. Stock/fund/index insertion is a single unified flow ("插入资产数据"): toolbar menu and the `insert-financial-card` command both go through `openSymbolSearch()` (which guards the Tushare token before opening the modal) → `insertCard()`. Also contains the `MarkdownRenderChild` renderer classes; the tushare renderer shows a loading placeholder while fetching and a retry button on failure.
-- `src/settings.ts` — settings interface, `DEFAULT_SETTINGS`, and the settings tab UI (all settings UI strings are in Chinese).
-- `src/types.ts` — shared domain types: `OhlcvRow`, `SymbolItem`, `MarketData`, `ParsedCardSpec`, `TushareResponse`, etc.
-- `src/modules/` — core logic:
-  - `card-spec.ts` — parse/validate/serialize the YAML card spec (`parseCardSpec`, `stringifyCardSpec`, `canonicalKey`, `buildCardFrontmatter`).
-  - `card-service.ts` — create/reuse card Markdown files in the card library folder.
-  - `data-adapter.ts` — orchestrates fetch + cache for OHLCV and market data; funds are always cached daily and resampled to W/M at read time.
-  - `tushare-api-client.ts` — HTTP client for Tushare Pro (`requestUrl` from Obsidian) with a concurrency-limited request queue.
-  - `sqlite-cache.ts` — sql.js-backed cache (three DBs: `ohlcv.db`, `market.db`, `symbols.db`). Writes only mark DBs dirty; a debounced flush (1.5 s) persists them, and `save()` on unload flushes everything. Includes one-time migration from the legacy JSON caches.
-  - `cache-store.ts` — legacy JSON cache helper, kept only for migration into SQLite.
-  - `symbol-index.ts` — symbol list loading/search with staleness-based refresh (default 7 days); on refresh failure it falls back to the stale cache with a Notice. `loadAll()` fetches all three asset types in parallel for the unified search modal.
-  - `chart-renderer.ts` — chart card rendering via lightweight-charts (candlestick/line, theme, OHLC header, market-data row, refresh/frequency-switch controls). Two panes: price pane with MA5/10/20/60 overlays, and a volume histogram pane whose bars are colored by change vs previous close; pane stretch factors come from the spec's `面板比例` (default 3:1). A crosshair legend overlays the chart's top-left with the hovered (or latest) bar's OHLC/change/volume, and a dashed latest-close price line is drawn on the price series.
-  - `widget-parser.ts` / `widget-renderer.ts` — parse TradingView embed HTML / iframe URLs and render them inside a sandboxed iframe.
-  - `calendar-renderer.ts` — month-grid calendar card rendered with plain DOM/CSS Grid (no calendar library); marks days that have a daily note and opens/creates the note on click. Refreshes markers on vault create/delete/rename events.
-  - `timeline-renderer.ts` — horizontal date-ruler card (```timeline block, English YAML keys `start`/`end`/`unit`, parsed with js-yaml directly — not via `card-spec.ts`). Units: `day` | `week` | `month` | `quarter` | `year` (quarters are calendar-aligned to Jan/Apr/Jul/Oct). Equal pixel width per unit, two-level ticks, scale derived from the ruler's usable width (content width minus `RULER_PADDING_PX` × 2; the padding is applied inline from that constant — the single source of truth — so styles.css never repeats it) via a debounced ResizeObserver. Label font size comes from the `timelineFontSize` plugin setting, applied per-render as the `--fc-timeline-font-size` CSS var on the ruler (like the calendar's `--fc-*` display vars; applies on next render, matching the calendar settings). Auto-`end` rulers draw a today marker and grow the enclosing canvas node on day rollover to preserve scale. Insertion creates a raw-body card via `CardService.createRawCard` (no fc-* frontmatter, no reuse — every insert is a fresh card). Files are named `时间线<start>～<resolved-end>.md` (`timelineCardFileName`): at creation, and when the user saves edits via the double-click edit modal (`app.fileManager.renameFile`, so canvas node paths are updated by Obsidian's link updater); daily rollover never renames. Double-click editing is registered on the wrapper in `main.ts` with `{ capture: true }` so the modal beats the canvas node's native edit mode.
-  - `daily-notes.ts` — daily-note path resolution (`resolveDailyNotesConfig`, `dailyNotePath`, `getDailyNote`, `openOrCreateDailyNote`). Settings override; otherwise falls back to the core Daily notes plugin config, then to `日记` + `YYYY-MM-DD`.
-  - `toolbar.ts` — floating toolbar attached to Canvas views; places new file nodes onto the canvas.
-  - `canvas-locator.ts` — DOM helper to locate the enclosing `.canvas-node`.
-- `src/ui/` — Obsidian modals: `symbol-search-modal.ts` (unified fuzzy picker across stocks/funds/indices, with asset-type badges and loading/error empty states), `widget-input-modal.ts`, `timeline-edit-modal.ts` (timeline card property editor: 开始日期 / 结束日期 / 自动更新到今天 / 颗粒度), `tushare-card-edit-modal.ts` (asset card property editor opened by double-clicking the card in a canvas: 图表类型 / 周期 / 数据范围（预设或自定义：自定义按年/月/日下拉选择起止日期，结束年份可选「至今」取保存当天）/ 可见范围 / 高度 / 主题 / 涨跌色 / 对数坐标 / 显示标题 / 显示市场数据 / 面板比例; symbol and asset type stay fixed. The dblclick is captured on the tushare renderer's container in `main.ts` with `{ capture: true }`, same as the timeline card, so the modal beats the canvas node's native edit mode; clicks on header buttons are exempted).
-- `src/utils/` — `date.ts` (date-range parsing/resolution, trading-date stepping), `dom.ts` (theme detection/watching, `onAttached` helper), `slug.ts` (card file-name generation).
-- `styles.css` — plugin styles, copied to the plugin dir on build.
-- `scripts/` — build helpers: `deploy-target.mjs` (deploy path, env-overridable), `copy-assets.mjs` (copies manifest/styles/versions + `sql-wasm.wasm`).
-- `version-bump.mjs`, `versions.json`, `manifest.json` — standard Obsidian plugin versioning files.
-- `main.js` (repo root) — a stale build artifact; **gitignored**, regenerated on every build. Never edit it.
-- `data.json` (repo root) — local plugin settings including a real Tushare token; **gitignored**, do not commit or expose.
-- `cache/` (repo root) — legacy local cache data; **gitignored**.
-
-## Code style and conventions
-
-- Strict TypeScript; `noImplicitAny` and `strictNullChecks` are on. Run `tsc -noEmit -skipLibCheck` (part of `npm run build`) to typecheck.
-- 2-space indentation, double quotes, semicolons — match the existing files.
-- Classes for stateful components (`SqliteCache`, `DataAdapter`, `ChartRenderer`, ...); plain exported functions for pure helpers (`card-spec.ts`, `utils/*`).
-- Renderer classes extend Obsidian's `MarkdownRenderChild`; use `onAttached()` (`src/utils/dom.ts`) before walking up the DOM to find the enclosing `.canvas-node`, because code-block processors run while the element is still detached.
-- Obsidian's Canvas API is not public — code accesses it via `as any` casts (`view.canvas`). This is accepted practice in this codebase; keep casts localized.
-- **Comments and documentation are written in English** (including technical explanation comments); **user-facing strings (UI labels, Notices, settings tab) are written in Chinese**. Follow this split when editing.
-- Error messages shown to the user go through `new Notice(...)` in Chinese; unexpected errors are also `console.error`ed.
-
-## Testing
-
-There is no automated test suite. To verify changes:
-
-1. `npm run build` must pass (includes the `tsc` typecheck).
-2. Manually load the plugin in an Obsidian vault (build with `OBSIDIAN_PLUGIN_DIR` pointing at a test vault), enable it, and exercise the affected flow — insert a card via toolbar/command, edit the YAML block, refresh, switch frequency.
+- **Language**: code comments are in English (Chinese terms appear for UI labels and domain vocabulary); UI strings are Chinese; design docs (`IMPLEMENTATION.md`) are Chinese. Match the surrounding file.
+- **Design source of truth**: `strataboard-wireframe.html` (open in a browser). Field names, copy, and control states must match the wireframe; change the wireframe first, then the code. `IMPLEMENTATION.md` holds the phased redesign plan and the "已拍板" (finalized) design decisions — do not re-litigate them.
+- **Canvas interaction model** is subtle (three tiers: drag node / double-click to activate chart mode / double-click again for settings). The comments in `src/main.ts` (`TushareCodeBlockRenderer`) document why listeners sit on `document` in capture phase — read them before touching card event handling.
+- Root-level `app.js` is a local copy of Obsidian's bundled app code kept for reference on internal DOM/event behavior; it is not part of the build.
+- `.od-skills/` contains local agent skills used by the author (browser automation, web prototyping) — not part of the plugin.
 
 ## Security considerations
 
-- **Tushare token**: stored in plugin settings (`data.json` in the vault). The repo-root `data.json` contains a real token and is gitignored — never commit it, echo it, or copy it into code/docs.
-- **Widget cards render arbitrary HTML** supplied by the user inside an iframe (`widget-renderer.ts`). Be careful when changing iframe attributes (sandbox, allow-scripts) or the widget parsing logic — do not widen privileges without reason.
-- The Tushare API client sends the token to `api.tushare.pro` via Obsidian's `requestUrl`; do not log the token.
-- `.gitignore` covers `data.json`, `cache/`, `*.db`, `sql-wasm.wasm`, `main.js`, and `node_modules/` — keep it that way.
+- `data.json` in the repo root is a real settings snapshot containing a live Tushare token — it is gitignored (`data.json`, `cache/`, `*.db`, `sql-wasm.wasm`, `main.js` are all ignored). Never commit tokens or cache databases.
+- TradingView widget cards embed third-party HTML/JS by design; treat widget code as untrusted input that is passed through, never execute it outside the widget renderer's sandboxing approach.

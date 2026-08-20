@@ -1,4 +1,4 @@
-import { MarkdownRenderChild } from "obsidian";
+import { MarkdownRenderChild, setIcon, setTooltip } from "obsidian";
 import {
   createChart,
   CandlestickSeries,
@@ -6,16 +6,18 @@ import {
   LineSeries,
   LineStyle,
   PriceScaleMode,
+  type BusinessDay,
   type IChartApi,
   type IPaneApi,
   type ISeriesApi,
   type CandlestickData,
   type HistogramData,
   type LineData,
+  type Logical,
   type Time,
 } from "lightweight-charts";
 import type { MarketData, OhlcvRow, ParsedCardSpec, SymbolItem } from "../types";
-import { resolveEffectiveTheme, watchThemeChange, onAttached } from "../utils/dom";
+import { resolveEffectiveTheme, onAttached, toLayoutPoint, installZoomEventFix } from "../utils/dom";
 import { parseDateYmd, formatDate } from "../utils/date";
 
 interface ChartRendererOptions {
@@ -27,13 +29,27 @@ interface ChartRendererOptions {
   fallColor: string;
   height: number;
   symbolInfo?: SymbolItem;
+  // 宽度自适应 off (canvas only): freeze the chart width at first layout so
+  // the chart stops following canvas node width changes.
+  freezeWidth?: boolean;
   loadMarketData?: (tradeDate: string) => Promise<MarketData | null>;
   onRefresh?: () => void;
   onSwitchFreq?: (freq: "D" | "W" | "M") => void;
+  // Footer tool buttons (wireframe #screen-card): edit opens the card's edit
+  // modal; delete removes the canvas node (canvas-only, hidden elsewhere).
+  onEdit?: () => void;
+  onDelete?: () => void;
 }
 
 function toChartTime(ymd: string): string {
   return `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`;
+}
+
+// Converts a chart Time (string or BusinessDay) to YYYY-MM-DD.
+function timeToYmd(time: Time): string {
+  if (typeof time === "string") return time;
+  const day = time as BusinessDay;
+  return `${day.year}-${String(day.month).padStart(2, "0")}-${String(day.day).padStart(2, "0")}`;
 }
 
 function formatNumber(n: number | undefined, digits = 2): string {
@@ -66,13 +82,19 @@ function formatPercent(n: number | undefined): string {
   return `${n.toFixed(2)}%`;
 }
 
-// MA overlay palette, chosen to stay readable on both dark and light themes.
-const MA_PERIODS: { period: number; color: string }[] = [
-  { period: 5, color: "#f59e0b" },
-  { period: 10, color: "#ec4899" },
-  { period: 20, color: "#8b5cf6" },
-  { period: 60, color: "#14b8a6" },
-];
+// MA defaults and overlay palette; the palette cycles when a card asks for
+// more periods than there are colors. Colors stay readable on both themes.
+// Exported for the unified edit modal's MA preview chips.
+const DEFAULT_MA_PERIODS = [5, 10, 20, 60];
+export const MA_COLORS = ["#f59e0b", "#ec4899", "#8b5cf6", "#14b8a6", "#f97316", "#0ea5e9", "#84cc16", "#e879f9"];
+
+// Per-MA computed series, kept so the crosshair legend can show the hovered
+// bar's MA values (and color the labels to match the lines).
+interface MaSeriesData {
+  period: number;
+  color: string;
+  values: (number | null)[];
+}
 
 // DOM handles for the crosshair legend; open/high/low only exist on
 // candlestick charts.
@@ -84,14 +106,15 @@ interface LegendRefs {
   close: HTMLElement;
   change: HTMLElement;
   vol: HTMLElement;
+  ma: { period: number; valueEl: HTMLElement }[];
 }
 
 export class ChartRenderer extends MarkdownRenderChild {
   private options: ChartRendererOptions;
   private chart: IChartApi | null = null;
   private chartContainerEl: HTMLElement | null = null;
-  private themeObserver: MutationObserver | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  private uninstallZoomFix: (() => void) | null = null;
   private initialVisibleRange: { from: Time; to: Time } | null = null;
 
   // DOM refs
@@ -100,6 +123,7 @@ export class ChartRenderer extends MarkdownRenderChild {
   private chartStackEl: HTMLElement | null = null;
   private priceSeries: ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null = null;
   private legendRefs: LegendRefs | null = null;
+  private maSeriesData: MaSeriesData[] = [];
   private dataIndexByTime = new Map<string, number>();
 
   constructor(containerEl: HTMLElement, options: ChartRendererOptions) {
@@ -119,7 +143,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     this.cleanup();
     this.containerEl.empty();
     this.containerEl.addClass("financial-canvas-card");
-    onAttached(this.containerEl, () => this.suppressMarkdownChrome());
+    onAttached(this.containerEl, () => suppressMarkdownChrome(this.containerEl));
 
     const { spec, data } = this.options;
 
@@ -135,60 +159,69 @@ export class ChartRenderer extends MarkdownRenderChild {
       this.addHeader(data);
     }
 
-    this.addPeriodTabs();
     this.addChartStack();
 
     const effectiveTheme = resolveEffectiveTheme(this.options.theme);
     const isDark = effectiveTheme === "dark";
+    this.applyThemeScope(isDark);
 
     this.chartStackEl!.style.height = `${this.options.height}px`;
     this.chartContainerEl = this.chartStackEl!.createEl("div", {
       cls: "financial-canvas-chart-container",
     });
 
-    this.chart = createChart(this.chartContainerEl, this.buildChartOptions(isDark));
+    this.chart = createChart(this.chartContainerEl, buildChartOptions(isDark));
+    // Zoom-correct mouse coordinates before the library sees them (Obsidian
+    // canvas scales node content with a CSS transform).
+    this.uninstallZoomFix = installZoomEventFix(this.chartContainerEl);
 
     this.priceSeries = this.addPriceSeries(0, data, isDark);
     this.addMovingAverages(0, data);
-    this.addVolumeSeries(1, data);
+    // 成交量 pane 默认开（卡片级 显示成交量 可关）。
+    if (spec.showVolume !== false) {
+      this.addVolumeSeries(1, data);
+    }
     this.configurePane(this.chart.panes()[0], { leftVisible: false, rightVisible: true }, isDark);
-    this.configureVolumePane(this.chart.panes()[1]);
+    const volumePane = this.chart.panes()[1];
+    if (volumePane) {
+      this.configureVolumePane(volumePane);
+    }
     this.applyPaneRatios();
     this.addLatestPriceLine(data);
     this.addLegend(data);
 
-    const visibleRange = this.options.spec.visibleRange;
-    if (visibleRange) {
-      const range = this.resolveVisibleRange(visibleRange, data);
-      if (range) {
-        this.chart.timeScale().setVisibleRange(range);
-        this.initialVisibleRange = range;
-      } else {
-        this.chart.timeScale().fitContent();
-        this.initialVisibleRange = null;
+    if (spec.visibleStart && spec.visibleEnd) {
+      // Persisted chart-mode zoom/pan range takes precedence over the 可见范围
+      // preset. It can fall outside the loaded data after a range change, so
+      // fall back to the preset/fit path on failure.
+      const persisted = { from: spec.visibleStart as Time, to: spec.visibleEnd as Time };
+      try {
+        this.applyTimeRange(persisted.from, persisted.to);
+        this.initialVisibleRange = persisted;
+      } catch {
+        this.applyVisibleRangePreset(data);
       }
     } else {
-      this.chart.timeScale().fitContent();
-      this.initialVisibleRange = null;
+      this.applyVisibleRangePreset(data);
     }
 
     this.setupResizeObserver();
 
-    if (this.options.theme === "auto") {
-      this.themeObserver = watchThemeChange(() => this.rebuildChart());
-    }
+    // Footer (wireframe #screen-card): freq tabs + SVG tool buttons.
+    this.addFooter();
   }
 
-  private rebuildChart() {
-    this.cleanup();
-    this.render();
+  // The card surface carries the hermes dark palette via the fc-hermes scope
+  // class (styles.css); explicit per-card light theme opts out.
+  private applyThemeScope(isDark: boolean) {
+    this.containerEl.toggleClass("fc-hermes", isDark);
   }
 
   private cleanup() {
-    this.themeObserver?.disconnect();
-    this.themeObserver = null;
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    this.uninstallZoomFix?.();
+    this.uninstallZoomFix = null;
     this.chart?.remove();
     this.chart = null;
     this.chartContainerEl = null;
@@ -198,7 +231,46 @@ export class ChartRenderer extends MarkdownRenderChild {
     this.chartStackEl = null;
     this.priceSeries = null;
     this.legendRefs = null;
+    this.maSeriesData = [];
     this.dataIndexByTime.clear();
+  }
+
+  // Current visible time range as YYYY-MM-DD, or null when no chart/range.
+  getVisibleRangeYmd(): { from: string; to: string } | null {
+    const range = this.chart?.timeScale().getVisibleRange();
+    if (!range) return null;
+    return { from: timeToYmd(range.from), to: timeToYmd(range.to) };
+  }
+
+  // The range initially applied at render time (preset or persisted custom
+  // dates), as YYYY-MM-DD; null when the chart started on fitContent.
+  getInitialVisibleRangeYmd(): { from: string; to: string } | null {
+    if (!this.initialVisibleRange) return null;
+    return { from: timeToYmd(this.initialVisibleRange.from), to: timeToYmd(this.initialVisibleRange.to) };
+  }
+
+  // Manually zooms the time axis one wheel step around the cursor. Driven by
+  // the wrapper's window-capture wheel listener in canvas chart mode, where
+  // the canvas swallows wheel events before they reach the chart (so the
+  // library's own wheel-zoom never fires there).
+  applyTimeAxisWheelZoom(deltaY: number, clientX: number): void {
+    if (!this.chart || !this.chartContainerEl) return;
+    const ts = this.chart.timeScale();
+    const range = ts.getVisibleLogicalRange();
+    if (!range) return;
+    // Sign only: wheel up zooms in, wheel down zooms out.
+    const factor = deltaY < 0 ? 1 / 1.15 : 1.15;
+
+    // Anchor at the cursor's logical index; fall back to the range center
+    // when the cursor maps to empty space. toLayoutPoint zoom-corrects the
+    // coordinate (the canvas CSS-scales node content).
+    const logical = ts.coordinateToLogical(toLayoutPoint(this.chartContainerEl, clientX, 0).x);
+    const anchor: number = logical ?? (range.from + range.to) / 2;
+
+    const from = anchor - (anchor - range.from) * factor;
+    const to = anchor + (range.to - anchor) * factor;
+    if (!(to > from)) return; // degenerate range (e.g. a single bar)
+    ts.setVisibleLogicalRange({ from: from as Logical, to: to as Logical });
   }
 
   // ===== Header =====
@@ -223,10 +295,6 @@ export class ChartRenderer extends MarkdownRenderChild {
       title.createEl("span", { cls: "financial-canvas-header-enname", text: ` · ${symbol.enname}` });
     }
     titleWrap.createEl("div", { cls: "financial-canvas-header-code", text: symbol?.tsCode ?? this.options.spec.symbol });
-
-    const actions = topRow.createEl("div", { cls: "financial-canvas-header-actions" });
-    const refreshBtn = actions.createEl("button", { cls: "financial-canvas-header-refresh", text: "🔄" });
-    refreshBtn.addEventListener("click", () => this.options.onRefresh?.());
 
     const quoteRow = this.headerEl.createEl("div", { cls: "financial-canvas-header-quote" });
     quoteRow.createEl("span", {
@@ -280,10 +348,11 @@ export class ChartRenderer extends MarkdownRenderChild {
     }
   }
 
-  // ===== Period tabs =====
+  // ===== Footer: freq tabs + SVG tool buttons (wireframe #screen-card) =====
 
-  private addPeriodTabs() {
-    this.periodTabsEl = this.containerEl.createEl("div", { cls: "financial-canvas-period-tabs" });
+  private addFooter() {
+    const footerEl = this.containerEl.createEl("div", { cls: "financial-canvas-card-footer" });
+    this.periodTabsEl = footerEl.createEl("div", { cls: "financial-canvas-period-tabs" });
     const freqs: { id: "D" | "W" | "M"; label: string }[] = [
       { id: "D", label: "日K" },
       { id: "W", label: "周K" },
@@ -301,6 +370,25 @@ export class ChartRenderer extends MarkdownRenderChild {
         }
       });
     }
+
+    const tools = footerEl.createEl("div", { cls: "financial-canvas-card-tools" });
+    const addTool = (icon: string, tooltip: string, onClick?: () => void) => {
+      const btn = tools.createEl("button", { cls: "financial-canvas-tool-btn" });
+      setIcon(btn, icon);
+      setTooltip(btn, tooltip);
+      if (onClick) {
+        btn.addEventListener("click", onClick);
+      }
+      return btn;
+    };
+    addTool("pencil", "编辑参数", () => this.options.onEdit?.());
+    addTool("refresh-cw", "刷新数据", () => this.options.onRefresh?.());
+    // 删除卡片 removes the canvas node (the card file stays in the library),
+    // so it only makes sense inside a canvas — decided once attached.
+    const deleteBtn = addTool("trash-2", "删除卡片", () => this.options.onDelete?.());
+    onAttached(this.containerEl, () => {
+      deleteBtn.style.display = this.containerEl.closest(".canvas-node") ? "" : "none";
+    });
   }
 
   // ===== Chart stack =====
@@ -359,21 +447,30 @@ export class ChartRenderer extends MarkdownRenderChild {
   }
 
   private addMovingAverages(paneIndex: number, data: OhlcvRow[]) {
-    for (const { period, color } of MA_PERIODS) {
+    const periods = this.options.spec.maPeriods ?? DEFAULT_MA_PERIODS;
+    this.maSeriesData = [];
+    periods.forEach((period, i) => {
+      const color = MA_COLORS[i % MA_COLORS.length];
       const maData: LineData[] = [];
+      const values: (number | null)[] = [];
       let sum = 0;
-      for (let i = 0; i < data.length; i++) {
-        sum += data[i].close;
-        if (i >= period) {
-          sum -= data[i - period].close;
+      for (let j = 0; j < data.length; j++) {
+        sum += data[j].close;
+        if (j >= period) {
+          sum -= data[j - period].close;
         }
-        if (i >= period - 1) {
+        if (j >= period - 1) {
+          const value = sum / period;
           maData.push({
-            time: toChartTime(data[i].tradeDate) as Time,
-            value: sum / period,
+            time: toChartTime(data[j].tradeDate) as Time,
+            value,
           });
+          values.push(value);
+        } else {
+          values.push(null);
         }
       }
+      this.maSeriesData.push({ period, color, values });
       const series = this.chart!.addSeries(
         LineSeries,
         {
@@ -386,7 +483,7 @@ export class ChartRenderer extends MarkdownRenderChild {
         paneIndex
       );
       series.setData(maData);
-    }
+    });
   }
 
   private addVolumeSeries(paneIndex: number, data: OhlcvRow[]) {
@@ -455,9 +552,10 @@ export class ChartRenderer extends MarkdownRenderChild {
     const isCandle = this.options.chartType !== "line";
 
     const dateEl = legendEl.createEl("span", { cls: "financial-canvas-chart-legend-date" });
-    const mkItem = (label: string): HTMLElement => {
+    const mkItem = (label: string, labelColor?: string): HTMLElement => {
       const wrap = legendEl.createEl("span", { cls: "financial-canvas-chart-legend-item" });
-      wrap.createEl("span", { cls: "financial-canvas-chart-legend-label", text: label });
+      const labelEl = wrap.createEl("span", { cls: "financial-canvas-chart-legend-label", text: label });
+      if (labelColor) labelEl.style.color = labelColor;
       return wrap.createEl("span", { cls: "financial-canvas-chart-legend-value" });
     };
 
@@ -469,6 +567,12 @@ export class ChartRenderer extends MarkdownRenderChild {
       close: mkItem("收"),
       change: mkItem("涨跌"),
       vol: mkItem("量"),
+      // MA labels are colored to match their lines, so each line is
+      // identifiable from the legend.
+      ma: this.maSeriesData.map(({ period, color }) => ({
+        period,
+        valueEl: mkItem(`MA${period}`, color),
+      })),
     };
 
     this.dataIndexByTime = new Map(
@@ -495,7 +599,8 @@ export class ChartRenderer extends MarkdownRenderChild {
     if (!refs || !row) return;
 
     const prev = index > 0 ? data[index - 1] : row;
-    const change = prev.close !== 0 ? ((row.close - prev.close) / prev.close) * 100 : 0;
+    const changeAbs = row.close - prev.close;
+    const change = prev.close !== 0 ? (changeAbs / prev.close) * 100 : 0;
     const color = change >= 0 ? this.options.riseColor : this.options.fallColor;
 
     refs.date.textContent = toChartTime(row.tradeDate);
@@ -513,9 +618,13 @@ export class ChartRenderer extends MarkdownRenderChild {
     }
     refs.close.textContent = formatNumber(row.close, 2);
     refs.close.style.color = color;
-    refs.change.textContent = `${change >= 0 ? "+" : ""}${formatPercent(change)}`;
+    refs.change.textContent = `${changeAbs >= 0 ? "+" : ""}${formatNumber(changeAbs, 2)} (${change >= 0 ? "+" : ""}${formatPercent(change)})`;
     refs.change.style.color = color;
     refs.vol.textContent = formatBigNumber(row.vol);
+    for (let i = 0; i < refs.ma.length; i++) {
+      const value = this.maSeriesData[i]?.values[index];
+      refs.ma[i].valueEl.textContent = formatNumber(value ?? undefined, 2);
+    }
   }
 
   // ===== Helpers =====
@@ -525,7 +634,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     opts: { leftVisible: boolean; rightVisible: boolean },
     isDark: boolean
   ) {
-    const borderColor = isDark ? "#4b5563" : "#d1d5db";
+    const borderColor = isDark ? CHART_PALETTE.dark.scaleBorder : CHART_PALETTE.light.scaleBorder;
     pane.priceScale("left").applyOptions({
       visible: opts.leftVisible,
       borderColor,
@@ -541,11 +650,51 @@ export class ChartRenderer extends MarkdownRenderChild {
     });
   }
 
+  // Applies a visible time range. setVisibleRange pins `to` at the right edge
+  // (overriding the timeScale rightOffset), which leaves the last bar
+  // half-clipped under the price axis; and lightweight-charts clamps both
+  // ends of a time range to the loaded data, so right-side whitespace past
+  // the last bar cannot be expressed as a time range at all. When the range
+  // reaches the latest bar, extend the logical range by the configured
+  // rightOffset so the last day stays fully visible — both on initial render
+  // and when a persisted range is re-applied after a pan (without this, a
+  // user pan that reveals the last day reverts on the next render).
+  private applyTimeRange(from: Time, to: Time) {
+    const ts = this.chart!.timeScale();
+    ts.setVisibleRange({ from, to });
+    const data = this.options.data;
+    if (data.length === 0) return;
+    const lastTime = toChartTime(data[data.length - 1].tradeDate);
+    if (timeToYmd(to) < lastTime) return;
+    const logical = ts.getVisibleLogicalRange();
+    if (!logical) return;
+    const rightOffset = ts.options().rightOffset;
+    ts.setVisibleLogicalRange({
+      from: logical.from,
+      to: (data.length - 1 + rightOffset) as Logical,
+    });
+  }
+
+  // Applies the 可见范围 preset (or fitContent when unset/unresolvable) and
+  // records the applied range for later re-application after resizes.
+  private applyVisibleRangePreset(data: OhlcvRow[]) {
+    const visibleRange = this.options.spec.visibleRange;
+    if (visibleRange) {
+      const range = this.resolveVisibleRange(visibleRange, data);
+      if (range) {
+        this.applyTimeRange(range.from, range.to);
+        this.initialVisibleRange = range;
+        return;
+      }
+    }
+    this.chart!.timeScale().fitContent();
+    this.initialVisibleRange = null;
+  }
+
   private resolveVisibleRange(
     preset: import("../types").VisibleRangePreset,
     data: OhlcvRow[]
-  ): { from: Time; to: Time } | null {
-    if (data.length === 0) return null;
+  ): { from: Time; to: Time } | null {    if (data.length === 0) return null;
 
     const toYmd = data[data.length - 1].tradeDate;
     const toDate = parseDateYmd(toYmd);
@@ -584,52 +733,6 @@ export class ChartRenderer extends MarkdownRenderChild {
     };
   }
 
-  // ===== Chart options =====
-
-  private buildChartOptions(isDark: boolean) {
-    return {
-      layout: {
-        background: { color: "transparent" },
-        textColor: isDark ? "#d1d5db" : "#374151",
-      },
-      grid: {
-        vertLines: { color: isDark ? "#374151" : "#e5e7eb" },
-        horzLines: { color: isDark ? "#374151" : "#e5e7eb" },
-      },
-      crosshair: {
-        mode: 1,
-      },
-      rightPriceScale: {
-        visible: true,
-        borderColor: isDark ? "#4b5563" : "#d1d5db",
-        autoScale: true,
-        scaleMargins: { top: 0.02, bottom: 0.02 },
-      },
-      leftPriceScale: {
-        visible: false,
-        borderColor: isDark ? "#4b5563" : "#d1d5db",
-        autoScale: true,
-        scaleMargins: { top: 0.02, bottom: 0.02 },
-      },
-      timeScale: {
-        borderColor: isDark ? "#4b5563" : "#d1d5db",
-        timeVisible: false,
-        visible: true,
-        borderVisible: true,
-        rightOffset: 10,
-        minBarSpacing: 4,
-      },
-      localization: {
-        locale: "zh-CN",
-        dateFormat: "yyyy-MM-dd",
-      },
-      handleScale: {
-        axisPressedMouseMove: true,
-      },
-      autoSize: true,
-    };
-  }
-
   // ===== Resize / theme =====
 
   private setupResizeObserver() {
@@ -637,9 +740,16 @@ export class ChartRenderer extends MarkdownRenderChild {
     this.resizeObserver = new ResizeObserver(() => {
       requestAnimationFrame(() => {
         if (this.initialVisibleRange) {
-          this.chart?.timeScale().setVisibleRange(this.initialVisibleRange);
+          this.applyTimeRange(this.initialVisibleRange.from, this.initialVisibleRange.to);
         } else {
           this.chart?.timeScale().fitContent();
+        }
+        // 宽度自适应 off: pin the stack to the width it first laid out with,
+        // so later canvas node width changes no longer reach the chart
+        // (autoSize tracks the stack, not the node). Canvas-only — in notes
+        // the chart keeps following the container (e.g. window resizes).
+        if (this.options.freezeWidth && this.chartStackEl && findAncestor(this.containerEl, "canvas-node")) {
+          this.chartStackEl.style.width = `${this.chartContainerEl!.clientWidth}px`;
         }
         // Re-apply the initial range only once, right after the container
         // gets its real size. lightweight-charts preserves the visible
@@ -650,47 +760,112 @@ export class ChartRenderer extends MarkdownRenderChild {
     });
     this.resizeObserver.observe(this.chartContainerEl);
   }
+}
 
-  private suppressMarkdownChrome() {
-    if (!this.findCanvasContentContainer()) return;
+// ===== Shared module-level helpers (also used by the series chart renderer) =====
 
-    const preview = this.findMarkdownPreviewView();
-    if (!preview) return;
+// Hermes chart palette. The dark values mirror the .fc-hermes scope in
+// styles.css — canvas drawing can't read CSS variables, so the two must be
+// kept in sync. The light variant only applies to cards explicitly set to
+// 浅色主题 in the card editor.
+export const CHART_PALETTE = {
+  dark: {
+    text: "#d7dbe0",
+    muted: "#868e99",
+    grid: "rgba(140, 150, 165, 0.07)",
+    scaleBorder: "#272e38",
+    crosshairLine: "rgba(245, 158, 11, 0.45)",
+    crosshairLabel: "#f59e0b",
+  },
+  light: {
+    text: "#374151",
+    muted: "#6b7280",
+    grid: "rgba(60, 70, 85, 0.08)",
+    scaleBorder: "#d1d5db",
+    crosshairLine: "rgba(180, 83, 9, 0.4)",
+    crosshairLabel: "#d97706",
+  },
+};
 
-    const selectors = [
-      ".metadata-container",
-      ".frontmatter-container",
-      ".frontmatter",
-      ".mod-header",
-      ".markdown-preview-pusher",
-      ".inline-title",
-      ".properties-heading",
-    ];
+// Base chart options shared by every lightweight-charts card in the plugin.
+export function buildChartOptions(isDark: boolean) {
+  const p = isDark ? CHART_PALETTE.dark : CHART_PALETTE.light;
+  return {
+    layout: {
+      background: { color: "transparent" },
+      textColor: p.text,
+    },
+    grid: {
+      vertLines: { color: p.grid, style: LineStyle.Dashed },
+      horzLines: { color: p.grid, style: LineStyle.Dashed },
+    },
+    crosshair: {
+      mode: 1,
+      // TradingView-style: amber crosshair lines + solid amber axis labels.
+      vertLine: { color: p.crosshairLine, labelBackgroundColor: p.crosshairLabel },
+      horzLine: { color: p.crosshairLine, labelBackgroundColor: p.crosshairLabel },
+    },
+    rightPriceScale: {
+      visible: true,
+      borderColor: p.scaleBorder,
+      autoScale: true,
+      scaleMargins: { top: 0.02, bottom: 0.02 },
+    },
+    leftPriceScale: {
+      visible: false,
+      borderColor: p.scaleBorder,
+      autoScale: true,
+      scaleMargins: { top: 0.02, bottom: 0.02 },
+    },
+    timeScale: {
+      borderColor: p.scaleBorder,
+      timeVisible: false,
+      visible: true,
+      borderVisible: true,
+      rightOffset: 10,
+      minBarSpacing: 4,
+    },
+    localization: {
+      locale: "zh-CN",
+      dateFormat: "yyyy-MM-dd",
+    },
+    handleScale: {
+      axisPressedMouseMove: true,
+    },
+    autoSize: true,
+  };
+}
 
-    for (const selector of selectors) {
-      const el = preview.querySelector(selector) as HTMLElement | null;
-      if (el) {
-        el.style.display = "none";
-      }
+// Hides Obsidian's markdown chrome (frontmatter, inline title, …) around a
+// card rendered inside a canvas node. No-op outside a canvas.
+export function suppressMarkdownChrome(containerEl: HTMLElement) {
+  if (!findAncestor(containerEl, "canvas-node-content")) return;
+
+  const preview = findAncestor(containerEl, "markdown-preview-view");
+  if (!preview) return;
+
+  const selectors = [
+    ".metadata-container",
+    ".frontmatter-container",
+    ".frontmatter",
+    ".mod-header",
+    ".markdown-preview-pusher",
+    ".inline-title",
+    ".properties-heading",
+  ];
+
+  for (const selector of selectors) {
+    const el = preview.querySelector(selector) as HTMLElement | null;
+    if (el) {
+      el.style.display = "none";
     }
   }
+}
 
-  private findCanvasContentContainer(): HTMLElement | null {
-    let el: HTMLElement | null = this.containerEl;
-    while (el) {
-      if (el.classList.contains("canvas-node-content")) {
-        return el;
-      }
-      el = el.parentElement;
-    }
-    return null;
+function findAncestor(containerEl: HTMLElement, className: string): HTMLElement | null {
+  let el: HTMLElement | null = containerEl;
+  while (el && !el.classList.contains(className)) {
+    el = el.parentElement;
   }
-
-  private findMarkdownPreviewView(): HTMLElement | null {
-    let el: HTMLElement | null = this.containerEl;
-    while (el && !el.classList.contains("markdown-preview-view")) {
-      el = el.parentElement;
-    }
-    return el;
-  }
+  return el;
 }

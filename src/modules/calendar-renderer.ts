@@ -21,6 +21,9 @@ interface CalendarRendererOptions {
   spec: ParsedCardSpec;
   getDailyNotesSettings: () => { dailyNotesFolder: string; dailyNotesFormat: string };
   getDisplaySettings: () => CalendarDisplaySettings;
+  // Opens the calendar edit modal (月宫格选择器); the title click delegates
+  // to it instead of editing inline.
+  onOpenEditor?: () => void;
 }
 
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
@@ -30,6 +33,7 @@ export class CalendarRenderer extends MarkdownRenderChild {
   private spec: ParsedCardSpec;
   private getDailyNotesSettings: () => { dailyNotesFolder: string; dailyNotesFormat: string };
   private getDisplaySettings: () => CalendarDisplaySettings;
+  private onOpenEditor?: () => void;
   private viewYear: number;
   private viewMonth: number; // 0-based
   private gridEl: HTMLElement | null = null;
@@ -43,6 +47,7 @@ export class CalendarRenderer extends MarkdownRenderChild {
     this.spec = options.spec;
     this.getDailyNotesSettings = options.getDailyNotesSettings;
     this.getDisplaySettings = options.getDisplaySettings;
+    this.onOpenEditor = options.onOpenEditor;
 
     const initial = parseInitialMonth(options.spec.calendarMonth) ?? new Date();
     this.viewYear = initial.getFullYear();
@@ -73,6 +78,8 @@ export class CalendarRenderer extends MarkdownRenderChild {
   private render() {
     this.containerEl.empty();
     this.containerEl.addClass("financial-calendar");
+    // Calendar cards always render on the hermes dark palette.
+    this.containerEl.addClass("fc-hermes");
     if (this.spec.height != null) {
       this.containerEl.style.minHeight = `${this.spec.height}px`;
     }
@@ -144,72 +151,17 @@ export class CalendarRenderer extends MarkdownRenderChild {
     this.gridEl.style.height = `${Math.max(available, 160)}px`;
   }
 
-  // The title doubles as a jump control: clicking it swaps in year/month
-  // inputs; Enter (or focus leaving) commits, Escape cancels.
+  // The title doubles as the editor entry: clicking it opens the calendar
+  // edit modal (月宫格选择器), which persists 月份/高度 back to the card.
   private renderTitle(header: HTMLElement) {
     const title = header.createDiv({
       cls: "financial-calendar-title",
       text: `${this.viewYear}年${this.viewMonth + 1}月`,
     });
-    title.title = "点击输入年月跳转";
+    title.title = "点击编辑日历";
     title.addEventListener("click", () => {
-      // Clicks on the inputs bubble up here; don't restart editing.
-      if (title.classList.contains("is-editing")) return;
-      this.startTitleEdit(title);
+      this.onOpenEditor?.();
     });
-  }
-
-  private startTitleEdit(title: HTMLElement) {
-    title.empty();
-    title.addClass("is-editing");
-
-    const yearInput = title.createEl("input", { cls: "financial-calendar-year-input" });
-    yearInput.type = "text";
-    yearInput.inputMode = "numeric";
-    yearInput.value = String(this.viewYear);
-    title.createSpan({ text: "年" });
-    const monthInput = title.createEl("input", { cls: "financial-calendar-month-input" });
-    monthInput.type = "text";
-    monthInput.inputMode = "numeric";
-    monthInput.value = String(this.viewMonth + 1);
-    title.createSpan({ text: "月" });
-
-    const commit = () => {
-      const year = parseInt(yearInput.value, 10);
-      const month = parseInt(monthInput.value, 10);
-      // Date maps years 0-99 onto 19xx, so reject anything below 100.
-      if (Number.isFinite(year) && year >= 100 && year <= 9999 && month >= 1 && month <= 12) {
-        this.viewYear = year;
-        this.viewMonth = month - 1;
-      }
-      this.render();
-    };
-
-    for (const input of [yearInput, monthInput]) {
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          commit();
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          this.render();
-        }
-      });
-    }
-    // relatedTarget is unreliable when focus moves between the two inputs
-    // (and when a clicked input gets re-created), so defer and inspect
-    // document.activeElement instead.
-    title.addEventListener("focusout", () => {
-      setTimeout(() => {
-        if (!title.isConnected) return;
-        if (!title.contains(document.activeElement)) {
-          commit();
-        }
-      }, 0);
-    });
-
-    yearInput.focus();
-    yearInput.select();
   }
 
   private renderDays() {
