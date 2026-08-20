@@ -13,15 +13,15 @@
 
 **插入资产卡片** —— 搜索符号（支持名称/代码），选中即建卡并放上画布：
 
-![插入资产卡片](docs/videos/insert-card.mp4)
+![插入资产卡片](docs/videos/insert-card.gif)
 
 **插入 FRED 宏观数据卡** —— 直接搜索 FRED 序列（如美债收益率）建卡：
 
-![插入 FRED 卡片](docs/videos/fred-card.mp4)
+![插入 FRED 卡片](docs/videos/fred-card.gif)
 
 **插入 TradingView 小组件** —— 从 TradingView Widgets 页面复制嵌入代码即可建卡：
 
-![插入 TradingView 小组件](docs/videos/tradingview-widget.mp4)
+![插入 TradingView 小组件](docs/videos/tradingview-widget.gif)
 
 ## 功能特性
 
@@ -47,7 +47,15 @@
 
 ## 安装
 
-本插件尚未上架社区市场，需手动构建：
+本插件尚未上架社区市场，从 Release 安装或自行构建：
+
+**方式一：下载 Release（推荐）**
+
+1. 从 [Releases](../../releases/latest) 下载 `main.js`、`manifest.json`、`styles.css`、`sql-wasm.wasm` 四个文件。
+2. 在你的库目录下新建文件夹 `.obsidian/plugins/obsidian-financial-canvas/`，把四个文件放进去。
+3. 重启 Obsidian，在 设置 → 第三方插件 中启用 **Financial Canvas**。
+
+**方式二：从源码构建**
 
 ```bash
 git clone https://github.com/lichliar/obsidian-financial-canvas.git
@@ -56,7 +64,7 @@ npm install
 OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/obsidian-financial-canvas npm run build
 ```
 
-然后在 Obsidian 设置 → 第三方插件中启用 **Financial Canvas**，并在插件设置中填入 Tushare Token（以及可选的 FRED API Key）。
+启用后在插件设置中填入 Tushare Token（以及可选的 FRED API Key）。
 
 ## 使用
 
