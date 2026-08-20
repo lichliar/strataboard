@@ -42,6 +42,7 @@ Obsidian desktop plugin (id `obsidian-financial-canvas`, name "Financial Canvas"
 - `npm run dev` — copies assets, then esbuild in watch mode (inline sourcemaps).
 - `npm run build` — typecheck (`tsc -noEmit -skipLibCheck`), production esbuild, copy assets.
 - `npm run version` — `version-bump.mjs` syncs `manifest.json` + `versions.json` with the npm package version (standard Obsidian release flow).
+- `npm run release` — build, then `scripts/release.mjs`: refuses a dirty tree, pushes the current branch, tags `v<manifest version>`, and creates a GitHub release (via `gh`, release notes auto-generated) with `main.js` / `manifest.json` / `styles.css` / `sql-wasm.wasm` from the deploy target.
 - Builds deploy **directly into an Obsidian vault's plugin directory**, not into the repo. The deploy target is defined once in `scripts/deploy-target.mjs` (currently a hard-coded absolute path under `~/Nutstore Files/`); override it with the `OBSIDIAN_PLUGIN_DIR` env var instead of editing code. esbuild writes `main.js` there; `scripts/copy-assets.mjs` copies `manifest.json`, `styles.css`, `versions.json`, and `node_modules/sql.js/dist/sql-wasm.wasm`.
 - The root-level `main.js` is stale/gitignored output — the real artifact lands in the plugin dir.
 - There is no automated test suite. Verification = typecheck + running the plugin in Obsidian and checking both light and dark themes.

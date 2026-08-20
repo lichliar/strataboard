@@ -101,6 +101,7 @@ OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/obsidian-financial-can
 - `npm run dev` —— 监听模式构建（内联 sourcemap）
 - `npm run build` —— 类型检查 + 生产构建 + 拷贝资源到插件目录
 - `npm run version` —— 同步 manifest/versions 版本号
+- `npm run release` —— 构建并发布 GitHub Release（推送分支、打 `vX.Y.Z` 标签、上传构建产物；需已认证 `gh`)
 
 构建产物直接写入 `OBSIDIAN_PLUGIN_DIR` 指定的插件目录。代码结构与设计约定见 [AGENTS.md](AGENTS.md)。
 
