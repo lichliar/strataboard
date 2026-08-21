@@ -152,11 +152,3 @@ OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/strataboard npm run bu
 ## License
 
 MIT（见 [LICENSE](LICENSE)）。第三方依赖的许可见 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)。
-
-## Buy me a 奶茶～（赞赏 / 打赏）
-
-如果这个插件对你有帮助，可以请我喝杯奶茶：
-
-| 微信赞赏码 | 支付宝赞赏码 |
-| :---: | :---: |
-| <img src="docs/微信赞赏码.jpg" width="240" alt="微信赞赏码"> | <img src="docs/支付宝赞赏码.jpg" width="240" alt="支付宝赞赏码"> |
