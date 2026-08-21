@@ -48,6 +48,7 @@ import { UnifiedCardEditModal } from "./ui/unified-card-edit-modal";
 import { CalendarEditModal } from "./ui/calendar-edit-modal";
 import { OverlayEditModal } from "./ui/overlay-edit-modal";
 import { SpreadEditModal } from "./ui/spread-edit-modal";
+import { ConfirmModal } from "./ui/confirm-modal";
 import { findMacroSeriesDef, ASSET_TYPE_LABELS, fredTransformIsPercent, fredTransformLabel } from "./types";
 import type { AssetType, FredCardSpec, FredSeriesInfo, MacroCardSpec, MacroSeriesDef, OverlaySpec, ParsedCardSpec, SeriesPeriod, SeriesPoint, SeriesRef, SpreadSpec, SymbolItem } from "./types";
 import { resolveDateRange, formatIsoDate, parseDateYmd } from "./utils/date";
@@ -73,7 +74,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
   }
 
   onload() {
-    this.render();
+    void this.render();
 
     // Canvas interaction model (three tiers):
     //  - single click/drag on the card: selects and moves the canvas node
@@ -235,36 +236,36 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
   private deleteFromCanvas() {
     const nodeEl = this.findCanvasNodeEl();
     if (!nodeEl) return;
-    if (!window.confirm("从画布中移除该卡片？卡片文件仍保留在卡片库中。")) return;
-
-    const view = this.plugin.app.workspace.getActiveViewOfType(ItemView) as any;
-    const canvas = view?.canvas;
-    if (!canvas?.nodes) {
-      new Notice("当前没有激活的 Canvas 视图。");
-      return;
-    }
-    let target: any = null;
-    for (const node of canvas.nodes.values()) {
-      const el = node.nodeEl ?? node.el;
-      if (el === nodeEl || el?.contains?.(nodeEl)) {
-        target = node;
-        break;
+    new ConfirmModal(this.plugin.app, "从画布中移除该卡片？卡片文件仍保留在卡片库中。", () => {
+      const view = this.plugin.app.workspace.getActiveViewOfType(ItemView) as any;
+      const canvas = view?.canvas;
+      if (!canvas?.nodes) {
+        new Notice("当前没有激活的 Canvas 视图。");
+        return;
       }
-    }
-    if (!target) {
-      new Notice("找不到对应的画布节点。");
-      return;
-    }
-    if (typeof canvas.removeNode === "function") {
-      canvas.removeNode(target);
-    } else if (typeof target.remove === "function") {
-      target.remove();
-    } else {
-      new Notice("当前 Obsidian 版本不支持从画布移除节点。");
-      return;
-    }
-    canvas.requestSave?.();
-    new Notice("已从画布移除卡片（文件保留在卡片库中）。");
+      let target: any = null;
+      for (const node of canvas.nodes.values()) {
+        const el = node.nodeEl ?? node.el;
+        if (el === nodeEl || el?.contains?.(nodeEl)) {
+          target = node;
+          break;
+        }
+      }
+      if (!target) {
+        new Notice("找不到对应的画布节点。");
+        return;
+      }
+      if (typeof canvas.removeNode === "function") {
+        canvas.removeNode(target);
+      } else if (typeof target.remove === "function") {
+        target.remove();
+      } else {
+        new Notice("当前 Obsidian 版本不支持从画布移除节点。");
+        return;
+      }
+      canvas.requestSave?.();
+      new Notice("已从画布移除卡片（文件保留在卡片库中）。");
+    }).open();
   }
 
   private async render() {
@@ -323,8 +324,8 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
         height: spec.height ?? DEFAULT_CARD_HEIGHT,
         freezeWidth: spec.widthAuto === false,
         loadMarketData: (tradeDate) => this.loadMarketData(spec, tradeDate),
-        onRefresh: () => this.refresh(),
-        onSwitchFreq: (freq) => this.switchFrequency(freq),
+        onRefresh: () => void this.refresh(),
+        onSwitchFreq: (freq) => void this.switchFrequency(freq),
         onEdit: () => this.openEditModal(),
         onDelete: () => this.deleteFromCanvas(),
       });
@@ -346,7 +347,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
   }
 
   private async refresh() {
-    this.render();
+    void this.render();
   }
 
   private async loadData(spec: ParsedCardSpec) {
@@ -1357,7 +1358,7 @@ export default class StrataBoardPlugin extends Plugin {
     this.addSettingTab(new StrataBoardSettingTab(this.app, this));
 
     this.addCommand({
-      id: "open-strataboard-settings",
+      id: "open-settings",
       name: "打开金融卡片设置",
       callback: () => {
         (this.app as any).setting.open();
@@ -1528,8 +1529,6 @@ export default class StrataBoardPlugin extends Plugin {
     );
 
     this.attachToolbarToCanvas(this.app.workspace.activeLeaf);
-
-    console.log("StrataBoard plugin loaded");
   }
 
   onunload() {
@@ -1538,7 +1537,6 @@ export default class StrataBoardPlugin extends Plugin {
       console.error("StrataBoard: failed to save SQLite cache on unload", e);
       this.sqliteCache?.close();
     });
-    console.log("StrataBoard plugin unloaded");
   }
 
   async loadSettings() {
@@ -1622,7 +1620,7 @@ export default class StrataBoardPlugin extends Plugin {
             {
               name: "Tushare 资产",
               desc: "股票/基金/指数/南华指数/港股/全球指数/可转债/期货/外汇/申万行业 · 日K/周K/月K",
-              onPick: () => this.openSymbolSearch((item) => this.insertCard(item)),
+              onPick: () => this.openSymbolSearch((item) => void this.insertCard(item)),
             },
             {
               name: "Tushare 宏观",
@@ -1634,12 +1632,12 @@ export default class StrataBoardPlugin extends Plugin {
       {
         name: "腾讯行情",
         desc: "A股/港股/美股/指数/ETF · 免 Token",
-        onPick: () => this.openSymbolSearch((item) => this.insertCard(item), "tx"),
+        onPick: () => this.openSymbolSearch((item) => void this.insertCard(item), "tx"),
       },
       {
         name: "东方财富",
         desc: "A股/港股/美股/指数/ETF · 免 Token",
-        onPick: () => this.openSymbolSearch((item) => this.insertCard(item), "em"),
+        onPick: () => this.openSymbolSearch((item) => void this.insertCard(item), "em"),
       },
       ...(hasFred
         ? [
@@ -1670,7 +1668,7 @@ export default class StrataBoardPlugin extends Plugin {
             {
               name: "Tushare 资产",
               desc: "股票/基金/指数/南华指数/港股/全球指数/可转债/期货/外汇/申万行业 · 日K/周K/月K",
-              onPick: () => this.openSymbolSearch((item) => this.insertCard(item, editor)),
+              onPick: () => this.openSymbolSearch((item) => void this.insertCard(item, editor)),
             },
             {
               name: "Tushare 宏观",
@@ -1692,12 +1690,12 @@ export default class StrataBoardPlugin extends Plugin {
       {
         name: "腾讯行情",
         desc: "A股/港股/美股/指数/ETF · 免 Token",
-        onPick: () => this.openSymbolSearch((item) => this.insertCard(item, editor), "tx"),
+        onPick: () => this.openSymbolSearch((item) => void this.insertCard(item, editor), "tx"),
       },
       {
         name: "东方财富",
         desc: "A股/港股/美股/指数/ETF · 免 Token",
-        onPick: () => this.openSymbolSearch((item) => this.insertCard(item, editor), "em"),
+        onPick: () => this.openSymbolSearch((item) => void this.insertCard(item, editor), "em"),
       },
       ...(hasFred
         ? [
@@ -1758,8 +1756,8 @@ export default class StrataBoardPlugin extends Plugin {
   openWidgetInputModal(editor?: Editor) {
     new WidgetInputModal(
       this.app,
-      async ({ title, input, savePath }) => {
-        await this.insertWidgetCard(title, input, savePath, editor);
+      ({ title, input, savePath }) => {
+        void this.insertWidgetCard(title, input, savePath, editor);
       },
       this.pluginSettings.widgetCardPath
     ).open();

@@ -77,7 +77,7 @@ const NANHUA_INDEX_LIST: SymbolItem[] = [
   symbol,
   name,
   exchange: "NH",
-  assetType: "nhindex" as AssetType,
+  assetType: "nhindex",
 }));
 
 // Global indices (Tushare index_global, doc_id=211). Tushare has no
@@ -110,7 +110,7 @@ const GLOBAL_INDEX_LIST: SymbolItem[] = [
   symbol,
   name,
   exchange: "GL",
-  assetType: "gbindex" as AssetType,
+  assetType: "gbindex",
 }));
 
 export class SymbolIndex {
@@ -244,7 +244,7 @@ export class SymbolIndex {
     }
 
     const fields = response.data.fields;
-    const items = response.data.items as unknown[];
+    const items = response.data.items;
 
     const getIndex = (name: string) => fields.findIndex((f) => f.toLowerCase() === name.toLowerCase());
     const tsCodeIdx = getIndex("ts_code");
@@ -284,7 +284,7 @@ export class SymbolIndex {
         name: String(item[nm] ?? ""),
         exchange: String(item[stk] ?? ""), // underlying stock name, e.g. 万科A
         listDate: item[ld] ? String(item[ld]) : undefined,
-        assetType: "cb" as AssetType,
+        assetType: "cb",
       }));
   }
 
@@ -335,7 +335,7 @@ export class SymbolIndex {
       symbol: String(item[ts] ?? "").split(".")[0],
       name: String(item[nm] ?? ""),
       exchange: "FXCM",
-      assetType: "fx" as AssetType,
+      assetType: "fx",
     }));
   }
 
@@ -357,7 +357,7 @@ export class SymbolIndex {
         symbol: String(item[code] ?? "").split(".")[0],
         name: String(item[nm] ?? ""),
         exchange: String(item[lv] ?? ""), // L1/L2/L3 shown as the "exchange" badge
-        assetType: "sw" as AssetType,
+        assetType: "sw",
       }));
   }
 }

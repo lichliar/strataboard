@@ -100,7 +100,7 @@ export class OverlayEditModal extends Modal {
     };
     const applyActive = () => {
       for (const tab of SUB_PAGES) {
-        pages[tab.id].style.display = tab.id === this.activeSubPage ? "" : "none";
+        pages[tab.id].classList.toggle("fc-hidden", tab.id !== this.activeSubPage);
       }
       tabBar.querySelectorAll(".fc-subtab").forEach((el, i) => {
         el.classList.toggle("is-active", SUB_PAGES[i].id === this.activeSubPage);
@@ -134,9 +134,9 @@ export class OverlayEditModal extends Modal {
 
   private renderSeriesPage(pageEl: HTMLElement) {
     pageEl.createDiv({
-      cls: "fc-field-hint",
+      cls: "fc-field-hint fc-hint-mb",
       text: "至少一个系列；行情类系列按区间首个数据点归一化为涨跌幅（%）。",
-    }).style.marginBottom = "8px";
+    });
     this.rowsEl = pageEl.createDiv({ cls: "fc-calc-series-rows" });
     for (const ref of this.initialSeries) {
       this.addRow(ref);

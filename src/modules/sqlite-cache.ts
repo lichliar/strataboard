@@ -27,7 +27,7 @@ export class SqliteCache {
   // quadratic. Writes now only mark the DB dirty and a debounced flush
   // persists it; save() on unload flushes everything.
   private dirtyDbs = new Set<"ohlcv" | "market" | "symbols">();
-  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private saveTimer: number | null = null;
   private flushPromise: Promise<void> | null = null;
   private static readonly SAVE_DEBOUNCE_MS = 1500;
 
@@ -56,14 +56,14 @@ export class SqliteCache {
     // incremental refresh could then overwrite a complete week/month with a
     // partial one. Funds are now cached daily-only and resampled at read
     // time, so drop the legacy rows (they are re-fetched on next load).
-    this.ohlcvDb!.run(`DELETE FROM ohlcv WHERE asset_type = 'fund' AND freq <> 'D'`);
+    this.ohlcvDb.run(`DELETE FROM ohlcv WHERE asset_type = 'fund' AND freq <> 'D'`);
     this.markDirty("ohlcv");
   }
 
   private async readWasmBinary(path: string): Promise<ArrayBuffer> {
     try {
       return await this.vault.adapter.readBinary(path);
-    } catch (e) {
+    } catch {
       throw new Error(`无法读取 sql-wasm.wasm。请确认插件目录中存在该文件：${path}`);
     }
   }
@@ -151,7 +151,7 @@ export class SqliteCache {
     const paths = this.paths;
     if (!paths) return;
     if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
+      window.clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
     // Wait for any in-flight debounced flush so we don't write concurrently.
@@ -164,8 +164,8 @@ export class SqliteCache {
 
   private markDirty(kind: "ohlcv" | "market" | "symbols"): void {
     this.dirtyDbs.add(kind);
-    if (this.saveTimer) clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => {
+    if (this.saveTimer) window.clearTimeout(this.saveTimer);
+    this.saveTimer = window.setTimeout(() => {
       this.saveTimer = null;
       this.flushPromise = this.flushDirty().catch((e) => {
         console.error("StrataBoard: failed to persist SQLite cache", e);
@@ -307,7 +307,7 @@ export class SqliteCache {
     stmt.bind([assetType]);
     const items: SymbolItem[] = [];
     while (stmt.step()) {
-      items.push(this.rowToSymbol(stmt.getAsObject() as Record<string, unknown>));
+      items.push(this.rowToSymbol(stmt.getAsObject()));
     }
     stmt.free();
     return items;
@@ -373,7 +373,7 @@ export class SqliteCache {
     stmt.bind([assetType, lower, lower, lower]);
     const items: SymbolItem[] = [];
     while (stmt.step()) {
-      items.push(this.rowToSymbol(stmt.getAsObject() as Record<string, unknown>));
+      items.push(this.rowToSymbol(stmt.getAsObject()));
     }
     stmt.free();
     return items;
@@ -390,7 +390,7 @@ export class SqliteCache {
       stmt.free();
       return undefined;
     }
-    const item = this.rowToSymbol(stmt.getAsObject() as Record<string, unknown>);
+    const item = this.rowToSymbol(stmt.getAsObject());
     stmt.free();
     return item;
   }
@@ -634,7 +634,6 @@ export class SqliteCache {
     if (await this.isMigrationDone()) return;
 
     const cacheStore = new CacheStore(this.vault);
-    const start = Date.now();
 
     try {
       await this.migrateSymbols(cacheStore, legacySymbolPath);
@@ -644,7 +643,6 @@ export class SqliteCache {
       // leave the flag set while the data never reached disk.
       await this.flushDirty();
       await this.setMigrationDone();
-      console.log(`StrataBoard: SQLite migration completed in ${Date.now() - start}ms`);
     } catch (e) {
       console.error("StrataBoard: SQLite migration failed", e);
       new Notice(`金融卡片：JSON 缓存迁移到 SQLite 失败：${e instanceof Error ? e.message : String(e)}`);

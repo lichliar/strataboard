@@ -69,8 +69,8 @@ export class WidgetInputModal extends Modal {
       params: pagesEl.createDiv(),
     };
     const applyActive = () => {
-      pages.insert.style.display = this.activeSubPage === "insert" ? "" : "none";
-      pages.params.style.display = this.activeSubPage === "params" ? "" : "none";
+      pages.insert.classList.toggle("fc-hidden", this.activeSubPage !== "insert");
+      pages.params.classList.toggle("fc-hidden", this.activeSubPage !== "params");
       tabBar.querySelectorAll(".fc-subtab").forEach((el, i) => {
         el.classList.toggle("is-active", (i === 0 ? "insert" : "params") === this.activeSubPage);
       });
@@ -142,7 +142,7 @@ export class WidgetInputModal extends Modal {
     const titleLabel = titleLabelRow.createSpan("fc-widget-label");
     titleLabel.appendText("标题");
     this.autoBadgeEl = titleLabel.createSpan({ cls: "fc-pill fc-pill-sm", text: "自动识别" });
-    this.autoBadgeEl.style.display = "none";
+    this.autoBadgeEl.addClass("fc-hidden");
     titleField.createDiv({ cls: "fc-field-hint", text: "从代码的 symbol 字段生成，手动修改后不再被覆盖" });
     new Setting(titleField).addText((text) => {
       text.setPlaceholder("例如：USINTR 利率走势").setValue(this.titleValue).onChange((value) => {
@@ -215,7 +215,8 @@ export class WidgetInputModal extends Modal {
 
   private updateAutoBadge() {
     if (this.autoBadgeEl) {
-      this.autoBadgeEl.style.display = !this.titleManual && this.parsed?.title ? "" : "none";
+      const visible = !this.titleManual && !!this.parsed?.title;
+      this.autoBadgeEl.toggleClass("fc-hidden", !visible);
     }
   }
 

@@ -83,13 +83,13 @@ export class WidgetRenderer extends MarkdownRenderChild {
       const height = Math.min(measured, this.height);
       this.iframe.style.height = `${Math.round(height)}px`;
       // Load the widget only once the iframe has a real, final size.
-      requestAnimationFrame(assignSrc);
+      window.requestAnimationFrame(assignSrc);
     });
     this.resizeObserver.observe(this.containerEl);
 
     onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
     // Fallback: if the element never gets a size, still load the widget.
-    setTimeout(assignSrc, 2000);
+    window.setTimeout(assignSrc, 2000);
   }
 
   private resolveSrc(): string | null {

@@ -13,7 +13,6 @@ import {
   type CandlestickData,
   type HistogramData,
   type LineData,
-  type Logical,
   type Time,
 } from "lightweight-charts";
 import type { MarketData, OhlcvRow, ParsedCardSpec, SymbolItem } from "../types";
@@ -132,7 +131,7 @@ export class ChartRenderer extends MarkdownRenderChild {
   }
 
   onload() {
-    this.render();
+    void this.render();
   }
 
   onunload() {
@@ -156,7 +155,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     }
 
     if (spec.showHeader !== false) {
-      this.addHeader(data);
+      void this.addHeader(data);
     }
 
     this.addChartStack();
@@ -270,7 +269,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     const from = anchor - (anchor - range.from) * factor;
     const to = anchor + (range.to - anchor) * factor;
     if (!(to > from)) return; // degenerate range (e.g. a single bar)
-    ts.setVisibleLogicalRange({ from: from as Logical, to: to as Logical });
+    ts.setVisibleLogicalRange({ from, to });
   }
 
   // ===== Header =====
@@ -387,7 +386,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     // so it only makes sense inside a canvas — decided once attached.
     const deleteBtn = addTool("trash-2", "删除卡片", () => this.options.onDelete?.());
     onAttached(this.containerEl, () => {
-      deleteBtn.style.display = this.containerEl.closest(".canvas-node") ? "" : "none";
+      deleteBtn.toggleClass("fc-hidden", !this.containerEl.closest(".canvas-node"));
     });
   }
 
@@ -406,7 +405,7 @@ export class ChartRenderer extends MarkdownRenderChild {
   ): ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> {
     if (this.options.chartType === "line") {
       const lineData: LineData[] = data.map((row) => ({
-        time: toChartTime(row.tradeDate) as Time,
+        time: toChartTime(row.tradeDate),
         value: row.close,
       }));
       const series = this.chart!.addSeries(
@@ -423,7 +422,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     }
 
     const candleData: CandlestickData[] = data.map((row) => ({
-      time: toChartTime(row.tradeDate) as Time,
+      time: toChartTime(row.tradeDate),
       open: row.open,
       high: row.high,
       low: row.low,
@@ -462,7 +461,7 @@ export class ChartRenderer extends MarkdownRenderChild {
         if (j >= period - 1) {
           const value = sum / period;
           maData.push({
-            time: toChartTime(data[j].tradeDate) as Time,
+            time: toChartTime(data[j].tradeDate),
             value,
           });
           values.push(value);
@@ -488,7 +487,7 @@ export class ChartRenderer extends MarkdownRenderChild {
 
   private addVolumeSeries(paneIndex: number, data: OhlcvRow[]) {
     const volumeData: HistogramData[] = data.map((row, i) => ({
-      time: toChartTime(row.tradeDate) as Time,
+      time: toChartTime(row.tradeDate),
       value: row.vol,
       // Color by change vs the previous close (same convention as the
       // header quote); the first bar falls back to close vs open.
@@ -671,7 +670,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     const rightOffset = ts.options().rightOffset;
     ts.setVisibleLogicalRange({
       from: logical.from,
-      to: (data.length - 1 + rightOffset) as Logical,
+      to: data.length - 1 + rightOffset,
     });
   }
 
@@ -738,7 +737,7 @@ export class ChartRenderer extends MarkdownRenderChild {
   private setupResizeObserver() {
     if (!this.chartContainerEl) return;
     this.resizeObserver = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
         if (this.initialVisibleRange) {
           this.applyTimeRange(this.initialVisibleRange.from, this.initialVisibleRange.to);
         } else {
@@ -855,9 +854,9 @@ export function suppressMarkdownChrome(containerEl: HTMLElement) {
   ];
 
   for (const selector of selectors) {
-    const el = preview.querySelector(selector) as HTMLElement | null;
+    const el = preview.querySelector(selector);
     if (el) {
-      el.style.display = "none";
+      el.addClass("fc-el-hidden");
     }
   }
 }

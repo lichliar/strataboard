@@ -7,7 +7,6 @@ import {
   type DeepPartial,
   type IChartApi,
   type LineData,
-  type Logical,
   type IRange,
   type Time,
   type LineWidth,
@@ -157,7 +156,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
 
     lines.forEach((line, i) => {
       const color = line.color ?? SERIES_LINE_COLORS[i % SERIES_LINE_COLORS.length];
-      const data: LineData[] = line.points.map((p) => ({ time: p.date as Time, value: p.value }));
+      const data: LineData[] = line.points.map((p) => ({ time: p.date, value: p.value }));
       // When every line is percent-ish the legend carries a "%" suffix; put
       // the same suffix on the price-axis ticks via a custom price format.
       const suffix = this.options.valueSuffix ?? "";
@@ -241,7 +240,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     const from = anchor - (anchor - range.from) * factor;
     const to = anchor + (range.to - anchor) * factor;
     if (!(to > from)) return; // degenerate range (e.g. a single bar)
-    ts.setVisibleLogicalRange({ from: from as Logical, to: to as Logical });
+    ts.setVisibleLogicalRange({ from, to });
   }
 
   // ===== Crosshair legend =====
@@ -308,13 +307,13 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     const logical = ts.getVisibleLogicalRange();
     if (!logical) return;
     const rightOffset = ts.options().rightOffset;
-    ts.setVisibleLogicalRange({ from: logical.from, to: (logical.to + rightOffset) as Logical });
+    ts.setVisibleLogicalRange({ from: logical.from, to: logical.to + rightOffset });
   }
 
   private setupResizeObserver() {
     if (!this.chartContainerEl) return;
     this.resizeObserver = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
         // Re-apply the persisted range (or fit) only once, right after the
         // container gets its real size; lightweight-charts preserves the
         // logical range across later resizes on its own.

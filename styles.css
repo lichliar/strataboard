@@ -1873,3 +1873,30 @@ body.theme-dark {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* Review-compliance helpers: dynamic canvas bleed via CSS var + classes. */
+.fc-canvas-bleed {
+  padding: var(--fc-bleed) !important;
+}
+
+.fc-canvas-height-auto {
+  height: auto !important;
+}
+
+/* Hides embedded-preview chrome (frontmatter, inline title, …) inside cards. */
+.fc-el-hidden {
+  display: none !important;
+}
+
+/* Generic visibility toggle for modal/card internals. */
+.fc-hidden {
+  display: none;
+}
+
+.fc-hint-mt {
+  margin-top: 8px;
+}
+
+.fc-hint-mb {
+  margin-bottom: 8px;
+}

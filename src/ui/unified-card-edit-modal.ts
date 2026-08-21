@@ -372,7 +372,7 @@ export class UnifiedCardEditModal extends Modal {
 
     const applyActive = () => {
       for (const tab of SUB_PAGES) {
-        pages[tab.id].style.display = tab.id === this.activeSubPage ? "" : "none";
+        pages[tab.id].toggleClass("fc-hidden", tab.id !== this.activeSubPage);
       }
       tabBar.querySelectorAll(".fc-subtab").forEach((el, i) => {
         el.classList.toggle("is-active", SUB_PAGES[i].id === this.activeSubPage);

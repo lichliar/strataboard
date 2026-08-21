@@ -1,6 +1,7 @@
 import { Menu, Notice, TFile, setTooltip, type WorkspaceLeaf } from "obsidian";
 import { parseCardSpec } from "./card-spec";
 import { TB_ICONS } from "./toolbar-icons";
+import { appendSvg } from "../utils/dom";
 import type StrataBoardPlugin from "../main";
 import type { ToolbarEntryId, ToolbarSourceId } from "../types";
 
@@ -57,7 +58,7 @@ export class CanvasToolbar {
       logo.addClass("fc-tb-logo-text");
       logo.setText("StrataBoard");
     } else {
-      logo.innerHTML = LOGO_SVG;
+      appendSvg(logo, LOGO_SVG);
     }
     setTooltip(logo, "StrataBoard — 点击展开/折叠工具栏");
     logo.addEventListener("click", () => this.toggleCollapsed());
@@ -87,7 +88,7 @@ export class CanvasToolbar {
     }
 
     this.toolbarEl.createDiv("fc-tb-spacer");
-    this.createButton("refresh", "全部刷新", () => this.refreshAll());
+    this.createButton("refresh", "全部刷新", () => void this.refreshAll());
     this.createButton("settings", "设置", () => this.openSettings());
 
     this.applyCollapsed();
@@ -106,7 +107,7 @@ export class CanvasToolbar {
           {
             text: "资产数据（股票/基金/指数/可转债/期货/外汇…）",
             icon: "trending-up",
-            onClick: () => this.plugin.openSymbolSearch((symbol) => this.plugin.insertCard(symbol)),
+            onClick: () => this.plugin.openSymbolSearch((symbol) => void this.plugin.insertCard(symbol)),
           },
           {
             text: "宏观数据（CPI/PMI/社融/国债收益率…）",
@@ -120,14 +121,14 @@ export class CanvasToolbar {
         label: "腾讯行情",
         icon: "tencent",
         source: "tencent",
-        onClick: () => this.plugin.openSymbolSearch((symbol) => this.plugin.insertCard(symbol), "tx"),
+        onClick: () => this.plugin.openSymbolSearch((symbol) => void this.plugin.insertCard(symbol), "tx"),
       },
       eastmoney: {
         id: "eastmoney",
         label: "东方财富",
         icon: "eastmoney",
         source: "eastmoney",
-        onClick: () => this.plugin.openSymbolSearch((symbol) => this.plugin.insertCard(symbol), "em"),
+        onClick: () => this.plugin.openSymbolSearch((symbol) => void this.plugin.insertCard(symbol), "em"),
       },
       fred: {
         id: "fred",
@@ -254,7 +255,7 @@ export class CanvasToolbar {
       btn.setText(label);
       btn.addClass("fc-tb-text-btn");
     } else {
-      btn.innerHTML = TB_ICONS[icon];
+      appendSvg(btn, TB_ICONS[icon]);
       setTooltip(btn, label);
     }
     btn.addEventListener("click", onClick);
@@ -266,7 +267,7 @@ export class CanvasToolbar {
       btn.setText(label);
       btn.addClass("fc-tb-text-btn");
     } else {
-      btn.innerHTML = TB_ICONS[icon];
+      appendSvg(btn, TB_ICONS[icon]);
       setTooltip(btn, label);
     }
     btn.addEventListener("click", (event) => {
@@ -308,23 +309,20 @@ export class CanvasToolbar {
     const offsetX = settings.toolbarOffsetX;
     const offsetY = settings.toolbarOffsetY;
 
-    this.toolbarEl.style.left = "";
-    this.toolbarEl.style.right = "";
-    this.toolbarEl.style.top = "";
-    this.toolbarEl.style.bottom = "";
+    this.toolbarEl.setCssProps({ left: "", right: "", top: "", bottom: "" });
 
     if (pos === "left") {
-      this.toolbarEl.style.left = `${offsetX}px`;
+      this.toolbarEl.setCssProps({ left: `${offsetX}px` });
     } else {
-      this.toolbarEl.style.right = `${offsetX}px`;
+      this.toolbarEl.setCssProps({ right: `${offsetX}px` });
     }
 
     // The vertical bar stretches the full canvas height (spacer pushes
     // refresh/settings to the bottom); collapsed it shrinks to the logo.
-    this.toolbarEl.style.top = `${offsetY}px`;
-    if (!settings.toolbarCollapsed) {
-      this.toolbarEl.style.bottom = `${offsetY}px`;
-    }
+    this.toolbarEl.setCssProps({
+      top: `${offsetY}px`,
+      bottom: settings.toolbarCollapsed ? "" : `${offsetY}px`,
+    });
 
     // Width + icon size are user-tunable; CSS consumes these vars.
     this.toolbarEl.style.setProperty("--fc-tb-w", `${settings.toolbarWidth}px`);
@@ -432,7 +430,6 @@ export class CanvasToolbar {
       pos: { x: center.x - 400 + cascade, y: center.y - 250 + cascade },
       size: { width: 800, height: 500 },
     };
-    console.log("placeFileNode: creating file node", { path: tfile.path, options });
 
     let node;
     try {

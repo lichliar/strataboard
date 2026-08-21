@@ -23,7 +23,7 @@ class RequestQueue {
   enqueue<T>(fn: () => Promise<T>): Promise<T> {
     return new Promise((resolve, reject) => {
       this.pending.push({
-        fn: fn as () => Promise<unknown>,
+        fn,
         resolve: resolve as (value: unknown) => void,
         reject,
       });
@@ -82,7 +82,7 @@ export class TushareApiClient {
             }),
           });
 
-          const json = response.json as TushareResponse<T>;
+          const json: TushareResponse<T> = response.json;
 
           if (json.code !== 0) {
             throw new TushareApiError(json.msg || `Tushare API error: ${json.code}`, json.code);
@@ -98,10 +98,10 @@ export class TushareApiClient {
         }
       }
       throw lastError ?? new TushareApiError("Unknown Tushare API error after retries.");
-    }) as Promise<TushareResponse<T>>;
+    });
   }
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }

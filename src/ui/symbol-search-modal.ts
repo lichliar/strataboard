@@ -39,7 +39,7 @@ export class SymbolSearchModal extends FuzzySuggestModal<SymbolItem> {
   }
 
   async onOpen() {
-    super.onOpen();
+    void super.onOpen();
     // Re-render the empty state now that emptyStateText is set.
     this.refreshSuggestions();
     try {

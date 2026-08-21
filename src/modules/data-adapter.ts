@@ -137,7 +137,7 @@ export class DataAdapter {
     }
 
     const fields = response.data.fields;
-    const items = response.data.items as unknown[];
+    const items = response.data.items;
 
     // fx_daily has no plain OHLC columns — only bid/ask OHLC; the bid side is
     // the quote convention for FX charts. tick_qty (tick count) stands in for
@@ -393,7 +393,7 @@ export class DataAdapter {
     }
 
     const fields = response.data.fields;
-    const items = response.data.items as unknown[];
+    const items = response.data.items;
     const getIndex = (name: string) => fields.findIndex((f) => f.toLowerCase() === name.toLowerCase());
     const dateIdx = getIndex(api === "cn_gdp" ? "quarter" : api === "shibor_lpr" ? "date" : "month");
     if (dateIdx < 0) {

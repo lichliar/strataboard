@@ -2,6 +2,7 @@ import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
 import type { ChartTheme, SeriesPeriod, SeriesRef, SpreadSpec } from "../types";
 import { SeriesRefEditor, type OpenFredPicker, type OpenSymbolPicker } from "./series-ref-editor";
 import { parseExpression } from "../modules/expression";
+import { appendSvg } from "../utils/dom";
 import { addStepper } from "./stepper";
 import { DEFAULT_CARD_BLEED, MAX_CARD_BLEED } from "../modules/card-spec";
 
@@ -123,7 +124,7 @@ export class SpreadEditModal extends Modal {
     };
     const applyActive = () => {
       for (const tab of SUB_PAGES) {
-        pages[tab.id].style.display = tab.id === this.activeSubPage ? "" : "none";
+        pages[tab.id].classList.toggle("fc-hidden", tab.id !== this.activeSubPage);
       }
       tabBar.querySelectorAll(".fc-subtab").forEach((el, i) => {
         el.classList.toggle("is-active", SUB_PAGES[i].id === this.activeSubPage);
@@ -175,9 +176,9 @@ export class SpreadEditModal extends Modal {
 
     // Inline error hint (warning triangle + reason), hidden while valid.
     const errorEl = pageEl.createDiv({ cls: "fc-error-hint fc-calc-expr-error" });
-    errorEl.createSpan().innerHTML = WARNING_SVG;
+    appendSvg(errorEl.createSpan(), WARNING_SVG);
     errorEl.createSpan();
-    errorEl.style.display = "none";
+    errorEl.addClass("fc-hidden");
     this.errorEl = errorEl;
 
     pageEl.createDiv({
@@ -185,7 +186,7 @@ export class SpreadEditModal extends Modal {
       text: "输入时实时校验：括号配对、运算符位置、系列代号是否已定义。支持 + − × / 和括号，示例：A+B、A/B、(A+B)/2、A+C/B",
     });
 
-    pageEl.createDiv({ cls: "fc-field-hint", text: "系列列表" }).style.marginTop = "8px";
+    pageEl.createDiv({ cls: "fc-field-hint fc-hint-mt", text: "系列列表" });
     this.rowsEl = pageEl.createDiv("fc-calc-series-rows");
     this.renderSeriesRows();
 
@@ -281,7 +282,11 @@ export class SpreadEditModal extends Modal {
     const empty = this.expression.trim().length === 0;
     this.exprText?.inputEl.classList.toggle("fc-input-error", invalid);
     if (this.errorEl) {
-      this.errorEl.style.display = invalid ? "" : "none";
+      if (invalid) {
+        this.errorEl.removeClass("fc-hidden");
+      } else {
+        this.errorEl.addClass("fc-hidden");
+      }
       if (invalid && !result.ok) {
         this.errorEl.lastElementChild!.textContent = `公式错误：${result.error}`;
       }

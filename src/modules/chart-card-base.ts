@@ -17,8 +17,10 @@ export interface CanvasDisplayOptions {
 /**
  * Applies the Canvas 显示逻辑 spec fields (统合编辑弹窗) to a rendered card.
  * Canvas-only: outside a canvas node the card keeps its regular note styling.
- * Both rules are CSS-level (inline !important beats the canvas layout rules
- * in styles.css), so they keep holding across node resizes without a
+ * Both rules are CSS-level — the bleed goes through a --fc-bleed custom
+ * property and the .fc-canvas-bleed / .fc-canvas-height-auto classes carry
+ * the !important rules in styles.css (the plugin review forbids inline
+ * !important styles), so they keep holding across node resizes without a
  * listener. widthAuto === false needs no CSS here — the chart renderer
  * freezes its stack width after the first layout instead.
  */
@@ -33,10 +35,11 @@ export function applyCanvasDisplayOptions(cardEl: HTMLElement, opts: CanvasDispl
     el = el.parentElement;
   }
   if (!inCanvas) return;
-  cardEl.style.setProperty("padding", `${opts.bleed}px`, "important");
+  cardEl.setCssProps({ "--fc-bleed": `${opts.bleed}px` });
+  cardEl.addClass("fc-canvas-bleed");
   if (!opts.heightAuto) {
     // Let the fixed 高度 drive the card height instead of the node height.
-    cardEl.style.setProperty("height", "auto", "important");
+    cardEl.addClass("fc-canvas-height-auto");
   }
 }
 

@@ -140,7 +140,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   }
 
   private renderDataSourceSettings(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "数据源 API 设置" });
+    new Setting(containerEl).setName("数据源 API 设置").setHeading();
 
     // Each keyed source gets its own <details> subgroup; info-only content
     // (free sources) is folded away by default.
@@ -202,7 +202,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         slider
           .setLimits(1, 30, 1)
           .setValue(this.plugin.pluginSettings.symbolListRefreshIntervalDays)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.symbolListRefreshIntervalDays = value;
             await this.plugin.saveSettings();
@@ -427,7 +426,9 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       app: this.app,
       value: options.value,
       placeholder: options.defaultValue,
-      onChange: (path) => options.onChange(path.trim() || options.defaultValue),
+      onChange: (path) => {
+        void options.onChange(path.trim() || options.defaultValue);
+      },
     });
   }
 
@@ -465,7 +466,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         slider
           .setLimits(200, 1600, 50)
           .setValue(this.plugin.pluginSettings.widgetIframeHeight)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.widgetIframeHeight = value;
             await this.plugin.saveSettings();
@@ -508,7 +508,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         slider
           .setLimits(10, 24, 1)
           .setValue(this.plugin.pluginSettings.calendarExcerptFontSize)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.calendarExcerptFontSize = value;
             await this.plugin.saveSettings();
@@ -522,7 +521,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         slider
           .setLimits(12, 32, 1)
           .setValue(this.plugin.pluginSettings.calendarDayFontSize)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.calendarDayFontSize = value;
             await this.plugin.saveSettings();
@@ -536,7 +534,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         slider
           .setLimits(1, 3, 0.1)
           .setValue(this.plugin.pluginSettings.calendarExcerptLineHeight)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.calendarExcerptLineHeight = value;
             await this.plugin.saveSettings();
@@ -550,7 +547,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         slider
           .setLimits(1, 8, 1)
           .setValue(this.plugin.pluginSettings.calendarExcerptMaxLines)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.calendarExcerptMaxLines = value;
             await this.plugin.saveSettings();
@@ -607,7 +603,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           .setLimits(12, 24, 1)
           .setValue(this.plugin.pluginSettings.toolbarIconSize)
           .setDisabled(this.plugin.pluginSettings.toolbarStyle === "text")
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.toolbarIconSize = value;
             await this.plugin.saveSettings();

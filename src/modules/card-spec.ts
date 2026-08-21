@@ -21,7 +21,7 @@ export type ParseResult = { ok: true; spec: ParsedCardSpec } | { ok: false; erro
 
 function normalizeYamlSource(source: string): string {
   return source
-    .replace(/^﻿/, "") // Strip UTF-8 BOM
+    .replace(/^\uFEFF/, "") // Strip UTF-8 BOM
     .replace(/\r\n/g, "\n") // Windows CRLF
     .replace(/\r/g, "\n"); // Old Mac CR
 }

@@ -28,14 +28,26 @@ export function onAttached(el: HTMLElement, cb: () => void, maxAttempts = 30): v
     }
     attempts++;
     if (attempts < maxAttempts) {
-      requestAnimationFrame(tick);
+      window.requestAnimationFrame(tick);
     }
   };
   if (el.isConnected) {
     cb();
   } else {
-    requestAnimationFrame(tick);
+    window.requestAnimationFrame(tick);
   }
+}
+
+/**
+ * Safely inserts a trusted static SVG string into the DOM without innerHTML.
+ * Parses via DOMParser and imports the <svg> root; silently no-ops on a
+ * parse failure (parsererror document or missing root element).
+ */
+export function appendSvg(el: HTMLElement, svg: string): void {
+  const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
+  const node = doc.documentElement;
+  if (!node || node.tagName === "parsererror") return;
+  el.appendChild(document.importNode(node, true));
 }
 
 /**
