@@ -1,11 +1,10 @@
 {
-  "id": "strataboard",
-  "name": "StrataBoard",
-  "version": "0.1.0",
-  "minAppVersion": "0.15.3",
-  "description": "Financial Canvas: insert financial data cards onto Obsidian Canvas, powered by Tushare.",
-  "author": "izzy",
-  "authorUrl": "",
-  "fundingUrl": "",
-  "isDesktopOnly": true
+	"id": "strataboard",
+	"name": "StrataBoard",
+	"version": "0.2.0",
+	"minAppVersion": "0.15.3",
+	"description": "Insert financial data cards onto Canvas: quotes, macro series, overlays and widgets",
+	"author": "izzy",
+	"authorUrl": "https://github.com/lichliar",
+	"isDesktopOnly": true
 }

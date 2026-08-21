@@ -1,6 +1,7 @@
 *.map
 main.js
 node_modules/
+dist/
 .DS_Store
 .cache/
 data.json

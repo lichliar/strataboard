@@ -106,6 +106,20 @@ OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/strataboard npm run bu
 
 构建产物直接写入 `OBSIDIAN_PLUGIN_DIR` 指定的插件目录。代码结构与设计约定见 [AGENTS.md](AGENTS.md)。
 
+## 网络请求说明
+
+本插件需要联网获取数据，仅在你使用对应功能时向以下服务发起请求：
+
+| 服务 | 域名 | 说明 |
+| --- | --- | --- |
+| Tushare Pro | `api.tushare.pro` | A 股/港股/期货/宏观等数据，使用你自己配置的 Token |
+| FRED | `api.stlouisfed.org` | 美联储宏观序列，使用你自己配置的 API Key |
+| 腾讯行情 | `smartbox.gtimg.cn`、`web.ifzq.gtimg.cn` | 代码搜索与 K 线，免密钥 |
+| 东方财富 | `searchapi.eastmoney.com`、`push2his.eastmoney.com` | 代码搜索与 K 线，免密钥 |
+| TradingView | `*.tradingview.com` | 仅 TradingView 小组件卡加载其第三方脚本 |
+
+除上述数据源外，插件不会向任何其他服务器发送数据；你的 Token、API Key 与全部缓存数据仅保存在本地。
+
 ## 免责声明
 
 - 本插件仅供个人学习与研究使用，不构成任何投资建议。投资有风险，入市需谨慎。
