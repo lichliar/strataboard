@@ -57,7 +57,7 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   dataCachePath: "金融卡片/数据缓存",
   symbolCachePath: "金融卡片/股票代码缓存",
   autoRefreshOnOpen: true,
-  toolbarPosition: "right",
+  toolbarPosition: "bottom-left",
   toolbarOffsetX: 16,
   toolbarOffsetY: 16,
   toolbarCollapsed: false,
@@ -562,11 +562,13 @@ export class StrataBoardSettingTab extends PluginSettingTab {
 
     new Setting(lookDetails)
       .setName("工具栏位置")
-      .setDesc("画布上的竖条浮动工具栏锚定在左侧还是右侧。")
+      .setDesc("画布上的竖条浮动工具栏锚定在哪个角落（默认左下，避免遮挡画布返回按钮）；也可以直接拖动手柄移动。")
       .addDropdown((dropdown) =>
         dropdown
-          .addOption("left", "左侧")
-          .addOption("right", "右侧")
+          .addOption("bottom-left", "左下角")
+          .addOption("bottom-right", "右下角")
+          .addOption("top-left", "左上角")
+          .addOption("top-right", "右上角")
           .setValue(this.plugin.pluginSettings.toolbarPosition)
           .onChange(async (value) => {
             this.plugin.pluginSettings.toolbarPosition = value as ToolbarPosition;
@@ -628,7 +630,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     orderDetails.createEl("summary", { text: "按钮排序" });
     orderDetails.createDiv({
       cls: "fc-field-hint",
-      text: "调整工具栏顶部按钮的先后顺序；「全部刷新」「设置」始终固定在底部。工具栏宽度可在画布上直接拖拽边缘调整。",
+      text: "调整工具栏顶部按钮的先后顺序；「全部刷新」「设置」始终排在最后。工具栏位置可拖拽手柄移动，宽度可拖拽边缘调整。",
     });
     const order = this.plugin.pluginSettings.toolbarOrder;
     order.forEach((id, index) => {

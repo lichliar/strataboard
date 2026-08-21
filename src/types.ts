@@ -71,14 +71,15 @@ export type Freq = "D" | "W" | "M";
 export type RangePreset = "1y" | "3y" | "5y" | "10y" | "20y" | "ytd" | "max";
 export type ChartTheme = "auto" | "dark" | "light";
 export type ChartType = "candlestick" | "line";
-// The toolbar is a full-height vertical bar, so position only picks the side.
-export type ToolbarPosition = "left" | "right";
+// The toolbar is a compact vertical bar anchored to a canvas corner
+// (default bottom-left, so it never covers the canvas back button).
+export type ToolbarPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 // Toolbar buttons show an icon (with tooltip) or a plain text label.
 export type ToolbarStyle = "icon" | "text";
 // Sources with a top-level toolbar button/menu, each toggleable in settings.
 export type ToolbarSourceId = "tushare" | "tencent" | "eastmoney" | "fred" | "tradingview";
 // Reorderable top-level toolbar entries: the five sources plus the three
-// cross-source tools. 全部刷新/设置 are pinned to the bottom, not reorderable.
+// cross-source tools. 全部刷新/设置 follow the list, not reorderable.
 export type ToolbarEntryId = ToolbarSourceId | "overlay" | "spread" | "components";
 export type VisibleRangePreset = "1m" | "3m" | "6m" | "1y" | "ytd" | "max";
 export type WidgetType = "iframe" | "html";

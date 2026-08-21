@@ -9,15 +9,21 @@
   仅支持桌面端 Obsidian。
 </p>
 
+## 白板一览
+
+各种卡片（行情 / 宏观 / 叠加 / 计算 / 组件 / 日历）放上同一块 Canvas 的样子：
+
+![白板组合](docs/白板组合.png)
+
 ## 演示
 
 **插入资产卡片** —— 搜索符号（支持名称/代码），选中即建卡并放上画布：
 
 ![插入资产卡片](docs/videos/insert-card.gif)
 
-**插入 FRED 宏观数据卡** —— 直接搜索 FRED 序列（如美债收益率）建卡：
+**插入宏观数据卡** —— 从中国宏观序列目录（货币供应/CPI/PMI…）中搜索挑选建卡：
 
-![插入 FRED 卡片](docs/videos/fred-card.gif)
+![插入宏观数据卡](docs/videos/macro-card.gif)
 
 **插入 TradingView 小组件** —— 从 TradingView Widgets 页面复制嵌入代码即可建卡：
 
@@ -71,10 +77,10 @@ OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/strataboard npm run bu
 
 建卡入口任选其一：
 
-- 画布上的浮动工具栏（按数据源分组）
-- 命令面板：插入金融卡片 / 插入资产叠加卡 / …
+- 画布上的浮动工具栏（按数据源分组，可在设置中调整排序与显隐）
+- 命令面板：插入资产数据卡片 / 插入资产叠加卡片 / 插入数据计算卡片 / 插入FRED数据卡片 / 插入宏观数据卡片 / …
 - 画布空白处右键菜单
-- Markdown 编辑器右键「插入金融卡片」（在光标处写入代码块）
+- Markdown 编辑器右键「插入金融卡片」（在光标处写入代码块，不新建卡片文件）
 
 每张卡片是 `金融卡片/`（可在设置中修改）下的一个 Markdown 文件，内容为一个代码块，例如：
 
@@ -86,7 +92,13 @@ OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/strataboard npm run bu
     chartType: candlestick
     ```
 
-双击卡片进入图表交互模式，再次双击打开统合编辑弹窗（周期/时间范围/图表类型/主题/涨跌色/高度均按卡片独立保存）。
+**日常使用**
+
+- 拖动卡片标题移动卡片；双击进入图表交互模式（滚轮缩放、拖动平移），再次双击打开统合编辑弹窗——周期、时间范围、图表类型、主题、涨跌色、卡片高度都按卡片独立保存。
+- 熟悉格式后也可以直接编辑卡片文件里的 YAML，保存即生效。
+- 数据缓存在本地 SQLite，只增量拉取新数据；点卡片右上角的刷新按钮强制更新，或在设置中打开「自动刷新」。
+- 叠加卡把多条序列（行情 / 宏观 / FRED，甚至另一张卡片）画进同一张图；计算卡用字母引用各序列写四则表达式，如 `A-B`、`(A+B)/2`。
+- 不再需要的数据可以在 设置 → 路径设置 → 清理维护 里扫描并清理孤儿卡片文件与过期缓存。
 
 ## 设置
 
@@ -131,3 +143,11 @@ OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/strataboard npm run bu
 ## License
 
 MIT（见 [LICENSE](LICENSE)）。第三方依赖的许可见 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)。
+
+## Buy me a 奶茶～（赞赏 / 打赏）
+
+如果这个插件对你有帮助，可以请我喝杯奶茶：
+
+| 微信赞赏码 | 支付宝赞赏码 |
+| :---: | :---: |
+| <img src="docs/微信赞赏码.jpg" width="240" alt="微信赞赏码"> | <img src="docs/支付宝赞赏码.jpg" width="240" alt="支付宝赞赏码"> |

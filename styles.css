@@ -1327,10 +1327,13 @@ body.theme-dark {
   font-size: var(--font-ui-smaller);
 }
 
-/* Canvas toolbar (wireframe #screen-toolbar): vertical icon bar, strata-layers
-   logo mark on top (click to collapse), drag handle, width-resize strip on the   canvas-facing edge, reorderable entry buttons, spacer, then refresh +
-   settings pinned to the bottom of the full-height bar. Width and icon size
-   come from the --fc-tb-w / --fc-tb-icon vars set by applyPosition(). */
+/* Canvas toolbar (wireframe #screen-toolbar): compact vertical icon bar
+   anchored to a canvas corner (default bottom-left, so it never covers the
+   canvas back button), strata-layers logo mark on top (click to collapse),
+   drag handle (moves the bar in 2D, offset persists), width-resize strip on
+   the canvas-facing edge, reorderable entry buttons, then refresh + settings.
+   Width and icon size come from the --fc-tb-w / --fc-tb-icon vars set by
+   applyPosition(). */
 .strataboard-toolbar {
   position: absolute;
   display: flex;
@@ -1437,10 +1440,6 @@ body.theme-dark {
   color: var(--fc-fg);
 }
 
-.fc-tb-spacer {
-  flex: 1 1 auto;
-}
-
 /* Text mode (显示效果=文字): labels instead of icons, left-aligned; the
    dragged width acts as the minimum, content may widen the bar. */
 .strataboard-toolbar:has(.fc-tb-text-btn) {
@@ -1467,8 +1466,7 @@ body.theme-dark {
   padding: 6px 5px;
 }
 
-.strataboard-toolbar.is-collapsed button,
-.strataboard-toolbar.is-collapsed .fc-tb-spacer {
+.strataboard-toolbar.is-collapsed button {
   display: none;
 }
 

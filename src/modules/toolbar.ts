@@ -63,7 +63,7 @@ export class CanvasToolbar {
     setTooltip(logo, "StrataBoard — 点击展开/折叠工具栏");
     logo.addEventListener("click", () => this.toggleCollapsed());
 
-    // Drag handle: horizontal drag moves the bar, offset persists.
+    // Drag handle: drag moves the bar in 2D, offset persists.
     const drag = this.toolbarEl.createDiv("fc-tb-drag");
     setTooltip(drag, "拖拽移动工具栏");
     drag.addEventListener("pointerdown", (event) => this.startDrag(event));
@@ -87,7 +87,6 @@ export class CanvasToolbar {
       else if (def.onClick) this.createButton(def.icon, def.label, def.onClick);
     }
 
-    this.toolbarEl.createDiv("fc-tb-spacer");
     this.createButton("refresh", "全部刷新", () => void this.refreshAll());
     this.createButton("settings", "设置", () => this.openSettings());
 
@@ -199,18 +198,23 @@ export class CanvasToolbar {
     this.toolbarEl?.classList.toggle("is-collapsed", this.plugin.pluginSettings.toolbarCollapsed);
   }
 
-  // Horizontal drag on the handle: the offset measures the distance from the
-  // anchored side, so dragging flips the delta sign on right-anchored bars.
+  // Drag on the handle moves the bar in 2D. Each offset measures the distance
+  // from the anchored corner, so the delta sign flips per axis on right- or
+  // bottom-anchored bars.
   private startDrag(event: PointerEvent) {
     if (!this.toolbarEl) return;
     event.preventDefault();
     event.stopPropagation();
     const settings = this.plugin.pluginSettings;
     const startX = event.clientX;
+    const startY = event.clientY;
     const startOffsetX = settings.toolbarOffsetX;
-    const sign = settings.toolbarPosition === "left" ? 1 : -1;
+    const startOffsetY = settings.toolbarOffsetY;
+    const signX = settings.toolbarPosition.endsWith("left") ? 1 : -1;
+    const signY = settings.toolbarPosition.startsWith("top") ? 1 : -1;
     const onMove = (moveEvent: PointerEvent) => {
-      settings.toolbarOffsetX = Math.max(0, startOffsetX + (moveEvent.clientX - startX) * sign);
+      settings.toolbarOffsetX = Math.max(0, startOffsetX + (moveEvent.clientX - startX) * signX);
+      settings.toolbarOffsetY = Math.max(0, startOffsetY + (moveEvent.clientY - startY) * signY);
       this.applyPosition();
     };
     const onUp = () => {
@@ -221,7 +225,7 @@ export class CanvasToolbar {
     window.addEventListener("pointerup", onUp, { once: true });
   }
 
-  // Vertical drag on the edge strip: resizes the bar. The strip sits on the
+  // Horizontal drag on the edge strip: resizes the bar. The strip sits on the
   // canvas-facing edge, so dragging flips the delta sign on right-anchored
   // bars (same convention as startDrag).
   private startResize(event: PointerEvent) {
@@ -231,7 +235,7 @@ export class CanvasToolbar {
     const settings = this.plugin.pluginSettings;
     const startX = event.clientX;
     const startWidth = this.toolbarEl.offsetWidth;
-    const sign = settings.toolbarPosition === "left" ? 1 : -1;
+    const sign = settings.toolbarPosition.endsWith("left") ? 1 : -1;
     const onMove = (moveEvent: PointerEvent) => {
       settings.toolbarWidth = Math.min(
         320,
@@ -306,29 +310,31 @@ export class CanvasToolbar {
 
     const settings = this.plugin.pluginSettings;
     const pos = settings.toolbarPosition;
+    const isLeft = pos.endsWith("left");
+    const isTop = pos.startsWith("top");
     const offsetX = settings.toolbarOffsetX;
     const offsetY = settings.toolbarOffsetY;
 
     this.toolbarEl.setCssProps({ left: "", right: "", top: "", bottom: "" });
 
-    if (pos === "left") {
+    // Corner anchor: the bar is compact (hugs its content), and each offset
+    // measures out from the anchored corner.
+    if (isLeft) {
       this.toolbarEl.setCssProps({ left: `${offsetX}px` });
     } else {
       this.toolbarEl.setCssProps({ right: `${offsetX}px` });
     }
-
-    // The vertical bar stretches the full canvas height (spacer pushes
-    // refresh/settings to the bottom); collapsed it shrinks to the logo.
-    this.toolbarEl.setCssProps({
-      top: `${offsetY}px`,
-      bottom: settings.toolbarCollapsed ? "" : `${offsetY}px`,
-    });
+    if (isTop) {
+      this.toolbarEl.setCssProps({ top: `${offsetY}px` });
+    } else {
+      this.toolbarEl.setCssProps({ bottom: `${offsetY}px` });
+    }
 
     // Width + icon size are user-tunable; CSS consumes these vars.
     this.toolbarEl.style.setProperty("--fc-tb-w", `${settings.toolbarWidth}px`);
     this.toolbarEl.style.setProperty("--fc-tb-icon", `${settings.toolbarIconSize}px`);
     // Resize strip hugs the canvas-facing edge (left edge when right-anchored).
-    this.toolbarEl.classList.toggle("fc-tb-anchor-right", pos !== "left");
+    this.toolbarEl.classList.toggle("fc-tb-anchor-right", !isLeft);
   }
 
   private insertWidget() {
@@ -441,9 +447,35 @@ export class CanvasToolbar {
 
     if (node) {
       canvas.requestSave();
+      this.fitNodeHeightToCard(node, canvas);
     } else {
       new Notice("在画布上放置卡片失败");
       console.error("placeFileNode: createFileNode returned undefined", { file: tfile.path, center });
+    }
+  }
+
+  // The fixed default node size (800×500) is shorter than a fully rendered
+  // card (header + fixed-height chart stack + footer ≈ 550+), which clips
+  // the footer behind the node's overflow:hidden. Measure the rendered card
+  // and grow the node until the content is fully visible. Data-driven header
+  // rows can land after the first paint, so probe a few times and keep the
+  // largest measurement (grow-only, never shrink the user's node). Uses the
+  // internal node.resize() (verified against app.asar), same as canvas'
+  // own drag-resize.
+  private fitNodeHeightToCard(node: any, canvas: any) {
+    const probe = () => {
+      const cardEl = node.nodeEl?.querySelector(".strataboard-card") as HTMLElement | null;
+      if (!cardEl) return;
+      // height:100% + overflow:hidden clip the card to the node box, but
+      // scrollHeight still reports the natural content height.
+      const contentHeight = cardEl.scrollHeight;
+      if (contentHeight > node.height) {
+        node.resize({ width: node.width, height: contentHeight });
+        canvas.requestSave();
+      }
+    };
+    for (const delay of [80, 300, 800, 1600]) {
+      window.setTimeout(probe, delay);
     }
   }
 }

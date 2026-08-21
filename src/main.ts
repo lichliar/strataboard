@@ -1555,11 +1555,12 @@ export default class StrataBoardPlugin extends Plugin {
       ...storedOrder,
       ...DEFAULT_SETTINGS.toolbarOrder.filter((id) => !storedOrder.includes(id)),
     ];
-    // toolbarPosition is now just "left" | "right"; anything else (e.g. the
-    // old corner values) anchors right.
-    if (this.pluginSettings.toolbarPosition !== "left") {
-      this.pluginSettings.toolbarPosition = "right";
-    }
+    // Corner anchors; old "left" | "right" values (and anything unknown) map
+    // to the bottom corner on the same side. Idempotent for valid values.
+    const pos = this.pluginSettings.toolbarPosition as string;
+    this.pluginSettings.toolbarPosition = `${pos.startsWith("top") ? "top" : "bottom"}-${
+      pos.endsWith("left") ? "left" : "right"
+    }`;
   }
 
   async saveSettings() {
