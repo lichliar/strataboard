@@ -49,10 +49,16 @@ export class CanvasToolbar {
     // The toolbar always renders on the hermes dark palette.
     this.toolbarEl = container.createEl("div", { cls: "strataboard-toolbar fc-hermes" });
 
-    // Logo: strata-layers mark; click to collapse/expand the toolbar (state
-    // persists in settings).
+    // Logo: strata-layers mark (icon mode) or a horizontal "StrataBoard" word
+    // mark (text mode); click to collapse/expand the toolbar (state persists
+    // in settings).
     const logo = this.toolbarEl.createDiv("fc-tb-logo");
-    logo.innerHTML = LOGO_SVG;
+    if (this.plugin.pluginSettings.toolbarStyle === "text") {
+      logo.addClass("fc-tb-logo-text");
+      logo.setText("StrataBoard");
+    } else {
+      logo.innerHTML = LOGO_SVG;
+    }
     setTooltip(logo, "StrataBoard — 点击展开/折叠工具栏");
     logo.addEventListener("click", () => this.toggleCollapsed());
 
@@ -155,7 +161,6 @@ export class CanvasToolbar {
         icon: "components",
         menu: [
           { text: "日历", icon: "calendar-days", onClick: () => this.insertCalendar() },
-          { text: "时间线", icon: "ruler", onClick: () => this.insertTimeline() },
         ],
       },
     };
@@ -202,7 +207,7 @@ export class CanvasToolbar {
     const settings = this.plugin.pluginSettings;
     const startX = event.clientX;
     const startOffsetX = settings.toolbarOffsetX;
-    const sign = settings.toolbarPosition.includes("left") ? 1 : -1;
+    const sign = settings.toolbarPosition === "left" ? 1 : -1;
     const onMove = (moveEvent: PointerEvent) => {
       settings.toolbarOffsetX = Math.max(0, startOffsetX + (moveEvent.clientX - startX) * sign);
       this.applyPosition();
@@ -225,7 +230,7 @@ export class CanvasToolbar {
     const settings = this.plugin.pluginSettings;
     const startX = event.clientX;
     const startWidth = this.toolbarEl.offsetWidth;
-    const sign = settings.toolbarPosition.includes("left") ? 1 : -1;
+    const sign = settings.toolbarPosition === "left" ? 1 : -1;
     const onMove = (moveEvent: PointerEvent) => {
       settings.toolbarWidth = Math.min(
         320,
@@ -308,7 +313,7 @@ export class CanvasToolbar {
     this.toolbarEl.style.top = "";
     this.toolbarEl.style.bottom = "";
 
-    if (pos.includes("left")) {
+    if (pos === "left") {
       this.toolbarEl.style.left = `${offsetX}px`;
     } else {
       this.toolbarEl.style.right = `${offsetX}px`;
@@ -325,7 +330,7 @@ export class CanvasToolbar {
     this.toolbarEl.style.setProperty("--fc-tb-w", `${settings.toolbarWidth}px`);
     this.toolbarEl.style.setProperty("--fc-tb-icon", `${settings.toolbarIconSize}px`);
     // Resize strip hugs the canvas-facing edge (left edge when right-anchored).
-    this.toolbarEl.classList.toggle("fc-tb-anchor-right", !pos.includes("left"));
+    this.toolbarEl.classList.toggle("fc-tb-anchor-right", pos !== "left");
   }
 
   private insertWidget() {
@@ -334,10 +339,6 @@ export class CanvasToolbar {
 
   private insertCalendar() {
     void this.plugin.insertCalendarCard();
-  }
-
-  private insertTimeline() {
-    void this.plugin.insertTimelineCard();
   }
 
   private insertOverlay() {

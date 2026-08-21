@@ -12,3 +12,5 @@ app.js
 .od-skills/
 # Raw screen recordings; the README uses the converted docs/videos/*.mp4
 录频/
+# Local media tooling (ffmpeg-static), not part of the plugin
+.tools/

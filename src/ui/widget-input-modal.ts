@@ -2,11 +2,13 @@ import { App, Modal, Notice, Setting, type TextAreaComponent, type TextComponent
 import { parseWidgetCode, type WidgetCodeParse } from "../modules/widget-parser";
 import { FolderPathSelect } from "./folder-suggester";
 
-// TradingView Widget insert modal (wireframe #screen-widget). Two sub-pages:
-// 插入数据 (title + code + detected pill + template chips + save path) and
-// 可修改参数 (interval / theme / side-toolbar controls extracted from the
-// code, written back into it bidirectionally). Any HTML the parser can't
-// recognize degrades to manual editing with an empty params page.
+// TradingView Widget insert modal. Two sub-pages: 插入数据 (docs CTA + title
+// + code + detected pill + save path) and 可修改参数 (interval / theme /
+// side-toolbar controls extracted from the code, written back into it
+// bidirectionally). The standard flow: open the TradingView widget docs via
+// the CTA, configure the widget on their site, paste the generated code back
+// here, then 插入. Any HTML the parser can't recognize degrades to manual
+// editing with an empty params page.
 
 export interface WidgetInputModalResult {
   title: string;
@@ -29,72 +31,6 @@ const THEME_CHOICES = [
   { value: "light", label: "浅色" },
   { value: "dark", label: "深色" },
 ] as const;
-
-const WIDGET_TEMPLATES: { label: string; code: string }[] = [
-  {
-    label: "高级图表",
-    code: `<div id="tradingview-widget"></div>
-<script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-<script type="text/javascript">
-new TradingView.widget({
-  "autosize": true,
-  "symbol": "NASDAQ:AAPL",
-  "interval": "D",
-  "theme": "light",
-  "hide_side_toolbar": false,
-  "locale": "zh_CN"
-});
-</script>`,
-  },
-  {
-    label: "迷你走势",
-    code: `<!-- TradingView Widget BEGIN -->
-<div class="tradingview-widget-container">
-  <div class="tradingview-widget-container__widget"></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
-  {
-    "symbol": "NASDAQ:AAPL",
-    "theme": "light",
-    "locale": "zh_CN"
-  }
-  </script>
-</div>
-<!-- TradingView Widget END -->`,
-  },
-  {
-    label: "市场概览",
-    code: `<!-- TradingView Widget BEGIN -->
-<div class="tradingview-widget-container">
-  <div class="tradingview-widget-container__widget"></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js" async>
-  {
-    "colorTheme": "light",
-    "dateRange": "12M",
-    "showChart": true,
-    "locale": "zh_CN"
-  }
-  </script>
-</div>
-<!-- TradingView Widget END -->`,
-  },
-  {
-    label: "股票筛选器",
-    code: `<!-- TradingView Widget BEGIN -->
-<div class="tradingview-widget-container">
-  <div class="tradingview-widget-container__widget"></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-screener.js" async>
-  {
-    "defaultColumn": "overview",
-    "screener_type": "china",
-    "displayCurrency": "CNY",
-    "colorTheme": "light",
-    "locale": "zh_CN"
-  }
-  </script>
-</div>
-<!-- TradingView Widget END -->`,
-  },
-];
 
 type SubPage = "insert" | "params";
 
@@ -181,6 +117,25 @@ export class WidgetInputModal extends Modal {
   // ==================== 插入数据 ====================
 
   private renderInsertPage(pageEl: HTMLElement) {
+    // Docs CTA: the standard flow is to configure the widget on tradingview.com
+    // and paste the generated code back here, so the docs link is the
+    // emphasized entry point at the top of the page.
+    const docsBox = pageEl.createDiv("fc-widget-docs-box");
+    const docsBtn = docsBox.createEl("button", {
+      cls: "fc-widget-docs-cta",
+      text: "打开 TradingView 组件文档 ↗",
+      attr: { type: "button" },
+    });
+    docsBtn.addEventListener("click", () => window.open(DOCS_URL));
+    docsBox.createDiv({
+      cls: "fc-field-hint",
+      text: "在 TradingView 网站挑选组件并完成配置，复制生成的代码粘贴到下方代码框，点击「插入」。",
+    });
+    docsBox.createDiv({
+      cls: "fc-widget-net-notice",
+      text: "⚠ 中国大陆用户注意：TradingView 组件的访问与显示需要可用的国际网络环境。",
+    });
+
     // 标题 + 自动识别 badge
     const titleField = pageEl.createDiv("fc-widget-field");
     const titleLabelRow = titleField.createDiv("fc-widget-label-row");
@@ -199,15 +154,10 @@ export class WidgetInputModal extends Modal {
       this.titleText = text;
     });
 
-    // 组件代码 + 文档链接
+    // 组件代码
     const codeField = pageEl.createDiv("fc-widget-field");
     const codeLabelRow = codeField.createDiv("fc-widget-label-row");
     codeLabelRow.createSpan({ cls: "fc-widget-label", text: "组件代码" });
-    const docsLink = codeLabelRow.createEl("a", { cls: "fc-widget-link", text: "TradingView 组件文档 ↗", href: DOCS_URL });
-    docsLink.addEventListener("click", (event) => {
-      event.preventDefault();
-      window.open(DOCS_URL);
-    });
     codeField.createDiv({ cls: "fc-field-hint", text: "粘贴后自动解析配置对象，提取的参数见「可修改参数」子页面" });
     new Setting(codeField).setClass("fc-widget-code-setting").addTextArea((area) => {
       area
@@ -224,20 +174,6 @@ export class WidgetInputModal extends Modal {
 
     // 识别结果 pill（在 reparse 中原地更新）
     this.pillRowEl = pageEl.createDiv("fc-widget-pill-row");
-
-    // 常用组件模板
-    const templateGroup = pageEl.createDiv("fc-widget-group");
-    templateGroup.createDiv({ cls: "fc-widget-group-title", text: "常用组件模板" });
-    const chips = templateGroup.createDiv("fc-widget-chips");
-    for (const template of WIDGET_TEMPLATES) {
-      const chip = chips.createEl("button", { cls: "fc-chip", text: template.label, attr: { type: "button" } });
-      chip.addEventListener("click", () => {
-        this.code = template.code;
-        this.codeArea?.setValue(template.code);
-        this.reparse();
-      });
-    }
-    templateGroup.createDiv({ cls: "fc-field-hint", text: "点击填入对应组件的模板代码，再到「可修改参数」子页面调整" }).style.marginTop = "6px";
 
     // 保存路径（folder suggester）
     const pathField = pageEl.createDiv("fc-widget-field");

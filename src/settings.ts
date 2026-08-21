@@ -1,8 +1,15 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, TFile } from "obsidian";
 import type StrataBoardPlugin from "./main";
 import type { MacroSeriesDef, ToolbarEntryId, ToolbarPosition, ToolbarSourceId, ToolbarStyle } from "./types";
 import { MACRO_SERIES_OPTIONS } from "./types";
 import { FolderPathSelect } from "./ui/folder-suggester";
+import { CleanupConfirmModal } from "./ui/cleanup-modal";
+import {
+  collectUsedCacheKeys,
+  deleteStaleCacheEntry,
+  findOrphanCardFiles,
+  findStaleCacheEntries,
+} from "./modules/maintenance";
 
 export interface StrataBoardSettings {
   tushareToken: string;
@@ -34,7 +41,6 @@ export interface StrataBoardSettings {
   calendarDayFontSize: number;
   calendarExcerptLineHeight: number;
   calendarExcerptMaxLines: number;
-  timelineFontSize: number;
 }
 
 export const DEFAULT_SETTINGS: StrataBoardSettings = {
@@ -51,7 +57,7 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   dataCachePath: "金融卡片/数据缓存",
   symbolCachePath: "金融卡片/股票代码缓存",
   autoRefreshOnOpen: true,
-  toolbarPosition: "bottom-right",
+  toolbarPosition: "right",
   toolbarOffsetX: 16,
   toolbarOffsetY: 16,
   toolbarCollapsed: false,
@@ -64,8 +70,6 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   calendarDayFontSize: 20,
   calendarExcerptLineHeight: 2,
   calendarExcerptMaxLines: 4,
-  // Matches the timeline label fallback (--font-ui-smaller) in styles.css.
-  timelineFontSize: 12,
 };
 
 const TOOLBAR_SOURCE_LABELS: Record<ToolbarSourceId, string> = {
@@ -259,7 +263,12 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       text: "从仓库已有文件夹中选择，也可在菜单底部手动输入新路径。",
     });
 
-    this.addFolderPathSetting(containerEl, {
+    // 卡片路径: the three card folders, folded like 缓存路径 below.
+    const cardDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    cardDetails.setAttr("open", "");
+    cardDetails.createEl("summary", { text: "卡片路径" });
+
+    this.addFolderPathSetting(cardDetails, {
       name: "图表卡片路径",
       desc: "存放图表卡片 Markdown 文件的文件夹（资产叠加、数据计算等卡片默认也放在这里）。",
       value: this.plugin.pluginSettings.cardLibraryPath,
@@ -270,7 +279,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       },
     });
 
-    this.addFolderPathSetting(containerEl, {
+    this.addFolderPathSetting(cardDetails, {
       name: "TradingView Widgets 路径",
       desc: "存放 HTML / TradingView 小组件卡片的文件夹。",
       value: this.plugin.pluginSettings.widgetCardPath,
@@ -281,7 +290,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       },
     });
 
-    this.addFolderPathSetting(containerEl, {
+    this.addFolderPathSetting(cardDetails, {
       name: "组件路径",
       desc: "存放日历、时间线组件卡片的文件夹。",
       value: this.plugin.pluginSettings.componentCardPath,
@@ -316,6 +325,90 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       },
     });
+
+    this.renderCleanupSettings(containerEl);
+  }
+
+  // 清理维护: two-step cleanup tools (scan → checklist → confirm) for orphan
+  // card files and stale cache data. Scan logic lives in modules/maintenance.ts.
+  private renderCleanupSettings(containerEl: HTMLElement): void {
+    const details = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    details.createEl("summary", { text: "清理维护" });
+    details.createDiv({
+      cls: "fc-field-hint",
+      text: "扫描后先列出清单，勾选确认后再执行删除。",
+    });
+
+    new Setting(details)
+      .setName("清理孤立卡片文件")
+      .setDesc("清理卡片路径下没有被任何画布、笔记链接或数据计算卡片引用的卡片文件（删除后进入回收站）。")
+      .addButton((btn) =>
+        btn.setButtonText("扫描孤立文件").onClick(() => void this.runOrphanFileCleanup())
+      );
+
+    new Setting(details)
+      .setName("清理闲置数据缓存")
+      .setDesc("清理数据缓存中不再被任何卡片使用的行情、市场数据与宏观/FRED 序列，保持缓存体积合理。")
+      .addButton((btn) =>
+        btn.setButtonText("扫描闲置缓存").onClick(() => void this.runStaleCacheCleanup())
+      );
+  }
+
+  private async runOrphanFileCleanup(): Promise<void> {
+    new Notice("正在扫描孤立卡片文件…");
+    const { cardLibraryPath, widgetCardPath, componentCardPath } = this.plugin.pluginSettings;
+    const orphans = await findOrphanCardFiles(this.app, [
+      cardLibraryPath,
+      widgetCardPath,
+      componentCardPath,
+    ]);
+    if (orphans.length === 0) {
+      new Notice("没有发现孤立卡片文件。");
+      return;
+    }
+    new CleanupConfirmModal(this.app, {
+      title: "清理孤立卡片文件",
+      desc: `以下 ${orphans.length} 个卡片文件没有被任何画布、笔记链接或数据计算卡片引用。取消勾选可保留对应文件。`,
+      confirmLabel: "删除文件",
+      items: orphans.map((file) => ({ id: file.path, label: file.basename, hint: file.path })),
+      onConfirm: async (selected) => {
+        for (const item of selected) {
+          const file = this.app.vault.getAbstractFileByPath(item.id);
+          if (file instanceof TFile) await this.app.fileManager.trashFile(file);
+        }
+        new Notice(`已删除 ${selected.length} 个孤立卡片文件。`);
+      },
+    }).open();
+  }
+
+  private async runStaleCacheCleanup(): Promise<void> {
+    new Notice("正在扫描闲置数据缓存…");
+    const used = await collectUsedCacheKeys(this.app);
+    const stale = await findStaleCacheEntries(this.plugin.sqliteCache, used);
+    if (stale.length === 0) {
+      new Notice("没有发现闲置的数据缓存。");
+      return;
+    }
+    const totalRows = stale.reduce((sum, entry) => sum + entry.rows, 0);
+    new CleanupConfirmModal(this.app, {
+      title: "清理闲置数据缓存",
+      desc: `以下 ${stale.length} 组缓存数据（共 ${totalRows} 行）不再被任何卡片使用。清理后对应卡片重新创建时会重新拉取数据。`,
+      confirmLabel: "清理缓存",
+      items: stale.map((entry, index) => ({
+        id: String(index),
+        label: entry.label,
+        hint: entry.detail,
+      })),
+      onConfirm: async (selected) => {
+        let rows = 0;
+        for (const item of selected) {
+          const entry = stale[Number(item.id)];
+          await deleteStaleCacheEntry(this.plugin.sqliteCache, entry);
+          rows += entry.rows;
+        }
+        new Notice(`已清理 ${selected.length} 组缓存数据（${rows} 行）。`);
+      },
+    }).open();
   }
 
   /** Path row: folder suggester dropdown, empty value falls back to the default. */
@@ -342,7 +435,12 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   // 图表高度) lives in each card's unified edit modal — global defaults were
   // deliberately removed to avoid two config sources overriding each other.
   private renderCardSettings(containerEl: HTMLElement): void {
-    new Setting(containerEl)
+    // 通用设置 open by default; the widget/calendar subgroups fold away.
+    const generalDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    generalDetails.setAttr("open", "");
+    generalDetails.createEl("summary", { text: "通用设置" });
+
+    new Setting(generalDetails)
       .setName("打开时自动刷新")
       .setDesc("打开文件或画布时自动刷新卡片数据。")
       .addToggle((toggle) =>
@@ -352,14 +450,15 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         })
       );
 
-    const note = containerEl.createDiv("fc-settings-note");
+    const note = generalDetails.createDiv("fc-settings-note");
     note.appendText("卡片级配置（周期 / 时间范围 / 图表类型 / 主题 / 涨跌色 / 图表高度）由各卡片的");
     note.createEl("b", { text: "统合编辑弹窗" });
     note.appendText("独立设置并随卡片保存，此处不再提供全局默认，避免两处配置互相覆盖；新建卡片使用内置默认值。");
 
-    containerEl.createEl("h3", { text: "TradingView Widgets" });
+    const widgetDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    widgetDetails.createEl("summary", { text: "TradingView Widgets" });
 
-    new Setting(containerEl)
+    new Setting(widgetDetails)
       .setName("小组件 iframe 高度")
       .setDesc("HTML / TradingView 小组件在卡片内部渲染时 iframe 的高度（像素）。")
       .addSlider((slider) =>
@@ -373,9 +472,10 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           })
       );
 
-    containerEl.createEl("h3", { text: "日历卡片" });
+    const calendarDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    calendarDetails.createEl("summary", { text: "日历卡片" });
 
-    new Setting(containerEl)
+    new Setting(calendarDetails)
       .setName("日记文件夹")
       .setDesc("日历卡片按天查找/创建日记的文件夹。留空则跟随核心「日记」插件的设置，否则默认为「日记」。")
       .addText((text) =>
@@ -388,7 +488,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
+    new Setting(calendarDetails)
       .setName("日记文件名格式")
       .setDesc("日记文件名的日期格式（Moment 格式，如 YYYY-MM-DD）。留空则跟随核心「日记」插件的设置。")
       .addText((text) =>
@@ -401,7 +501,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
+    new Setting(calendarDetails)
       .setName("摘要字号")
       .setDesc("日历格子内日记摘要的字号（像素），重新打开卡片后生效。")
       .addSlider((slider) =>
@@ -415,7 +515,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
+    new Setting(calendarDetails)
       .setName("日期数字字号")
       .setDesc("日历格子内日期数字的字号（像素），重新打开卡片后生效。")
       .addSlider((slider) =>
@@ -429,7 +529,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
+    new Setting(calendarDetails)
       .setName("摘要行高")
       .setDesc("日历格子内日记摘要的行高倍数，重新打开卡片后生效。")
       .addSlider((slider) =>
@@ -443,7 +543,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
+    new Setting(calendarDetails)
       .setName("摘要最大行数")
       .setDesc("日历格子内日记摘要最多显示的行数，重新打开卡片后生效。")
       .addSlider((slider) =>
@@ -456,34 +556,21 @@ export class StrataBoardSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
-
-    containerEl.createEl("h3", { text: "时间线卡片" });
-
-    new Setting(containerEl)
-      .setName("标签字号")
-      .setDesc("时间线卡片刻度标签的字号（像素），重新打开卡片后生效。")
-      .addSlider((slider) =>
-        slider
-          .setLimits(8, 24, 1)
-          .setValue(this.plugin.pluginSettings.timelineFontSize)
-          .setDynamicTooltip()
-          .onChange(async (value) => {
-            this.plugin.pluginSettings.timelineFontSize = value;
-            await this.plugin.saveSettings();
-          })
-      );
   }
 
   private renderToolbarSettings(containerEl: HTMLElement): void {
-    new Setting(containerEl)
+    // 外观 open by default; source visibility and button order fold away.
+    const lookDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    lookDetails.setAttr("open", "");
+    lookDetails.createEl("summary", { text: "外观" });
+
+    new Setting(lookDetails)
       .setName("工具栏位置")
-      .setDesc("画布上浮动工具栏所在角落。")
+      .setDesc("画布上的竖条浮动工具栏锚定在左侧还是右侧。")
       .addDropdown((dropdown) =>
         dropdown
-          .addOption("top-left", "左上")
-          .addOption("top-right", "右上")
-          .addOption("bottom-left", "左下")
-          .addOption("bottom-right", "右下")
+          .addOption("left", "左侧")
+          .addOption("right", "右侧")
           .setValue(this.plugin.pluginSettings.toolbarPosition)
           .onChange(async (value) => {
             this.plugin.pluginSettings.toolbarPosition = value as ToolbarPosition;
@@ -491,7 +578,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
+    new Setting(lookDetails)
       .setName("显示效果")
       .setDesc("工具栏按钮显示为纯图标（悬停显示名称）或文字。")
       .addDropdown((dropdown) =>
@@ -502,30 +589,24 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.pluginSettings.toolbarStyle = value as ToolbarStyle;
             await this.plugin.saveSettings();
+            // Icon size only applies in icon mode; re-render to flip its
+            // disabled state.
+            this.display();
           })
       );
 
-    containerEl.createDiv({ cls: "fc-settings-group-label", text: "工具栏显示的数据源" });
-    containerEl.createDiv({
-      cls: "fc-field-hint",
-      text: "关闭后对应源不再出现在画布工具栏（命令面板与右键菜单不受影响）。没有配置密钥的收费源建议关闭。",
-    });
-    for (const id of Object.keys(TOOLBAR_SOURCE_LABELS) as ToolbarSourceId[]) {
-      new Setting(containerEl).setName(TOOLBAR_SOURCE_LABELS[id]).addToggle((toggle) =>
-        toggle.setValue(this.plugin.pluginSettings.toolbarSources[id]).onChange(async (value) => {
-          this.plugin.pluginSettings.toolbarSources[id] = value;
-          await this.plugin.saveSettings();
-        })
-      );
-    }
-
-    new Setting(containerEl)
+    new Setting(lookDetails)
       .setName("图标大小")
-      .setDesc("工具栏按钮图标的尺寸（像素）。")
+      .setDesc(
+        this.plugin.pluginSettings.toolbarStyle === "text"
+          ? "文字显示效果下不生效（仅图标模式可调）。"
+          : "工具栏按钮图标的尺寸（像素）。"
+      )
       .addSlider((slider) =>
         slider
           .setLimits(12, 24, 1)
           .setValue(this.plugin.pluginSettings.toolbarIconSize)
+          .setDisabled(this.plugin.pluginSettings.toolbarStyle === "text")
           .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.toolbarIconSize = value;
@@ -533,14 +614,30 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           })
       );
 
-    containerEl.createDiv({ cls: "fc-settings-group-label", text: "按钮排序" });
-    containerEl.createDiv({
+    const sourceDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    sourceDetails.createEl("summary", { text: "工具栏显示的数据源" });
+    sourceDetails.createDiv({
+      cls: "fc-field-hint",
+      text: "关闭后对应源不再出现在画布工具栏（命令面板与右键菜单不受影响）。没有配置密钥的收费源建议关闭。",
+    });
+    for (const id of Object.keys(TOOLBAR_SOURCE_LABELS) as ToolbarSourceId[]) {
+      new Setting(sourceDetails).setName(TOOLBAR_SOURCE_LABELS[id]).addToggle((toggle) =>
+        toggle.setValue(this.plugin.pluginSettings.toolbarSources[id]).onChange(async (value) => {
+          this.plugin.pluginSettings.toolbarSources[id] = value;
+          await this.plugin.saveSettings();
+        })
+      );
+    }
+
+    const orderDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    orderDetails.createEl("summary", { text: "按钮排序" });
+    orderDetails.createDiv({
       cls: "fc-field-hint",
       text: "调整工具栏顶部按钮的先后顺序；「全部刷新」「设置」始终固定在底部。工具栏宽度可在画布上直接拖拽边缘调整。",
     });
     const order = this.plugin.pluginSettings.toolbarOrder;
     order.forEach((id, index) => {
-      const row = new Setting(containerEl).setName(TOOLBAR_ENTRY_LABELS[id]);
+      const row = new Setting(orderDetails).setName(TOOLBAR_ENTRY_LABELS[id]);
       row.addButton((btn) =>
         btn
           .setIcon("arrow-up")

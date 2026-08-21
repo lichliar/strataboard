@@ -100,7 +100,7 @@
 - [ ] **菜单重组**（当前与线框图不一致，重点）：
   - 「插入数据」：插入资产数据 / 数据叠加 / 数据计算（当前 FRED 是独立项，需并入资产数据的统合入口）
   - 「小组件」：插入TradingView Widget（当前菜单里的「TradingView 小组件文档」链接移入 Widget 弹窗，见阶段 4）
-  - 「插入组件」：日历 / 时间线
+  - 「插入组件」：日历
   - 三个菜单**互相独立**，不可混淆
 - [ ] 「全部刷新」与「设置」（齿轮 SVG）**置底**；设置按钮调 `app.setting.open()` + `openTabById('strataboard')`
 - [ ] 竖向、固定左侧、可拖拽（位置记忆已有 `toolbarPosition/Offset`，确认仍工作）；顶部 SVG Logo 点击展开 / 折叠，折叠态收缩到 Logo 附近
@@ -114,7 +114,6 @@
 
 - [ ] **卡片阅读视图**（`#screen-card`）：`src/modules/chart-renderer.ts` / `series-chart-renderer.ts` 卡片工具栏改 SVG 图标；loading / retry 状态对齐线框图
 - [ ] **日历弹窗**（`#screen-calendar`）：改为月宫格选择器；文字左对齐，亮暗布局一致；`src/modules/calendar-renderer.ts` / `daily-notes.ts`
-- [ ] **时间线弹窗**（`#screen-timeline`）：范围预设 + 预览条 + 分段颗粒度；`src/ui/timeline-edit-modal.ts`
 - [ ] **资产叠加卡**（`#screen-overlay`）：三子页结构与统合弹窗对齐（无公式输入，不需要错误态）
 
 ---

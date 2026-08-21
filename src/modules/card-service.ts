@@ -27,17 +27,13 @@ export class CardService {
     this.options.componentCardPath = paths.componentCardPath;
   }
 
-  // Default save folder per card kind: calendar/timeline go to the component
-  // path, widgets to the widget path, everything else (tushare, overlay,
-  // spread, fred) to the chart card library.
+  // Default save folder per card kind: calendar goes to the component path,
+  // widgets to the widget path, everything else (tushare, overlay, spread,
+  // fred) to the chart card library.
   private defaultPathForSpec(spec: ParsedCardSpec): string {
     if (spec.contentType === "calendar") return this.options.componentCardPath;
     if (spec.contentType === "widget" || spec.widgetType) return this.options.widgetCardPath;
     return this.options.cardLibraryPath;
-  }
-
-  private defaultPathForBlock(blockType: string): string {
-    return blockType === "timeline" ? this.options.componentCardPath : this.options.cardLibraryPath;
   }
 
   async createOrReuse(spec: ParsedCardSpec, savePath?: string, displayName?: string): Promise<TFile> {
@@ -76,11 +72,11 @@ export class CardService {
     return this.options.app.vault.create(filePath, content);
   }
 
-  // Creates a card file from a raw code-block body, for card types whose spec
-  // lives outside ParsedCardSpec (currently the timeline ruler). No fc-*
-  // frontmatter and no reuse: every insert produces a fresh card.
+  // Creates a card file from a raw code-block body (fred/macro/overlay/spread
+  // inserts). No fc-* frontmatter and no reuse: every insert produces a fresh
+  // card.
   async createRawCard(baseName: string, blockType: string, blockBody: string, savePath?: string): Promise<TFile> {
-    const libraryPath = normalizePath(savePath || this.defaultPathForBlock(blockType));
+    const libraryPath = normalizePath(savePath || this.options.cardLibraryPath);
     await this.ensureFolder(libraryPath);
 
     const filePath = await this.uniqueFilePath(libraryPath, baseName);

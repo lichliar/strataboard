@@ -18,7 +18,6 @@ import { SqliteCache } from "./modules/sqlite-cache";
 import { CardService, codeBlockTypeFor } from "./modules/card-service";
 import { ChartRenderer } from "./modules/chart-renderer";
 import { CalendarRenderer } from "./modules/calendar-renderer";
-import { TimelineRenderer, parseTimelineSpec, timelineCardFileName, type TimelineParseResult } from "./modules/timeline-renderer";
 import { WidgetRenderer } from "./modules/widget-renderer";
 import { parseWidgetInput } from "./modules/widget-parser";
 import { CanvasToolbar } from "./modules/toolbar";
@@ -45,7 +44,6 @@ import { MacroSearchModal } from "./ui/macro-search-modal";
 import { RemoteQuoteSearchModal } from "./ui/remote-quote-modal";
 import { SourcePickerModal } from "./ui/source-picker-modal";
 import { WidgetInputModal } from "./ui/widget-input-modal";
-import { TimelineEditModal, type TimelineEditResult } from "./ui/timeline-edit-modal";
 import { UnifiedCardEditModal } from "./ui/unified-card-edit-modal";
 import { CalendarEditModal } from "./ui/calendar-edit-modal";
 import { OverlayEditModal } from "./ui/overlay-edit-modal";
@@ -602,98 +600,6 @@ class CalendarCodeBlockRenderer extends MarkdownRenderChild {
     }
   }
 }
-
-class TimelineCodeBlockRenderer extends MarkdownRenderChild {
-  private plugin: StrataBoardPlugin;
-  private sourcePath: string;
-  private result: TimelineParseResult;
-  private timelineRenderer: TimelineRenderer | null = null;
-
-  constructor(plugin: StrataBoardPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
-    super(containerEl);
-    this.plugin = plugin;
-    this.sourcePath = sourcePath;
-    this.result = parseTimelineSpec(source);
-  }
-
-  onload() {
-    this.render();
-
-    // Double-click on a canvas file node natively enters the embedded edit
-    // mode; capture the event before that handler so the edit modal wins.
-    this.registerDomEvent(
-      this.containerEl,
-      "dblclick",
-      (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        this.openEditModal();
-      },
-      { capture: true }
-    );
-  }
-
-  private render() {
-    this.containerEl.empty();
-    this.containerEl.addClass("strataboard-card");
-    onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
-
-    if (!this.result.ok) {
-      this.containerEl.createEl("div", {
-        text: `错误：${this.result.error}`,
-        cls: "strataboard-error",
-      });
-      return;
-    }
-
-    this.timelineRenderer = new TimelineRenderer(this.containerEl, {
-      app: this.plugin.app,
-      spec: this.result.spec,
-      getFontSize: () => this.plugin.pluginSettings.timelineFontSize,
-    });
-    this.addChild(this.timelineRenderer);
-  }
-
-  private openEditModal() {
-    if (!this.result.ok) return;
-    const spec = this.result.spec;
-    new TimelineEditModal(
-      this.plugin.app,
-      {
-        start: formatIsoDate(spec.start),
-        end: spec.end ? formatIsoDate(spec.end) : null,
-        unit: spec.unit,
-      },
-      (edit) => {
-        void this.plugin.updateTimelineCard(this.sourcePath, edit);
-      }
-    ).open();
-  }
-
-  private tagParentPreviewAsCard() {
-    let el: HTMLElement | null = this.containerEl;
-    let canvasNode: HTMLElement | null = null;
-    let markdownPreview: HTMLElement | null = null;
-
-    while (el) {
-      if (el.classList.contains("canvas-node")) {
-        canvasNode = el;
-      }
-      if (el.classList.contains("markdown-preview-view")) {
-        markdownPreview = el;
-      }
-      el = el.parentElement;
-    }
-
-    if (canvasNode) {
-      canvasNode.classList.add("strataboard-card-note");
-      if (markdownPreview) {
-        markdownPreview.classList.add("strataboard-card-note");
-      }
-    }
-  }
-}
-
 // One overlay line plus whether it is a percent-ish series (drives the "%"
 // suffix in the legend).
 interface OverlayLine {
@@ -1505,21 +1411,6 @@ export default class StrataBoardPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "insert-timeline-card",
-      name: "插入时间线卡片",
-      checkCallback: (checking: boolean) => {
-        const view = this.app.workspace.getActiveViewOfType(ItemView);
-        if (view?.getViewType() === "canvas") {
-          if (!checking) {
-            void this.insertTimelineCard();
-          }
-          return true;
-        }
-        return false;
-      },
-    });
-
-    this.addCommand({
       id: "insert-overlay-card",
       name: "插入资产叠加卡片",
       checkCallback: (checking: boolean) => {
@@ -1591,11 +1482,6 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.registerMarkdownCodeBlockProcessor("calendar", (source, el, ctx) => {
       const renderer = new CalendarCodeBlockRenderer(this, el, source, ctx.sourcePath);
-      ctx.addChild(renderer);
-    });
-
-    this.registerMarkdownCodeBlockProcessor("timeline", (source, el, ctx) => {
-      const renderer = new TimelineCodeBlockRenderer(this, el, source, ctx.sourcePath);
       ctx.addChild(renderer);
     });
 
@@ -1671,6 +1557,11 @@ export default class StrataBoardPlugin extends Plugin {
       ...storedOrder,
       ...DEFAULT_SETTINGS.toolbarOrder.filter((id) => !storedOrder.includes(id)),
     ];
+    // toolbarPosition is now just "left" | "right"; anything else (e.g. the
+    // old corner values) anchors right.
+    if (this.pluginSettings.toolbarPosition !== "left") {
+      this.pluginSettings.toolbarPosition = "right";
+    }
   }
 
   async saveSettings() {
@@ -1766,7 +1657,7 @@ export default class StrataBoardPlugin extends Plugin {
 
   // Md-note counterpart of the canvas toolbar: one picker covering every card
   // type (project rule: every source reachable from every entry point). Data
-  // sources keep their token/key gates; widget/calendar/timeline need none.
+  // sources keep their token/key gates; widget/calendar need none.
   // Each flow receives the editor and writes its fenced block at the cursor
   // instead of creating a card file.
   insertCardIntoMd(editor: Editor) {
@@ -1826,11 +1717,6 @@ export default class StrataBoardPlugin extends Plugin {
         name: "日历",
         desc: "联动日记的月历卡片",
         onPick: () => void this.insertCalendarCard(editor),
-      },
-      {
-        name: "时间线",
-        desc: "从起始日期自动延伸到今天的时间刻度尺",
-        onPick: () => void this.insertTimelineCard(editor),
       },
     ];
 
@@ -1937,73 +1823,6 @@ export default class StrataBoardPlugin extends Plugin {
     } catch (e) {
       new Notice(`创建日历卡片失败：${e instanceof Error ? e.message : String(e)}`);
       console.error("创建日历卡片失败:", e);
-    }
-  }
-
-  async insertTimelineCard(editor?: Editor) {
-    // Default ruler: from the 1st of the current month, auto-ending today.
-    const now = new Date();
-    const start = formatIsoDate(new Date(now.getFullYear(), now.getMonth(), 1));
-    const body = `start: ${start}\nunit: day`;
-
-    if (editor) {
-      this.insertBlockIntoEditor(editor, "timeline", body);
-      return;
-    }
-
-    // Auto end resolves to today for the file name only; the spec keeps it
-    // omitted so the ruler keeps extending.
-    const baseName = timelineCardFileName(start, formatIsoDate(now));
-
-    try {
-      const file = await this.cardService.createRawCard(baseName, "timeline", body);
-      this.toolbar.placeFileNode(file);
-    } catch (e) {
-      new Notice(`创建时间线卡片失败：${e instanceof Error ? e.message : String(e)}`);
-      console.error("创建时间线卡片失败:", e);
-    }
-  }
-
-  // Saves an edited timeline spec back into the card file and renames the
-  // file to match the new (resolved) range. Called from the edit modal.
-  async updateTimelineCard(sourcePath: string, edit: TimelineEditResult) {
-    const file = this.app.vault.getAbstractFileByPath(sourcePath);
-    if (!(file instanceof TFile)) {
-      new Notice("找不到时间线卡片文件。");
-      return;
-    }
-
-    const body = edit.end
-      ? `start: ${edit.start}\nend: ${edit.end}\nunit: ${edit.unit}`
-      : `start: ${edit.start}\nunit: ${edit.unit}`;
-
-    try {
-      const content = await this.app.vault.cachedRead(file);
-      const blockRe = /```timeline\n[\s\S]*?\n```/;
-      const newBlock = ["```timeline", body, "```"].join("\n");
-      // Replace only the code block so notes elsewhere in the file survive;
-      // the canvas preview re-renders on the modify event.
-      const newContent = blockRe.test(content)
-        ? content.replace(blockRe, newBlock)
-        : `${content.trimEnd()}\n\n${newBlock}\n`;
-      if (newContent !== content) {
-        await this.app.vault.modify(file, newContent);
-      }
-
-      const resolvedEnd = edit.end ?? formatIsoDate(new Date());
-      const baseName = timelineCardFileName(edit.start, resolvedEnd);
-      if (file.name !== baseName) {
-        const folder = file.parent && file.parent.path !== "/" ? file.parent.path : "";
-        const target = await this.cardService.uniqueFilePath(folder, baseName);
-        if (target !== file.path) {
-          // renameFile routes through Obsidian's link updater, which rewrites
-          // the node's file path inside open .canvas files.
-          await this.app.fileManager.renameFile(file, target);
-        }
-      }
-    } catch (e) {
-      new Notice(`保存时间线失败：${e instanceof Error ? e.message : String(e)}`);
-      console.error("保存时间线失败:", e);
     }
   }
 

@@ -43,7 +43,7 @@ body.theme-dark {
 /* ==========================================================================
    fc-hermes scope — the plugin's own dark instrument-panel palette (深青灰底
    + 琥珀 accent), applied to every card surface (chart / series / calendar /
-   timeline / widget) and the canvas toolbar. Cards carry this class
+   widget) and the canvas toolbar. Cards carry this class
    regardless of the Obsidian theme; only a card explicitly set to 浅色主题
    opts out. Canvas drawing colors live in CHART_PALETTE (chart-renderer.ts)
    and must be kept in sync with the values here.
@@ -80,33 +80,7 @@ body.theme-dark {
    settings page and all edit modals; later phases consume these classes.
    ========================================================================== */
 
-/* Chip — preset pill (timeline range presets, widget template chips). */
-.fc-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 12px;
-  font-size: 12px;
-  border-radius: 14px;
-  border: 1px solid var(--fc-border);
-  background: var(--fc-surface);
-  color: var(--fc-muted);
-  cursor: pointer;
-  user-select: none;
-  box-shadow: none;
-  white-space: nowrap;
-}
-
-.fc-chip:hover {
-  color: var(--fc-fg);
-}
-
-.fc-chip.is-active {
-  background: var(--fc-accent);
-  border-color: var(--fc-accent);
-  color: var(--fc-on-accent);
-}
-
-/* Segmented control — direct single choice (timeline 颗粒度, widget params). */
+/* Segmented control — direct single choice (widget params). */
 .fc-segmented {
   display: inline-flex;
   align-items: center;
@@ -618,8 +592,7 @@ body.theme-dark {
    monospace for code / API keys / symbol codes (apply .fc-mono). */
 .strataboard-card,
 .financial-series-chart,
-.financial-calendar,
-.financial-timeline {
+.financial-calendar {
   font-variant-numeric: tabular-nums;
 }
 
@@ -1395,6 +1368,18 @@ body.theme-dark {
   background: var(--fc-empty);
 }
 
+/* Text display effect: the logo mark becomes a horizontal StrataBoard word
+   mark (toolbar.ts renders it when toolbarStyle === "text"). */
+.fc-tb-logo.fc-tb-logo-text {
+  width: auto;
+  height: auto;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 .fc-tb-drag {
   width: 28px;
   height: 4px;
@@ -1496,9 +1481,44 @@ body.theme-dark {
   display: none;
 }
 
-/* ===== Widget insert modal (wireframe #screen-widget) ===== */
+/* ===== Widget insert modal ===== */
 
-/* Stacked field: label row (label + badge/link) above the control. */
+/* Docs CTA at the top of the insert page: configuring the widget on
+   tradingview.com is the intended first step, so the link is a prominent
+   button, plus the mainland-China network notice. */
+.fc-widget-docs-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.fc-widget-docs-cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fc-accent);
+  background: transparent;
+  border: 1px solid var(--fc-accent);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.fc-widget-docs-cta:hover {
+  background: var(--fc-accent);
+  color: var(--fc-bg);
+}
+
+.fc-widget-net-notice {
+  font-size: 12px;
+  color: var(--text-warning, #e5b567);
+}
+
+/* Stacked field: label row (label + badge) above the control. */
 .fc-widget-field {
   display: flex;
   flex-direction: column;
@@ -1519,12 +1539,6 @@ body.theme-dark {
   font-size: 13px;
   font-weight: 500;
   color: var(--fc-fg);
-}
-
-.fc-widget-link {
-  font-size: 11px;
-  color: var(--fc-accent);
-  text-decoration: none;
 }
 
 .fc-widget-field .setting-item {
@@ -1549,26 +1563,6 @@ body.theme-dark {
   gap: 8px;
   flex-wrap: wrap;
   margin: 4px 0 10px;
-}
-
-/* 常用组件模板 group (dashed separator + title + chips). */
-.fc-widget-group {
-  border-top: 1px dashed var(--fc-border);
-  margin: 6px 0 10px;
-  padding-top: 12px;
-}
-
-.fc-widget-group-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fc-fg);
-  margin-bottom: 8px;
-}
-
-.fc-widget-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
 }
 
 /* Calendar card */
@@ -1600,7 +1594,7 @@ body.theme-dark {
   background: var(--background-modifier-hover);
 }
 
-/* Month-grid picker + timeline range box (edit modals, phase 6). */
+/* Month-grid picker group title + range box (calendar edit modal). */
 .fc-timeline-group-title {
   font-size: 12px;
   font-weight: 600;
@@ -1614,87 +1608,6 @@ body.theme-dark {
   background: var(--fc-surface);
   padding: 10px 12px;
   margin-bottom: 10px;
-}
-
-.fc-timeline-dates {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.fc-timeline-date-setting {
-  flex: 1;
-  border: none;
-  padding: 0;
-}
-
-.fc-timeline-date-setting input {
-  width: 100%;
-}
-
-.fc-timeline-dates-arrow {
-  color: var(--fc-muted);
-  font-size: 12px;
-}
-
-/* Range preview bar: accent segment + start dot + today hollow marker. */
-.fc-range-preview {
-  margin-top: 14px;
-  padding: 0 2px;
-}
-
-.fc-range-preview-bar {
-  position: relative;
-  height: 22px;
-}
-
-.fc-range-preview-track,
-.fc-range-preview-span {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 9px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--fc-border);
-}
-
-.fc-range-preview-span {
-  background: var(--fc-accent);
-  opacity: 0.85;
-}
-
-.fc-range-preview-start {
-  position: absolute;
-  left: 0;
-  top: 5px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--fc-accent);
-  transform: translateX(-2px);
-}
-
-.fc-range-preview-today {
-  position: absolute;
-  right: 0;
-  top: 4px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--fc-surface);
-  border: 3px solid var(--fc-accent);
-  transform: translateX(2px);
-  box-sizing: border-box;
-}
-
-.fc-range-preview-labels {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--fc-muted);
-  font-variant-numeric: tabular-nums;
 }
 
 /* Month-grid picker (calendar edit modal): year nav + 4×3 cells. */
@@ -1876,72 +1789,6 @@ body.theme-dark {
   background: var(--interactive-accent);
 }
 
-/* Timeline ruler card */
-.financial-timeline {
-  padding: 8px;
-  user-select: none;
-}
-
-/* Horizontal padding is set inline from RULER_PADDING_PX in
-   timeline-renderer.ts (single source of truth) — do not add padding here. */
-.financial-timeline-ruler {
-  position: relative;
-  box-sizing: border-box;
-  width: 100%;
-  height: 56px;
-  overflow: hidden;
-}
-
-.financial-timeline-baseline {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 1px;
-  background: var(--background-modifier-border);
-}
-
-.financial-timeline-tick {
-  position: absolute;
-  bottom: 0;
-  width: 1px;
-  height: 6px;
-  background: var(--background-modifier-border);
-}
-
-.financial-timeline-tick.is-major {
-  height: 12px;
-  background: var(--text-muted);
-}
-
-.financial-timeline-label {
-  position: absolute;
-  transform: translateX(-50%);
-  white-space: nowrap;
-  font-size: var(--fc-timeline-font-size, var(--font-ui-smaller));
-  line-height: 1.2;
-  color: var(--text-muted);
-}
-
-.financial-timeline-label.is-minor {
-  bottom: 8px;
-}
-
-.financial-timeline-label.is-major {
-  top: 0;
-  color: var(--text-normal);
-  font-weight: 500;
-}
-
-.financial-timeline-today {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  margin-left: -1px;
-  background: var(--interactive-accent);
-}
-
 /* Settings page topbar (tab switcher) */
 .fc-settings-tabbar {
   display: flex;
@@ -1972,4 +1819,57 @@ body.theme-dark {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
   font-weight: 600;
+}
+
+/* Cleanup confirm modal (settings 清理维护): scrollable checklist + footer. */
+.fc-cleanup-list {
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 10px 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+
+.fc-cleanup-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.fc-cleanup-row + .fc-cleanup-row {
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.fc-cleanup-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.fc-cleanup-row input[type="checkbox"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.fc-cleanup-row-label {
+  font-size: var(--font-ui-small);
+  word-break: break-all;
+}
+
+.fc-cleanup-row-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.fc-cleanup-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.fc-cleanup-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

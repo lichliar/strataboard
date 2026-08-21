@@ -555,6 +555,79 @@ export class SqliteCache {
     return (r.max_date as string | undefined | null) ?? null;
   }
 
+  // ==================== Maintenance ====================
+
+  // Key enumeration + targeted deletes for the settings-tab cache cleanup
+  // (maintenance.ts decides which keys are no longer referenced by any card).
+  async listOhlcvKeys(): Promise<{ symbol: string; assetType: AssetType; rows: number }[]> {
+    const stmt = this.ohlcvDb!.prepare(`
+      SELECT symbol, asset_type, COUNT(*) as rows
+      FROM ohlcv
+      GROUP BY symbol, asset_type
+      ORDER BY symbol
+    `);
+    const keys: { symbol: string; assetType: AssetType; rows: number }[] = [];
+    while (stmt.step()) {
+      const r = stmt.getAsObject() as Record<string, unknown>;
+      keys.push({ symbol: r.symbol as string, assetType: r.asset_type as AssetType, rows: Number(r.rows) });
+    }
+    stmt.free();
+    return keys;
+  }
+
+  async deleteOhlcv(symbol: string, assetType: AssetType): Promise<void> {
+    const stmt = this.ohlcvDb!.prepare("DELETE FROM ohlcv WHERE symbol = ? AND asset_type = ?");
+    stmt.run([symbol, assetType]);
+    stmt.free();
+    this.markDirty("ohlcv");
+  }
+
+  async listMarketDataKeys(): Promise<{ symbol: string; assetType: AssetType; rows: number }[]> {
+    const stmt = this.marketDb!.prepare(`
+      SELECT symbol, asset_type, COUNT(*) as rows
+      FROM market_data
+      GROUP BY symbol, asset_type
+      ORDER BY symbol
+    `);
+    const keys: { symbol: string; assetType: AssetType; rows: number }[] = [];
+    while (stmt.step()) {
+      const r = stmt.getAsObject() as Record<string, unknown>;
+      keys.push({ symbol: r.symbol as string, assetType: r.asset_type as AssetType, rows: Number(r.rows) });
+    }
+    stmt.free();
+    return keys;
+  }
+
+  async deleteMarketData(symbol: string, assetType: AssetType): Promise<void> {
+    const stmt = this.marketDb!.prepare("DELETE FROM market_data WHERE symbol = ? AND asset_type = ?");
+    stmt.run([symbol, assetType]);
+    stmt.free();
+    this.markDirty("market");
+  }
+
+  async listMacroSeriesKeys(): Promise<{ source: string; seriesId: string; rows: number }[]> {
+    const stmt = this.marketDb!.prepare(`
+      SELECT source, series_id, COUNT(*) as rows
+      FROM macro_series
+      GROUP BY source, series_id
+      ORDER BY source, series_id
+    `);
+    const keys: { source: string; seriesId: string; rows: number }[] = [];
+    while (stmt.step()) {
+      const r = stmt.getAsObject() as Record<string, unknown>;
+      keys.push({ source: r.source as string, seriesId: r.series_id as string, rows: Number(r.rows) });
+    }
+    stmt.free();
+    return keys;
+  }
+
+  async deleteMacroSeries(source: string, seriesId: string): Promise<void> {
+    const stmt = this.marketDb!.prepare("DELETE FROM macro_series WHERE source = ? AND series_id = ?");
+    stmt.run([source, seriesId]);
+    stmt.free();
+    this.markDirty("market");
+  }
+
   // ==================== Migration ====================
 
   async migrateFromLegacy(legacyDataPath: string, legacySymbolPath: string): Promise<void> {

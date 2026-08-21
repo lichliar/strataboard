@@ -18,8 +18,8 @@ import { MAX_CARD_BLEED } from "./card-spec";
 import { parseExpression } from "./expression";
 
 // Parse/serialize for the overlay (资产叠加) and spread (差值计算) card
-// specs. Like the timeline card, these live outside ParsedCardSpec and are
-// parsed with js-yaml directly, using English keys.
+// specs. These live outside ParsedCardSpec and are parsed with js-yaml
+// directly, using English keys.
 
 export interface SeriesSpecParseResult<T> {
   spec?: T;
