@@ -29,6 +29,10 @@
 
 ![插入 TradingView 小组件](docs/videos/tradingview-widget.gif)
 
+**在笔记中插入卡片** —— Markdown 编辑器里右键「插入金融卡片」，代码块直接写在光标处：
+
+![在笔记中插入卡片](docs/videos/insert-into-md.gif)
+
 ## 功能特性
 
 **卡片类型**（每张卡片就是一个 Markdown 文件，YAML 即配置，可直接编辑）
