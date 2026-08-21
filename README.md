@@ -41,7 +41,7 @@
 - 宏观数据卡：中国宏观（CPI/PMI/社融/国债收益率曲线…）与 FRED 序列
 - 数据叠加卡：多序列同图对比
 - 数据计算卡：对序列做四则运算（如 `A-B`、`(A+B)/2`）
-- TradingView 小组件卡、日历卡（联动日记）、时间线卡
+- TradingView 小组件卡（在 [TradingView Widgets](https://www.tradingview.com/widgets/) 页面挑好组件、复制嵌入代码即可建卡）、日历卡（联动日记）、时间线卡
 
 **数据源**
 
@@ -58,15 +58,17 @@
 
 ## 安装
 
-本插件尚未上架社区市场，从 Release 安装或自行构建：
+**方式一：Obsidian 社区市场（推荐）**
 
-**方式一：下载 Release（推荐）**
+在 设置 → 第三方插件 → 社区插件市场 中搜索 **StrataBoard**，安装并启用即可。
+
+**方式二：下载 Release**
 
 1. 从 [Releases](../../releases/latest) 下载 `main.js`、`manifest.json`、`styles.css`、`sql-wasm.wasm` 四个文件。
 2. 在你的库目录下新建文件夹 `.obsidian/plugins/strataboard/`，把四个文件放进去。
 3. 重启 Obsidian，在 设置 → 第三方插件 中启用 **StrataBoard**。
 
-**方式二：从源码构建**
+**方式三：从源码构建**
 
 ```bash
 git clone https://github.com/lichliar/strataboard.git
@@ -75,7 +77,10 @@ npm install
 OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/strataboard npm run build
 ```
 
-启用后在插件设置中填入 Tushare Token（以及可选的 FRED API Key）。
+启用后在插件设置中填入 Tushare Token（以及可选的 FRED API Key）：
+
+- Tushare Pro：[注册账号](https://tushare.pro/register)，登录后在 [个人主页 → 接口TOKEN](https://tushare.pro/user/token) 获取 Token
+- FRED：在 [FRED API Keys](https://fredaccount.stlouisfed.org/apikeys) 页面申请 API Key
 
 ## 使用
 
@@ -138,7 +143,7 @@ OBSIDIAN_PLUGIN_DIR=/path/to/your-vault/.obsidian/plugins/strataboard npm run bu
 
 ## 免责声明
 
-- 本插件仅供个人学习与研究使用，不构成任何投资建议。投资有风险，入市需谨慎。
+- **本人非金融或计算机专业人士**，本插件的开发仅供个人学习与研究使用，不构成任何投资建议。投资有风险，入市需谨慎。
 - 行情与宏观数据均来自第三方服务，可能存在延迟、错误或缺失，请以官方数据为准。
 - 腾讯自选股与东方财富为未公开的非官方接口，随时可能变更或失效，稳定性不做任何保证。
 - Tushare、FRED 等数据源需使用你自己的账号与密钥，使用时请遵守各平台的服务条款。
