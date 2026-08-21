@@ -9,10 +9,12 @@ import { pluginDir } from "./deploy-target.mjs";
  *   npm run release
  *
  * Steps: refuse a dirty working tree (the tag must point at a commit that
- * contains exactly what was built) → push the current branch → tag vX.Y.Z
- * from manifest.json → push the tag → `gh release create` with the built
- * plugin files from the deploy target (main.js / manifest.json / styles.css /
- * sql-wasm.wasm — the wasm is required by the SQLite cache).
+ * contains exactly what was built) → push the current branch → tag X.Y.Z
+ * (no "v" prefix — the Obsidian plugin portal requires the release tag to
+ * exactly match manifest.json's version) → push the tag → `gh release
+ * create` with the built plugin files from the deploy target (main.js /
+ * manifest.json / styles.css / sql-wasm.wasm — the wasm is required by the
+ * SQLite cache).
  *
  * Requires the GitHub CLI (`gh`) to be authenticated.
  */
@@ -21,7 +23,7 @@ const run = (cmd) => execSync(cmd, { stdio: "inherit" });
 const out = (cmd) => execSync(cmd, { encoding: "utf8" }).trim();
 
 const { version } = JSON.parse(readFileSync("manifest.json", "utf8"));
-const tag = `v${version}`;
+const tag = version;
 
 if (out("git status --porcelain")) {
   console.error("✗ Working tree is dirty — commit or stash before releasing.");
