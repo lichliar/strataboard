@@ -1,5 +1,5 @@
 import * as yaml from "js-yaml";
-import { ASSET_TYPES, type AssetType, type Freq, type ParsedCardSpec, type RangePreset, type VisibleRangePreset, type WidgetType } from "../types";
+import { ASSET_TYPES, cacheAssetKey, type AssetType, type Freq, type ParsedCardSpec, type RangePreset, type VisibleRangePreset, type WidgetType } from "../types";
 import { isDateRangeString } from "../utils/date";
 
 const VALID_ASSET_TYPES: AssetType[] = ASSET_TYPES;
@@ -64,6 +64,11 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
     return { ok: false, error: { message: `Invalid 类型: ${rawType}. Must be one of ${VALID_ASSET_TYPES.join(", ")}.` } };
   }
 
+  const sourceId = extractString(map, "数据源") ?? defaults?.sourceId;
+  if (rawType === "custom" && !sourceId) {
+    return { ok: false, error: { message: "Missing required field: 数据源（类型为 custom 时必须指定自定义数据源 id）。" } };
+  }
+
   const rawFreq = extractString(map, "周期") ?? defaults?.freq ?? "D";
   if (!isFreq(rawFreq)) {
     return { ok: false, error: { message: `Invalid 周期: ${rawFreq}. Must be one of ${VALID_FREQS.join(", ")}.` } };
@@ -105,6 +110,7 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
     spec: {
       symbol,
       assetType: rawType,
+      sourceId,
       freq: rawFreq,
       range: rawRange,
       version,
@@ -206,7 +212,8 @@ export function canonicalKey(spec: ParsedCardSpec): string {
   // range is intentionally NOT part of the key: it resolves to absolute dates
   // (e.g. 2025-07-17~2026-07-17) that shift every day, so each day's insert
   // produced a different key, defeated card reuse and piled up duplicates.
-  return [spec.assetType, spec.symbol, spec.freq].join("|");
+  // cacheAssetKey keeps custom sources from colliding on a shared symbol code.
+  return [cacheAssetKey(spec.assetType, spec.sourceId), spec.symbol, spec.freq].join("|");
 }
 
 export function stringifyCardSpec(spec: ParsedCardSpec): string {
@@ -240,6 +247,9 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
     范围: spec.range,
     版本: spec.version,
   };
+  if (spec.assetType === "custom" && spec.sourceId) {
+    obj.数据源 = spec.sourceId;
+  }
   if (spec.height != null && spec.height !== DEFAULT_CARD_HEIGHT) {
     obj.高度 = spec.height;
   }
@@ -324,6 +334,7 @@ export function buildCardFrontmatter(spec: ParsedCardSpec): string {
     "---",
     `fc-代码: ${spec.symbol}`,
     `fc-类型: ${spec.assetType}`,
+    ...(spec.assetType === "custom" && spec.sourceId ? [`fc-数据源: ${spec.sourceId}`] : []),
     `fc-周期: ${spec.freq}`,
     `fc-范围: ${spec.range}`,
     `fc-高度: ${spec.height ?? DEFAULT_CARD_HEIGHT}`,

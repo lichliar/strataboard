@@ -9,12 +9,11 @@ export type AssetType =
   | "fut"
   | "fx"
   | "sw"
-  | "tx"
-  | "em";
+  | "custom";
 
 // Chinese display labels for asset types, used in UI (search results, Notices).
-// tx/em are the token-free sources (腾讯自选股 / 东方财富 public endpoints);
-// their tsCode is the source's native quote code (sh600519 / 1.600519 …).
+// "custom" is a user-configured REST source (see CustomSourceDef); its tsCode
+// is the source's native quote code and spec.sourceId picks the source.
 export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
   stock: "股票",
   fund: "基金",
@@ -26,8 +25,7 @@ export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
   fut: "期货",
   fx: "外汇",
   sw: "申万行业",
-  tx: "腾讯行情",
-  em: "东方财富",
+  custom: "自定义",
 };
 
 // Minimum Tushare points required to pull each asset type's quotes (per
@@ -35,7 +33,7 @@ export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
 // stock daily is 120 but weekly/monthly are 2000, hence "120起".
 // hk: hk_basic needs 2000; hk_daily is a separately granted permission
 // (like yc_cb), not a points tier — noted in the settings tab.
-// tx/em are token-free public endpoints — no points involved.
+// custom sources are user-configured — no Tushare points involved.
 export const ASSET_TYPE_MIN_POINTS: Record<AssetType, string> = {
   stock: "120起",
   fund: "2000",
@@ -47,8 +45,7 @@ export const ASSET_TYPE_MIN_POINTS: Record<AssetType, string> = {
   fut: "2000",
   fx: "2000",
   sw: "2000",
-  tx: "免费",
-  em: "免费",
+  custom: "—",
 };
 // All valid asset types, in UI display order; the single source of truth for
 // spec validators (card-spec.ts, series-spec.ts) and picker dropdowns.
@@ -63,9 +60,43 @@ export const ASSET_TYPES: AssetType[] = [
   "fut",
   "fx",
   "sw",
-  "tx",
-  "em",
+  "custom",
 ];
+
+// ==================== Custom data sources (user-configured REST) ====================
+
+// A user-defined REST quote source (设置页 → 自定义数据源). The plugin ships
+// no URLs — users paste their own endpoint templates. `format` selects the
+// response parser preset (quote-format-parsers.ts); "json" maps arbitrary
+// payloads via jsonMap.
+export interface CustomSourceDef {
+  id: string;                       // stable slug, never changes once created
+  name: string;                     // user label: pickers / toolbar / card file names
+  enabled: boolean;
+  format: "tencent" | "eastmoney" | "json";
+  searchUrl?: string;               // template, {query} placeholder; empty = no server-side search (manual entry)
+  klineUrl: string;                 // template, {code} {start} {end} (YYYYMMDD) / {endIso} (YYYY-MM-DD) placeholders
+  testCode?: string;                // symbol code used by the 检测 connectivity test (kline probe)
+  jsonMap?: JsonSourceMap;          // format "json" only
+}
+
+// Field mapping for format "json": where the row list lives and how each
+// OHLCV column is addressed (array index or object field name, per rowKind).
+export interface JsonSourceMap {
+  rowsPath: string;                 // dotted path to the kline rows, e.g. "data.klines"
+  rowKind: "array" | "object";      // rows are arrays (cols are indexes) or objects (cols are field names)
+  cols: { date: string; open: string; close: string; high: string; low: string; vol: string; amount?: string };
+  searchRowsPath?: string;          // dotted path to the search result list
+  searchCols?: { code: string; name: string; market?: string };
+}
+
+// Cache key for an asset type: different custom sources may share symbol
+// codes (two sources can both have sh600519), so custom data is cached under
+// `custom:<sourceId>` instead of the bare "custom". Everything else keys on
+// the asset type itself.
+export function cacheAssetKey(assetType: string, sourceId?: string): string {
+  return assetType === "custom" && sourceId ? `custom:${sourceId}` : assetType;
+}
 
 export type Freq = "D" | "W" | "M";
 export type RangePreset = "1y" | "3y" | "5y" | "10y" | "20y" | "ytd" | "max";
@@ -76,11 +107,14 @@ export type ChartType = "candlestick" | "line";
 export type ToolbarPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 // Toolbar buttons show an icon (with tooltip) or a plain text label.
 export type ToolbarStyle = "icon" | "text";
-// Sources with a top-level toolbar button/menu, each toggleable in settings.
-export type ToolbarSourceId = "tushare" | "tencent" | "eastmoney" | "fred" | "tradingview";
-// Reorderable top-level toolbar entries: the five sources plus the three
-// cross-source tools. 全部刷新/设置 follow the list, not reorderable.
-export type ToolbarEntryId = ToolbarSourceId | "overlay" | "spread" | "components";
+// Sources with a top-level toolbar button, each toggleable in settings.
+// Data insert flows all live behind the single 「插入数据」 entry, so only
+// TradingView remains a per-source toggle.
+export type ToolbarSourceId = "tradingview";
+// Reorderable top-level toolbar entries: 「插入数据」, 「数据处理」(overlay +
+// spread menu), TradingView, and 「组件」. 全部刷新/设置 follow the list, not
+// reorderable.
+export type ToolbarEntryId = "insert-data" | "data-tools" | "tradingview" | "components";
 export type VisibleRangePreset = "1m" | "3m" | "6m" | "1y" | "ytd" | "max";
 export type WidgetType = "iframe" | "html";
 export type CardContentType = "tushare" | "widget" | "calendar";
@@ -103,6 +137,7 @@ export interface SymbolItem {
   exchange: string;
   listDate?: string;
   assetType: AssetType;
+  sourceId?: string; // custom only: which CustomSourceDef this symbol came from
 }
 
 export interface MarketData {
@@ -121,6 +156,7 @@ export interface ParsedCardSpec {
   contentType?: CardContentType;
   symbol: string;
   assetType: AssetType;
+  sourceId?: string; // custom only: which CustomSourceDef feeds this card
   freq: Freq;
   range: string;
   version: number;
@@ -184,6 +220,7 @@ export interface SeriesRef {
   source: SeriesSource;
   tsCode?: string;        // quote only, e.g. "600519.SH"
   assetType?: AssetType;  // quote only
+  sourceId?: string;      // quote only, assetType "custom": which CustomSourceDef feeds it
   seriesId?: string;      // macro: a MACRO_SERIES_OPTIONS id like "m1_yoy" / "cpi_yoy"; fred: e.g. "DGS10"
   cardPath?: string;      // card only: vault-relative path of the referenced spread card .md
   label?: string;         // optional display name override

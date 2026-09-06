@@ -18,6 +18,7 @@ import {
 import type { MarketData, OhlcvRow, ParsedCardSpec, SymbolItem } from "../types";
 import { resolveEffectiveTheme, onAttached, toLayoutPoint, installZoomEventFix } from "../utils/dom";
 import { parseDateYmd, formatDate } from "../utils/date";
+import { t, getLanguage } from "../i18n";
 
 interface ChartRendererOptions {
   spec: ParsedCardSpec;
@@ -61,6 +62,14 @@ function formatNumber(n: number | undefined, digits = 2): string {
 
 function formatBigNumber(n: number | undefined): string {
   if (n == null || Number.isNaN(n)) return "--";
+  // English UI uses T/B/M magnitudes instead of 万亿/亿/万.
+  if (getLanguage() === "en") {
+    const abs = Math.abs(n);
+    if (abs >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
+    if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+    if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+    return n.toFixed(2);
+  }
   const wan = 10000;
   const yi = wan * wan;
   const wanYi = yi * wan;
@@ -149,7 +158,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     if (data.length === 0) {
       this.containerEl.createEl("div", {
         cls: "strataboard-empty",
-        text: `暂无数据：${spec.symbol} 在所选时间范围内没有数据。`,
+        text: t("暂无数据：{symbol} 在所选时间范围内没有数据。", { symbol: spec.symbol }),
       });
       return;
     }
@@ -332,7 +341,7 @@ export class ChartRenderer extends MarkdownRenderChild {
 
       for (const item of marketItems) {
         const wrap = marketRow.createEl("span", { cls: "strataboard-header-market-item" });
-        wrap.createEl("span", { cls: "strataboard-header-market-label", text: `${item.label} ` });
+        wrap.createEl("span", { cls: "strataboard-header-market-label", text: `${t(item.label)} ` });
         wrap.createEl("span", { cls: "strataboard-header-market-value", text: item.value });
       }
     }
@@ -360,7 +369,7 @@ export class ChartRenderer extends MarkdownRenderChild {
 
     for (const f of freqs) {
       const btn = this.periodTabsEl.createEl("button", {
-        text: f.label,
+        text: t(f.label),
         cls: f.id === this.options.spec.freq ? "is-active" : "",
       });
       btn.addEventListener("click", () => {
@@ -380,11 +389,11 @@ export class ChartRenderer extends MarkdownRenderChild {
       }
       return btn;
     };
-    addTool("pencil", "编辑参数", () => this.options.onEdit?.());
-    addTool("refresh-cw", "刷新数据", () => this.options.onRefresh?.());
+    addTool("pencil", t("编辑参数"), () => this.options.onEdit?.());
+    addTool("refresh-cw", t("刷新数据"), () => this.options.onRefresh?.());
     // 删除卡片 removes the canvas node (the card file stays in the library),
     // so it only makes sense inside a canvas — decided once attached.
-    const deleteBtn = addTool("trash-2", "删除卡片", () => this.options.onDelete?.());
+    const deleteBtn = addTool("trash-2", t("删除卡片"), () => this.options.onDelete?.());
     onAttached(this.containerEl, () => {
       deleteBtn.toggleClass("fc-hidden", !this.containerEl.closest(".canvas-node"));
     });
@@ -560,12 +569,12 @@ export class ChartRenderer extends MarkdownRenderChild {
 
     this.legendRefs = {
       date: dateEl,
-      open: isCandle ? mkItem("开") : null,
-      high: isCandle ? mkItem("高") : null,
-      low: isCandle ? mkItem("低") : null,
-      close: mkItem("收"),
-      change: mkItem("涨跌"),
-      vol: mkItem("量"),
+      open: isCandle ? mkItem(t("开")) : null,
+      high: isCandle ? mkItem(t("高")) : null,
+      low: isCandle ? mkItem(t("低")) : null,
+      close: mkItem(t("收")),
+      change: mkItem(t("涨跌")),
+      vol: mkItem(t("量")),
       // MA labels are colored to match their lines, so each line is
       // identifiable from the legend.
       ma: this.maSeriesData.map(({ period, color }) => ({

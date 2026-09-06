@@ -395,17 +395,6 @@ body.theme-dark {
   border-color: var(--fc-accent);
 }
 
-.fc-source-card.is-disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.fc-source-card.fc-source-card-placeholder {
-  border-style: dashed;
-  opacity: 0.5;
-  cursor: default;
-}
-
 .fc-source-card-name {
   font-size: 13px;
   font-weight: 600;
@@ -1817,6 +1806,54 @@ body.theme-dark {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
   font-weight: 600;
+}
+
+/* Unified 插入数据 search modal: single-row category chips below the input
+   (horizontal scroll instead of wrapping), styled after the settings tab
+   switcher. */
+.fc-cat-chips {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.fc-cat-chip {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.fc-cat-chip:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.fc-cat-chip.fc-cat-chip-active {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  font-weight: 600;
+}
+
+/* Stacked setting row (card edit modal 自定义范围): name/desc on top,
+   controls wrapped on a full-width row below instead of squeezed beside. */
+.fc-setting-stacked {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.fc-setting-stacked .setting-item-control {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 6px;
+  padding-top: 8px;
 }
 
 /* Cleanup confirm modal (settings 清理维护): scrollable checklist + footer. */

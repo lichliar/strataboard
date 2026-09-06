@@ -1,4 +1,5 @@
-import { requestUrl, type RequestUrlResponse } from "obsidian";
+import type { RequestUrlResponse } from "obsidian";
+import { httpRequest } from "./http";
 import type { TushareResponse } from "../types";
 
 export class TushareApiError extends Error {
@@ -68,7 +69,7 @@ export class TushareApiClient {
       let lastError: Error | undefined;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const response: RequestUrlResponse = await requestUrl({
+          const response: RequestUrlResponse = await httpRequest({
             url: this.baseUrl,
             method: "POST",
             headers: {

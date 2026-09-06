@@ -17,19 +17,19 @@ export function sanitizeFileNamePart(input: string): string {
 }
 
 // Short source label for card file names (命名规则：资产名称-代码-数据源).
-function sourceLabel(assetType: AssetType): string {
-  if (assetType === "tx") return "腾讯";
-  if (assetType === "em") return "东财";
+// Custom sources use the user-given source name (resolved by the caller).
+function sourceLabel(assetType: AssetType, sourceName?: string): string {
+  if (assetType === "custom") return sanitizeFileNamePart(sourceName ?? "") || "自定义";
   return "Tushare";
 }
 
-// Card file name: 资产名称-资产代码-数据源, e.g. 贵州茅台-sh600519-腾讯.md.
+// Card file name: 资产名称-资产代码-数据源, e.g. 贵州茅台-sh600519-我的腾讯.md.
 // Falls back to the bare code when the name is missing/unusable (e.g. a
 // source whose symbols carry no Chinese name).
-export function buildCardFileName(name: string | undefined, symbol: string, assetType: AssetType): string {
+export function buildCardFileName(name: string | undefined, symbol: string, assetType: AssetType, sourceName?: string): string {
   const code = sanitizeFileNamePart(symbol);
   const display = sanitizeFileNamePart(name ?? "") || code;
-  return `${display}-${code}-${sourceLabel(assetType)}.md`;
+  return `${display}-${code}-${sourceLabel(assetType, sourceName)}.md`;
 }
 
 export function normalizePath(path: string): string {

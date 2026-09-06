@@ -1,6 +1,7 @@
 import { FuzzySuggestModal, type App, type FuzzyMatch } from "obsidian";
 import { ASSET_TYPE_LABELS, ASSET_TYPE_MIN_POINTS, type AssetType, type SymbolItem } from "../types";
 import { SymbolIndex } from "../modules/symbol-index";
+import { t } from "../i18n";
 
 interface SymbolSearchModalOptions {
   app: App;
@@ -26,16 +27,16 @@ export class SymbolSearchModal extends FuzzySuggestModal<SymbolItem> {
     this.assetType = options.assetType;
     this.setPlaceholder(
       this.assetType
-        ? `搜索${ASSET_TYPE_LABELS[this.assetType]}的代码或名称…`
-        : "搜索股票 / 基金 / 指数的代码或名称…"
+        ? t("搜索{type}的代码或名称…", { type: t(ASSET_TYPE_LABELS[this.assetType]) })
+        : t("搜索股票 / 基金 / 指数的代码或名称…")
     );
     this.setInstructions([
-      { command: "↑↓", purpose: "选择" },
-      { command: "↵", purpose: "确认" },
-      { command: "esc", purpose: "关闭" },
+      { command: "↑↓", purpose: t("选择") },
+      { command: "↵", purpose: t("确认") },
+      { command: "esc", purpose: t("关闭") },
     ]);
     // Shown by onNoSuggestion() while getItems() is still empty.
-    this.emptyStateText = "正在加载资产列表…";
+    this.emptyStateText = t("正在加载资产列表…");
   }
 
   async onOpen() {
@@ -45,10 +46,10 @@ export class SymbolSearchModal extends FuzzySuggestModal<SymbolItem> {
     try {
       const all = await this.symbolIndex.loadAll();
       this.items = this.assetType ? all.filter((item) => item.assetType === this.assetType) : all;
-      this.emptyStateText = "没有找到匹配的资产。";
+      this.emptyStateText = t("没有找到匹配的资产。");
     } catch (e) {
       console.error("SymbolSearchModal: failed to load symbol lists", e);
-      this.emptyStateText = `资产列表加载失败：${e instanceof Error ? e.message : String(e)}`;
+      this.emptyStateText = t("资产列表加载失败：{msg}", { msg: e instanceof Error ? e.message : String(e) });
     }
     this.refreshSuggestions();
   }
@@ -65,9 +66,9 @@ export class SymbolSearchModal extends FuzzySuggestModal<SymbolItem> {
     const item = match.item;
     el.createSpan({ text: this.getItemText(item) });
     const parts = [
-      ASSET_TYPE_LABELS[item.assetType],
+      t(ASSET_TYPE_LABELS[item.assetType]),
       item.exchange,
-      `积分≥${ASSET_TYPE_MIN_POINTS[item.assetType]}`,
+      t("积分≥{n}", { n: ASSET_TYPE_MIN_POINTS[item.assetType] }),
     ].filter(Boolean);
     el.createSpan({ cls: "fc-symbol-meta", text: parts.join(" · ") });
   }

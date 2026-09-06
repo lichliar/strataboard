@@ -16,6 +16,7 @@ import {
 } from "../types";
 import { MAX_CARD_BLEED } from "./card-spec";
 import { parseExpression } from "./expression";
+import { t } from "../i18n";
 
 // Parse/serialize for the overlay (资产叠加) and spread (差值计算) card
 // specs. These live outside ParsedCardSpec and are parsed with js-yaml
@@ -40,7 +41,7 @@ function parseFredTransform(raw: unknown, key = "transform"): FredTransform | un
   if (rawValue === "" || rawValue === "lin") return undefined;
   const value = rawValue as FredTransform;
   if (!VALID_FRED_TRANSFORMS.includes(value)) {
-    return { error: `无效的 ${key}：${rawValue}（应为 ${VALID_FRED_TRANSFORMS.join(" | ")}）。` };
+    return { error: t("无效的 {key}：{value}（应为 {valid}）。", { key, value: rawValue, valid: VALID_FRED_TRANSFORMS.join(" | ") }) };
   }
   return value;
 }
@@ -67,7 +68,7 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
   if (typeof map === "string") return { error: map };
 
   if (!Array.isArray(map.series) || map.series.length === 0) {
-    return { error: "缺少必填字段 series（至少需要一个数据系列）。" };
+    return { error: t("缺少必填字段 series（至少需要一个数据系列）。") };
   }
   const series: SeriesRef[] = [];
   for (let i = 0; i < map.series.length; i++) {
@@ -130,7 +131,7 @@ export function parseSpreadSpec(source: string): SeriesSpecParseResult<SpreadSpe
     }
     expression = String(map.expression ?? "").trim();
     if (!expression) {
-      return { error: "缺少必填字段 expression（如 A-B、(A+B)/2）。" };
+      return { error: t("缺少必填字段 expression（如 A-B、(A+B)/2）。") };
     }
   } else if (map.a !== undefined && map.a !== null && map.b !== undefined && map.b !== null) {
     const a = parseSeriesRef(map.a, "a");
@@ -140,14 +141,14 @@ export function parseSpreadSpec(source: string): SeriesSpecParseResult<SpreadSpe
     series = [a, b];
     expression = "A-B";
   } else {
-    return { error: "缺少必填字段 series（至少需要一个数据系列）。" };
+    return { error: t("缺少必填字段 series（至少需要一个数据系列）。") };
   }
 
   // Hand-written YAML may reference undefined letters or have broken syntax;
   // surface the parser's Chinese reason as the card-level error.
   const parsedExpr = parseExpression(expression, series.length);
   if (!parsedExpr.ok) {
-    return { error: `公式错误：${parsedExpr.error}` };
+    return { error: t("公式错误：{msg}", { msg: parsedExpr.error }) };
   }
 
   const range = parseRange(map.range);
@@ -231,7 +232,7 @@ export function parseFredCardSpec(source: string): SeriesSpecParseResult<FredCar
 
   const seriesId = String(map.seriesId ?? "").trim();
   if (!seriesId) {
-    return { error: "缺少必填字段 seriesId（FRED 系列代码，如 DGS10）。" };
+    return { error: t("缺少必填字段 seriesId（FRED 系列代码，如 DGS10）。") };
   }
   const label = String(map.label ?? "").trim();
   const units = String(map.units ?? "").trim();
@@ -286,7 +287,7 @@ export function parseMacroCardSpec(source: string): SeriesSpecParseResult<MacroC
 
   const seriesId = String(map.seriesId ?? "").trim();
   if (!MACRO_IDS.has(seriesId)) {
-    return { error: `seriesId 无效：${seriesId}（不是已知的宏观序列）。` };
+    return { error: t("seriesId 无效：{id}（不是已知的宏观序列）。", { id: seriesId }) };
   }
 
   const range = parseRange(map.range);
@@ -328,10 +329,10 @@ function parseYamlMap(source: string): Record<string, unknown> | string {
   try {
     parsed = yaml.load(source.replace(/\r\n?/g, "\n"));
   } catch (e) {
-    return `YAML 解析失败：${e instanceof Error ? e.message : String(e)}`;
+    return t("YAML 解析失败：{msg}", { msg: e instanceof Error ? e.message : String(e) });
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return "代码块必须是一个 YAML 对象。";
+    return t("代码块必须是一个 YAML 对象。");
   }
   return parsed as Record<string, unknown>;
 }
@@ -339,13 +340,13 @@ function parseYamlMap(source: string): Record<string, unknown> | string {
 // Validates one series entry; returns the SeriesRef or an error message.
 function parseSeriesRef(raw: unknown, path: string): SeriesRef | string {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return `${path} 必须是一个 YAML 对象。`;
+    return t("{path} 必须是一个 YAML 对象。", { path });
   }
   const map = raw as Record<string, unknown>;
 
   const source = String(map.source ?? "").trim() as SeriesSource;
   if (!VALID_SOURCES.includes(source)) {
-    return `${path} 的 source 无效：${String(map.source)}（应为 quote | macro | fred | card）。`;
+    return t("{path} 的 source 无效：{value}（应为 quote | macro | fred | card）。", { path, value: String(map.source) });
   }
 
   const ref: SeriesRef = { source };
@@ -353,7 +354,7 @@ function parseSeriesRef(raw: unknown, path: string): SeriesRef | string {
   if (source === "card") {
     const cardPath = String(map.cardPath ?? "").trim();
     if (!cardPath) {
-      return `${path} 缺少有效的 cardPath（引用的数据计算卡片文件路径）。`;
+      return t("{path} 缺少有效的 cardPath（引用的数据计算卡片文件路径）。", { path });
     }
     ref.cardPath = cardPath;
   } else if (source === "quote") {
@@ -361,24 +362,31 @@ function parseSeriesRef(raw: unknown, path: string): SeriesRef | string {
     // Global-index ts_codes are bare (HSI, XIN9) — the ".XX" suffix is not
     // required.
     if (!/^\w+(\.\w+)?$/.test(tsCode)) {
-      return `${path} 缺少有效的 tsCode（如 600519.SH、HSI）。`;
+      return t("{path} 缺少有效的 tsCode（如 600519.SH、HSI）。", { path });
     }
     const assetType = String(map.assetType ?? "").trim() as AssetType;
     if (!VALID_ASSET_TYPES.includes(assetType)) {
-      return `${path} 的 assetType 无效：${String(map.assetType)}（应为 ${VALID_ASSET_TYPES.join(" | ")}）。`;
+      return t("{path} 的 assetType 无效：{value}（应为 {valid}）。", { path, value: String(map.assetType), valid: VALID_ASSET_TYPES.join(" | ") });
     }
     ref.tsCode = tsCode;
     ref.assetType = assetType;
+    const sourceId = String(map.sourceId ?? "").trim();
+    if (assetType === "custom" && !sourceId) {
+      return t("{path} 的 assetType 为 custom 时必须提供 sourceId（自定义数据源 id）。", { path });
+    }
+    if (sourceId) {
+      ref.sourceId = sourceId;
+    }
   } else if (source === "macro") {
     const seriesId = String(map.seriesId ?? "").trim();
     if (!MACRO_IDS.has(seriesId)) {
-      return `${path} 的 seriesId 无效：${seriesId}（不是已知的宏观序列）。`;
+      return t("{path} 的 seriesId 无效：{id}（不是已知的宏观序列）。", { path, id: seriesId });
     }
     ref.seriesId = seriesId;
   } else {
     const seriesId = String(map.seriesId ?? "").trim();
     if (!seriesId) {
-      return `${path} 缺少有效的 seriesId（FRED 系列代码，如 DGS10）。`;
+      return t("{path} 缺少有效的 seriesId（FRED 系列代码，如 DGS10）。", { path });
     }
     ref.seriesId = seriesId;
     // Optional FRED "units" metadata (e.g. "Percent"), written by the search
@@ -387,7 +395,7 @@ function parseSeriesRef(raw: unknown, path: string): SeriesRef | string {
     if (units) {
       ref.units = units;
     }
-    const transform = parseFredTransform(map.transform, `${path} 的 transform`);
+    const transform = parseFredTransform(map.transform, t("{path} 的 transform", { path }));
     if (typeof transform === "object") {
       return transform.error;
     }
@@ -414,7 +422,7 @@ function parsePeriod(raw: unknown): SeriesPeriod | { error: string } {
   if (raw === undefined || raw === null) return "D";
   const value = String(raw).trim().toUpperCase() as SeriesPeriod;
   if (!VALID_PERIODS.includes(value)) {
-    return { error: `无效的 period：${String(raw)}（应为 D | M | Q | Y）。` };
+    return { error: t("无效的 period：{value}（应为 D | M | Q | Y）。", { value: String(raw) }) };
   }
   return value;
 }
@@ -424,7 +432,7 @@ function parseViewDate(raw: unknown, key: string): string | undefined | { error:
   if (raw === undefined || raw === null) return undefined;
   const value = String(raw).trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return { error: `无效的 ${key}：${value}（应为 YYYY-MM-DD）。` };
+    return { error: t("无效的 {key}：{value}（应为 YYYY-MM-DD）。", { key, value }) };
   }
   return value;
 }
@@ -433,7 +441,7 @@ function parseViewDate(raw: unknown, key: string): string | undefined | { error:
 function parseNormalize(raw: unknown): boolean | { error: string } {
   if (raw === undefined || raw === null) return true;
   if (typeof raw !== "boolean") {
-    return { error: `无效的 normalize：${String(raw)}（应为 true 或 false）。` };
+    return { error: t("无效的 normalize：{value}（应为 true 或 false）。", { value: String(raw) }) };
   }
   return raw;
 }
@@ -442,7 +450,7 @@ function parseHeight(raw: unknown): number | undefined | { error: string } {
   if (raw === undefined || raw === null) return undefined;
   const height = Number(raw);
   if (!Number.isFinite(height) || height <= 0) {
-    return { error: `无效的 height：${String(raw)}（应为正数，单位 px）。` };
+    return { error: t("无效的 height：{value}（应为正数，单位 px）。", { value: String(raw) }) };
   }
   return height;
 }
@@ -453,7 +461,7 @@ function parseTheme(raw: unknown): ChartTheme | undefined | { error: string } {
   if (raw === undefined || raw === null) return undefined;
   const value = String(raw).trim() as ChartTheme;
   if (!VALID_THEMES.includes(value)) {
-    return { error: `无效的 theme：${String(raw)}（应为 auto | dark | light）。` };
+    return { error: t("无效的 theme：{value}（应为 auto | dark | light）。", { value: String(raw) }) };
   }
   return value;
 }
@@ -463,7 +471,7 @@ function parseLineWidth(raw: unknown): number | undefined | { error: string } {
   const width = Number(raw);
   // lightweight-charts only accepts 1|2|3|4 (LineWidth).
   if (!Number.isInteger(width) || width < 1 || width > 4) {
-    return { error: `无效的 lineWidth：${String(raw)}（应为 1–4 的整数，单位 px）。` };
+    return { error: t("无效的 lineWidth：{value}（应为 1–4 的整数，单位 px）。", { value: String(raw) }) };
   }
   return width;
 }
@@ -472,7 +480,7 @@ function parseLineColor(raw: unknown): string | undefined | { error: string } {
   if (raw === undefined || raw === null) return undefined;
   const value = String(raw).trim();
   if (!/^#[0-9a-fA-F]{6}$/.test(value)) {
-    return { error: `无效的 lineColor：${String(raw)}（应为 #rrggbb）。` };
+    return { error: t("无效的 lineColor：{value}（应为 #rrggbb）。", { value: String(raw) }) };
   }
   return value;
 }
@@ -480,7 +488,7 @@ function parseLineColor(raw: unknown): string | undefined | { error: string } {
 function parseAutoFlag(raw: unknown, key: string): boolean | undefined | { error: string } {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== "boolean") {
-    return { error: `无效的 ${key}：${String(raw)}（应为 true 或 false）。` };
+    return { error: t("无效的 {key}：{value}（应为 true 或 false）。", { key, value: String(raw) }) };
   }
   return raw;
 }
@@ -489,7 +497,7 @@ function parseBleed(raw: unknown): number | undefined | { error: string } {
   if (raw === undefined || raw === null) return undefined;
   const bleed = Number(raw);
   if (!Number.isFinite(bleed) || bleed < 0 || bleed > MAX_CARD_BLEED) {
-    return { error: `无效的 bleed：${String(raw)}（应为 0–${MAX_CARD_BLEED}，单位 px）。` };
+    return { error: t("无效的 bleed：{value}（应为 0–{max}，单位 px）。", { value: String(raw), max: MAX_CARD_BLEED }) };
   }
   return Math.round(bleed);
 }

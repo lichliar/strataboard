@@ -1,10 +1,12 @@
 import { Setting, type DropdownComponent } from "obsidian";
-import { FRED_TRANSFORM_OPTIONS, MACRO_SERIES_OPTIONS, type AssetType, type FredSeriesInfo, type FredTransform, type SeriesRef, type SymbolItem } from "../types";
+import { FRED_TRANSFORM_OPTIONS, MACRO_SERIES_OPTIONS, type AssetType, type CustomSourceDef, type FredSeriesInfo, type FredTransform, type SeriesRef, type SymbolItem } from "../types";
+import { t } from "../i18n";
 
-// Opens the unified symbol search modal; mirrors plugin.openSymbolSearch
-// (including its Tushare-token guard). assetType restricts the picker to one
-// 资产品类 (the row's current quote type).
-export type OpenSymbolPicker = (onSelect: (item: SymbolItem) => void, assetType?: AssetType) => void;
+// Opens the symbol search modal; mirrors plugin.openSymbolSearch (including
+// its Tushare-token guard). assetType restricts the picker to one 资产品类
+// (the row's current quote type); for assetType "custom", sourceId selects
+// the custom source (remote search or manual entry).
+export type OpenSymbolPicker = (onSelect: (item: SymbolItem) => void, assetType?: AssetType, sourceId?: string) => void;
 
 // Opens the FRED series search modal; mirrors plugin.openFredSearch
 // (including its FRED-key guard).
@@ -14,9 +16,9 @@ export type OpenFredPicker = (onSelect: (info: FredSeriesInfo) => void) => void;
 // file path, name = display name).
 export type ListSpreadCards = () => Promise<{ path: string; name: string }[]>;
 
-// The 类型 dropdown values: the twelve AssetTypes map to a quote ref with
-// that assetType (tx/em open the remote search picker instead of the local
-// symbol index); macro/fred/card map to their own sources.
+// The 类型 dropdown values: the AssetTypes map to a quote ref with that
+// assetType (custom sources open their own search/manual-entry picker instead
+// of the local symbol index); macro/fred/card map to their own sources.
 export type SeriesRowType = AssetType | "macro" | "fred" | "card";
 
 const TYPE_OPTIONS: { value: SeriesRowType; label: string }[] = [
@@ -30,8 +32,7 @@ const TYPE_OPTIONS: { value: SeriesRowType; label: string }[] = [
   { value: "fut", label: "期货" },
   { value: "fx", label: "外汇" },
   { value: "sw", label: "申万行业" },
-  { value: "tx", label: "腾讯行情" },
-  { value: "em", label: "东方财富" },
+  { value: "custom", label: "自定义数据源" },
   { value: "macro", label: "宏观数据" },
   { value: "fred", label: "FRED" },
   { value: "card", label: "已有卡片" },
@@ -56,10 +57,12 @@ export class SeriesRefEditor {
   private label: string;
   private units: string;
   private transform: FredTransform | "";
+  private sourceId: string;
   private allowCardRef: boolean;
   private openSymbolPicker?: OpenSymbolPicker;
   private listSpreadCards?: ListSpreadCards;
   private openFredPicker?: OpenFredPicker;
+  private customSources: CustomSourceDef[];
   private onRemove?: () => void;
 
   constructor(
@@ -69,7 +72,8 @@ export class SeriesRefEditor {
     allowCardRef = true,
     openSymbolPicker?: OpenSymbolPicker,
     listSpreadCards?: ListSpreadCards,
-    openFredPicker?: OpenFredPicker
+    openFredPicker?: OpenFredPicker,
+    customSources?: CustomSourceDef[]
   ) {
     this.type = initial.source === "quote" ? initial.assetType ?? "stock" : initial.source;
     if (this.type === "card" && !allowCardRef) {
@@ -87,6 +91,11 @@ export class SeriesRefEditor {
     this.label = initial.label ?? "";
     this.units = initial.source === "fred" ? initial.units ?? "" : "";
     this.transform = initial.source === "fred" ? initial.transform ?? "" : "";
+    this.customSources = customSources ?? [];
+    this.sourceId =
+      initial.source === "quote" && initial.assetType === "custom"
+        ? initial.sourceId ?? this.customSources[0]?.id ?? ""
+        : this.customSources[0]?.id ?? "";
     this.allowCardRef = allowCardRef;
     this.openSymbolPicker = openSymbolPicker;
     this.listSpreadCards = listSpreadCards;
@@ -103,7 +112,7 @@ export class SeriesRefEditor {
     setting.addDropdown((dropdown) => {
       for (const option of TYPE_OPTIONS) {
         if (option.value === "card" && !this.allowCardRef) continue;
-        dropdown.addOption(option.value, option.label);
+        dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.type).onChange((value) => {
         this.type = value as SeriesRowType;
@@ -130,9 +139,9 @@ export class SeriesRefEditor {
           groups.set(option.group, list);
         }
         for (const [group, options] of groups) {
-          const optgroup = dropdown.selectEl.createEl("optgroup", { attr: { label: group } });
+          const optgroup = dropdown.selectEl.createEl("optgroup", { attr: { label: t(group) } });
           for (const option of options) {
-            optgroup.createEl("option", { value: option.id, text: option.label });
+            optgroup.createEl("option", { value: option.id, text: t(option.label) });
           }
         }
         dropdown.setValue(this.macroId).onChange((value) => {
@@ -144,7 +153,7 @@ export class SeriesRefEditor {
         // Same read-only picker input as quote rows: click/Enter/Space opens
         // the FRED series search modal instead of typing a series id.
         setting.addText((text) => {
-          text.setPlaceholder("点击选择 FRED 系列").setValue(this.code);
+          text.setPlaceholder(t("点击选择 FRED 系列")).setValue(this.code);
           text.inputEl.readOnly = true;
           const openPicker = () => {
             this.openFredPicker?.((info) => {
@@ -178,19 +187,19 @@ export class SeriesRefEditor {
       // FRED-only: server-side units transformation (同比/环比…), raw levels
       // by default.
       setting.addDropdown((dropdown) => {
-        dropdown.addOption("", "原始值");
+        dropdown.addOption("", t("原始值"));
         for (const option of FRED_TRANSFORM_OPTIONS) {
-          dropdown.addOption(option.value, option.label);
+          dropdown.addOption(option.value, t(option.label));
         }
         dropdown.setValue(this.transform).onChange((value) => {
           this.transform = value as FredTransform | "";
         });
-        dropdown.selectEl.title = "数据变换（FRED 服务端计算）";
+        dropdown.selectEl.title = t("数据变换（FRED 服务端计算）");
       });
     } else if (this.type === "card") {
       setting.addDropdown((dropdown) => {
         // Loading placeholder; the async provider fills the real options in.
-        dropdown.addOption("", "正在加载卡片列表…");
+        dropdown.addOption("", t("正在加载卡片列表…"));
         dropdown.setValue("");
         dropdown.setDisabled(true);
         dropdown.onChange((value) => {
@@ -199,10 +208,36 @@ export class SeriesRefEditor {
         void this.populateCardDropdown(dropdown);
       });
     } else if (this.openSymbolPicker) {
-      // Quote rows pick an asset from the unified symbol search modal (the
-      // same fuzzy picker as 插入资产数据) instead of typing a ts_code.
+      // Custom rows first pick WHICH user source feeds them (a stale sourceId
+      // from a since-deleted source snaps back to the first enabled one).
+      if (this.type === "custom") {
+        setting.addDropdown((dropdown) => {
+          if (this.customSources.length === 0) {
+            dropdown.addOption("", t("请先在设置页添加数据源"));
+            dropdown.setValue("");
+            dropdown.setDisabled(true);
+            return;
+          }
+          for (const def of this.customSources) {
+            dropdown.addOption(def.id, def.name);
+          }
+          if (!this.customSources.some((def) => def.id === this.sourceId)) {
+            this.sourceId = this.customSources[0].id;
+            this.code = "";
+          }
+          dropdown.setValue(this.sourceId).onChange((value) => {
+            if (value === this.sourceId) return;
+            this.sourceId = value;
+            this.code = "";
+            this.renderControls();
+          });
+        });
+      }
+      // Quote rows pick an asset from the symbol search modal (the same fuzzy
+      // picker as 插入资产数据; custom sources get their own remote-search /
+      // manual-entry modal) instead of typing a ts_code.
       setting.addText((text) => {
-        text.setPlaceholder("点击选择资产").setValue(this.code);
+        text.setPlaceholder(t("点击选择资产")).setValue(this.code);
         text.inputEl.readOnly = true;
         const openPicker = () => {
           // this.type is a quote asset type in this branch; restrict the
@@ -210,11 +245,14 @@ export class SeriesRefEditor {
           this.openSymbolPicker?.((item) => {
             this.type = item.assetType;
             this.code = item.tsCode;
+            if (item.assetType === "custom") {
+              this.sourceId = item.sourceId ?? this.sourceId;
+            }
             if (!this.label.trim()) {
               this.label = item.name;
             }
             this.renderControls();
-          }, this.type as AssetType);
+          }, this.type as AssetType, this.type === "custom" ? this.sourceId : undefined);
         };
         text.inputEl.addEventListener("click", openPicker);
         // Keyboard access: the read-only input is focusable, Enter/Space open
@@ -240,7 +278,7 @@ export class SeriesRefEditor {
 
     setting.addText((text) =>
       text
-        .setPlaceholder("名称（可选）")
+        .setPlaceholder(t("名称（可选）"))
         .setValue(this.label)
         .onChange((value) => {
           this.label = value;
@@ -249,7 +287,7 @@ export class SeriesRefEditor {
 
     if (this.onRemove) {
       setting.addButton((btn) =>
-        btn.setButtonText("删除").onClick(() => this.onRemove?.())
+        btn.setButtonText(t("删除")).onClick(() => this.onRemove?.())
       );
     }
   }
@@ -268,7 +306,7 @@ export class SeriesRefEditor {
 
     dropdown.selectEl.empty();
     if (cards.length === 0) {
-      dropdown.addOption("", "暂无数据计算卡片");
+      dropdown.addOption("", t("暂无数据计算卡片"));
       dropdown.setValue("");
       this.cardPath = "";
       return;
@@ -300,6 +338,9 @@ export class SeriesRefEditor {
       }
     } else {
       ref = { source: "quote", tsCode: this.code.trim(), assetType: this.type };
+      if (this.type === "custom" && this.sourceId) {
+        ref.sourceId = this.sourceId;
+      }
     }
     const label = this.label.trim();
     if (label) {
@@ -308,18 +349,21 @@ export class SeriesRefEditor {
     return ref;
   }
 
-  // Returns a Chinese error message, or null when the row is valid.
+  // Returns a translated error message, or null when the row is valid.
   validate(): string | null {
     if (this.type === "card") {
-      return this.cardPath ? null : "请选择一个数据计算卡片。";
+      return this.cardPath ? null : t("请选择一个数据计算卡片。");
     }
     if (this.type === "macro") return null;
     const code = this.code.trim();
     if (this.type === "fred") {
-      return code ? null : "请填写 FRED 系列代码（如 DGS10）。";
+      return code ? null : t("请填写 FRED 系列代码（如 DGS10）。");
+    }
+    if (this.type === "custom" && !this.sourceId) {
+      return t("请选择自定义数据源（可在设置页添加）。");
     }
     // Global-index ts_codes are bare (HSI, XIN9) — the ".XX" suffix is not
     // required.
-    return /^\w+(\.\w+)?$/.test(code) ? null : "请填写有效的证券代码（如 600519.SH、HSI）。";
+    return /^\w+(\.\w+)?$/.test(code) ? null : t("请填写有效的证券代码（如 600519.SH、HSI）。");
   }
 }

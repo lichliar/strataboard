@@ -1,7 +1,13 @@
 import { Notice, type Vault } from "obsidian";
 import initSqlJs, { type Database } from "sql.js";
 import type { AssetType, Freq, MarketData, OhlcvRow, ParsedCardSpec, SeriesPoint, SymbolItem } from "../types";
+import { cacheAssetKey } from "../types";
 import { CacheStore } from "./cache-store";
+import { t } from "../i18n";
+
+// The asset_type column is a plain cache-key string: for user custom sources
+// it carries `custom:<sourceId>` (see cacheAssetKey) so two sources sharing a
+// symbol code never collide; Tushare types store the bare AssetType.
 
 export interface SqliteCacheOptions {
   vault: Vault;
@@ -64,7 +70,7 @@ export class SqliteCache {
     try {
       return await this.vault.adapter.readBinary(path);
     } catch {
-      throw new Error(`无法读取 sql-wasm.wasm。请确认插件目录中存在该文件：${path}`);
+      throw new Error(t("无法读取 sql-wasm.wasm。请确认插件目录中存在该文件：{path}", { path }));
     }
   }
 
@@ -210,7 +216,7 @@ export class SqliteCache {
   // ==================== OHLCV ====================
 
   async loadOhlcvRange(
-    key: { symbol: string; assetType: AssetType; freq: Freq },
+    key: { symbol: string; assetType: string; freq: Freq },
     start: string,
     end: string
   ): Promise<OhlcvRow[]> {
@@ -231,7 +237,7 @@ export class SqliteCache {
   }
 
   async getOhlcvExtent(
-    key: { symbol: string; assetType: AssetType; freq: Freq }
+    key: { symbol: string; assetType: string; freq: Freq }
   ): Promise<{ minDate: string; maxDate: string } | null> {
     const stmt = this.ohlcvDb!.prepare(`
       SELECT MIN(trade_date) as min_date, MAX(trade_date) as max_date
@@ -252,7 +258,7 @@ export class SqliteCache {
   }
 
   async mergeOhlcvRows(
-    key: { symbol: string; assetType: AssetType; freq: Freq },
+    key: { symbol: string; assetType: string; freq: Freq },
     rows: OhlcvRow[]
   ): Promise<void> {
     if (rows.length === 0) return;
@@ -298,7 +304,7 @@ export class SqliteCache {
 
   // ==================== Symbols ====================
 
-  async loadSymbols(assetType: AssetType): Promise<SymbolItem[]> {
+  async loadSymbols(assetType: string): Promise<SymbolItem[]> {
     const stmt = this.symbolsDb!.prepare(`
       SELECT ts_code, symbol, name, enname, exchange, list_date, asset_type, refreshed_at
       FROM symbols
@@ -313,7 +319,7 @@ export class SqliteCache {
     return items;
   }
 
-  async saveSymbols(assetType: AssetType, items: SymbolItem[]): Promise<void> {
+  async saveSymbols(assetType: string, items: SymbolItem[]): Promise<void> {
     const db = this.symbolsDb!;
     const refreshedAt = new Date().toISOString();
     db.run("BEGIN TRANSACTION");
@@ -344,7 +350,7 @@ export class SqliteCache {
     this.markDirty("symbols");
   }
 
-  async isSymbolCacheStale(assetType: AssetType, maxAgeDays: number): Promise<boolean> {
+  async isSymbolCacheStale(assetType: string, maxAgeDays: number): Promise<boolean> {
     const stmt = this.symbolsDb!.prepare(`
       SELECT MIN(refreshed_at) as refreshed_at
       FROM symbols
@@ -363,7 +369,7 @@ export class SqliteCache {
     return Date.now() - refreshed > maxAgeDays * 24 * 60 * 60 * 1000;
   }
 
-  async searchSymbols(assetType: AssetType, query: string): Promise<SymbolItem[]> {
+  async searchSymbols(assetType: string, query: string): Promise<SymbolItem[]> {
     const lower = `%${query.toLowerCase()}%`;
     const stmt = this.symbolsDb!.prepare(`
       SELECT ts_code, symbol, name, enname, exchange, list_date, asset_type, refreshed_at
@@ -379,7 +385,7 @@ export class SqliteCache {
     return items;
   }
 
-  async lookupSymbol(tsCode: string, assetType: AssetType): Promise<SymbolItem | undefined> {
+  async lookupSymbol(tsCode: string, assetType: string): Promise<SymbolItem | undefined> {
     const stmt = this.symbolsDb!.prepare(`
       SELECT ts_code, symbol, name, enname, exchange, list_date, asset_type, refreshed_at
       FROM symbols
@@ -408,9 +414,10 @@ export class SqliteCache {
   }
 
   // Merges individual symbols without clearing the asset type's list — used
-  // for the token-free tx/em sources, whose "symbol list" is just the items
-  // the user has picked from remote search (so the chart header can resolve
-  // their names later via lookupSymbol).
+  // for custom sources, whose "symbol list" is just the items the user has
+  // picked from remote search or manual entry (so the chart header can
+  // resolve their names later via lookupSymbol). Custom items key on
+  // `custom:<sourceId>` via cacheAssetKey.
   async upsertSymbols(items: SymbolItem[]): Promise<void> {
     const db = this.symbolsDb!;
     const refreshedAt = new Date().toISOString();
@@ -427,7 +434,7 @@ export class SqliteCache {
         item.enname ?? null,
         item.exchange,
         item.listDate ?? null,
-        item.assetType,
+        cacheAssetKey(item.assetType, item.sourceId),
         refreshedAt,
       ]);
     }
@@ -645,7 +652,7 @@ export class SqliteCache {
       await this.setMigrationDone();
     } catch (e) {
       console.error("StrataBoard: SQLite migration failed", e);
-      new Notice(`金融卡片：JSON 缓存迁移到 SQLite 失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(t("金融卡片：JSON 缓存迁移到 SQLite 失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
     }
   }
 

@@ -14,6 +14,7 @@ import {
 import type { ChartTheme, SeriesPoint } from "../types";
 import { onAttached, resolveEffectiveTheme, toLayoutPoint, installZoomEventFix } from "../utils/dom";
 import { buildChartOptions, suppressMarkdownChrome } from "./chart-renderer";
+import { t } from "../i18n";
 
 export interface SeriesChartLine {
   name: string;
@@ -116,7 +117,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     if (lines.length === 0) {
       this.containerEl.createEl("div", {
         cls: "strataboard-empty",
-        text: "暂无数据：所选系列在该时间范围内没有数据。",
+        text: t("暂无数据：所选系列在该时间范围内没有数据。"),
       });
       return;
     }

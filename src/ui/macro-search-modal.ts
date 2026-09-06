@@ -1,5 +1,6 @@
 import { SuggestModal, type App } from "obsidian";
 import { MACRO_SERIES_OPTIONS, type MacroSeriesDef } from "../types";
+import { t } from "../i18n";
 
 const FREQ_LABELS: Record<MacroSeriesDef["freq"], string> = {
   D: "日度",
@@ -9,7 +10,7 @@ const FREQ_LABELS: Record<MacroSeriesDef["freq"], string> = {
 
 // e.g. "积分≥600"; yc_cb-class APIs are granted individually by Tushare.
 function pointsLabel(def: MacroSeriesDef): string {
-  return def.points === "special" ? "需单独权限" : `积分≥${def.points}`;
+  return def.points === "special" ? t("需单独权限") : t("积分≥{n}", { n: def.points });
 }
 
 /**
@@ -23,11 +24,11 @@ export class MacroSearchModal extends SuggestModal<MacroSeriesDef> {
   constructor(app: App, onSelect: (def: MacroSeriesDef) => void) {
     super(app);
     this.onSelectCallback = onSelect;
-    this.setPlaceholder("输入关键词选择宏观序列（如 CPI、PMI、社融、LPR）…");
+    this.setPlaceholder(t("输入关键词选择宏观序列（如 CPI、PMI、社融、LPR）…"));
     this.setInstructions([
-      { command: "↑↓", purpose: "选择" },
-      { command: "↵", purpose: "确认" },
-      { command: "esc", purpose: "关闭" },
+      { command: "↑↓", purpose: t("选择") },
+      { command: "↵", purpose: t("确认") },
+      { command: "esc", purpose: t("关闭") },
     ]);
   }
 
@@ -45,8 +46,8 @@ export class MacroSearchModal extends SuggestModal<MacroSeriesDef> {
   }
 
   renderSuggestion(def: MacroSeriesDef, el: HTMLElement): void {
-    el.createSpan({ text: def.label });
-    el.createSpan({ cls: "fc-symbol-meta", text: `${def.group} · ${FREQ_LABELS[def.freq]} · ${pointsLabel(def)}` });
+    el.createSpan({ text: t(def.label) });
+    el.createSpan({ cls: "fc-symbol-meta", text: `${t(def.group)} · ${t(FREQ_LABELS[def.freq])} · ${pointsLabel(def)}` });
   }
 
   onChooseSuggestion(def: MacroSeriesDef, _evt: MouseEvent | KeyboardEvent): void {

@@ -1,8 +1,9 @@
 import { Notice } from "obsidian";
-import { ASSET_TYPE_LABELS, type AssetType, type SymbolItem } from "../types";
+import { ASSET_TYPE_LABELS, cacheAssetKey, type AssetType, type SymbolItem } from "../types";
 import { formatDate } from "../utils/date";
 import { SqliteCache } from "./sqlite-cache";
 import { TushareApiClient } from "./tushare-api-client";
+import { t } from "../i18n";
 
 interface SymbolIndexOptions {
   cache: SqliteCache;
@@ -148,7 +149,7 @@ export class SymbolIndex {
       // refresh fails (network down, bad token, ...).
       if (items.length > 0) {
         console.error(`SymbolIndex: failed to refresh ${assetType} list, using stale cache`, e);
-        new Notice(`${ASSET_TYPE_LABELS[assetType]}列表更新失败，使用本地缓存。`);
+        new Notice(t("{type}列表更新失败，使用本地缓存。", { type: t(ASSET_TYPE_LABELS[assetType]) }));
         return items;
       }
       throw e;
@@ -157,8 +158,9 @@ export class SymbolIndex {
 
   // Loads stocks, funds, indices, Nanhua indices, HK stocks, global indices,
   // convertible bonds, futures contracts, FX pairs and SW industry indices in
-  // parallel for the unified search modal. tx/em have no bulk symbol list —
-  // they are searched remotely per keystroke (RemoteQuoteSearchModal).
+  // parallel for the unified search modal. Custom sources have no bulk symbol
+  // list — they are searched remotely per keystroke (RemoteQuoteSearchModal)
+  // or entered manually (ManualSymbolModal).
   async loadAll(): Promise<SymbolItem[]> {
     const groups = await Promise.all([
       this.loadAssetType("stock"),
@@ -175,13 +177,18 @@ export class SymbolIndex {
     return groups.flat();
   }
 
-  async lookup(tsCode: string, assetType: AssetType): Promise<SymbolItem | undefined> {
-    const cached = await this.cache.lookupSymbol(tsCode, assetType);
-    if (cached) return cached;
+  async lookup(tsCode: string, assetType: AssetType, sourceId?: string): Promise<SymbolItem | undefined> {
+    const key = cacheAssetKey(assetType, sourceId);
+    const cached = await this.cache.lookupSymbol(tsCode, key);
+    if (cached) {
+      // Custom rows are stored under the cache key (`custom:<sourceId>`);
+      // hand the caller back a well-typed item.
+      return assetType === "custom" ? { ...cached, assetType, sourceId } : cached;
+    }
 
-    // tx/em have no bulk list to refresh — their cache rows come from
-    // upsertSymbols on pick, and a "refresh" would just wipe them.
-    if (assetType === "tx" || assetType === "em") return undefined;
+    // Custom sources have no bulk list to refresh — their cache rows come
+    // from upsertSymbols on pick, and a "refresh" would just wipe them.
+    if (assetType === "custom") return undefined;
 
     // Fall back to refreshing the list if the symbol is missing.
     await this.loadAssetType(assetType);
@@ -204,8 +211,9 @@ export class SymbolIndex {
     if (assetType === "fut") return this.fetchFutSymbols();
     if (assetType === "fx") return this.fetchFxSymbols();
     if (assetType === "sw") return this.fetchSwSymbols();
-    // tx/em have no bulk list API; they only exist as remotely searched items.
-    if (assetType === "tx" || assetType === "em") return [];
+    // Custom sources have no bulk list API; they only exist as remotely
+    // searched or manually entered items.
+    if (assetType === "custom") return [];
 
     let apiName = "";
     let params: Record<string, unknown> | undefined;

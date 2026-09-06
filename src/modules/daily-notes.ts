@@ -1,4 +1,5 @@
 import { App, moment, normalizePath, Notice, TFile } from "obsidian";
+import { t } from "../i18n";
 
 export interface DailyNotesConfig {
   folder: string;
@@ -60,9 +61,9 @@ export async function openOrCreateDailyNote(
     try {
       await ensureFolder(app, config.folder);
       file = await app.vault.create(path, "");
-      new Notice(`已创建日记：${file.basename}`);
+      new Notice(t("已创建日记：{name}", { name: file.basename }));
     } catch (e) {
-      new Notice(`创建日记失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(t("创建日记失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
       console.error("创建日记失败:", e);
       return;
     }

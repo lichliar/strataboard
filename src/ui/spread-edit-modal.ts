@@ -1,10 +1,11 @@
 import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
-import type { ChartTheme, SeriesPeriod, SeriesRef, SpreadSpec } from "../types";
+import type { ChartTheme, CustomSourceDef, SeriesPeriod, SeriesRef, SpreadSpec } from "../types";
 import { SeriesRefEditor, type OpenFredPicker, type OpenSymbolPicker } from "./series-ref-editor";
 import { parseExpression } from "../modules/expression";
 import { appendSvg } from "../utils/dom";
 import { addStepper } from "./stepper";
 import { DEFAULT_CARD_BLEED, MAX_CARD_BLEED } from "../modules/card-spec";
+import { t } from "../i18n";
 
 // 数据计算卡 editor (wireframe #screen-calc, IMPLEMENTATION.md phase 3):
 // an arithmetic expression over lettered series (A/B/C… assigned by row
@@ -87,8 +88,9 @@ export class SpreadEditModal extends Modal {
   private onSubmit: (spec: SpreadSpec) => void;
   private openSymbolPicker: OpenSymbolPicker;
   private openFredPicker?: OpenFredPicker;
+  private customSources: CustomSourceDef[];
 
-  constructor(app: App, spec: SpreadSpec, onSubmit: (spec: SpreadSpec) => void, openSymbolPicker: OpenSymbolPicker, openFredPicker?: OpenFredPicker, title?: string) {
+  constructor(app: App, spec: SpreadSpec, onSubmit: (spec: SpreadSpec) => void, openSymbolPicker: OpenSymbolPicker, openFredPicker?: OpenFredPicker, title?: string, customSources?: CustomSourceDef[]) {
     super(app);
     this.expression = spec.expression;
     this.refs = spec.series.map((ref) => ({ ...ref }));
@@ -104,7 +106,8 @@ export class SpreadEditModal extends Modal {
     this.onSubmit = onSubmit;
     this.openSymbolPicker = openSymbolPicker;
     this.openFredPicker = openFredPicker;
-    this.setTitle(title ?? "编辑数据计算卡");
+    this.customSources = customSources ?? [];
+    this.setTitle(title ?? t("编辑数据计算卡"));
   }
 
   onOpen() {
@@ -131,7 +134,7 @@ export class SpreadEditModal extends Modal {
       });
     };
     SUB_PAGES.forEach((tab) => {
-      const btn = tabBar.createEl("button", { text: tab.label, cls: "fc-subtab" });
+      const btn = tabBar.createEl("button", { text: t(tab.label), cls: "fc-subtab" });
       btn.addEventListener("click", () => {
         this.activeSubPage = tab.id;
         applyActive();
@@ -144,9 +147,9 @@ export class SpreadEditModal extends Modal {
     this.renderCanvasPage(pages.canvas);
 
     const footer = contentEl.createDiv("fc-modal-footer");
-    const cancelBtn = footer.createEl("button", { text: "取消" });
+    const cancelBtn = footer.createEl("button", { text: t("取消") });
     cancelBtn.addEventListener("click", () => this.close());
-    this.saveBtn = footer.createEl("button", { text: "保存", cls: "mod-cta" });
+    this.saveBtn = footer.createEl("button", { text: t("保存"), cls: "mod-cta" });
     this.saveBtn.addEventListener("click", () => this.save());
 
     this.revalidateExpression();
@@ -159,12 +162,12 @@ export class SpreadEditModal extends Modal {
   // ==================== 基础设置 ====================
 
   private renderBasicPage(pageEl: HTMLElement) {
-    pageEl.createDiv({ cls: "fc-field-hint", text: "表达式（使用系列代号 A/B/C...）" });
+    pageEl.createDiv({ cls: "fc-field-hint", text: t("表达式（使用系列代号 A/B/C...）") });
 
-    const exprSetting = new Setting(pageEl).setName("公式");
+    const exprSetting = new Setting(pageEl).setName(t("公式"));
     exprSetting.addText((text) => {
       text
-        .setPlaceholder("如 A-B、(A+B)/2")
+        .setPlaceholder(t("如 A-B、(A+B)/2"))
         .setValue(this.expression)
         .onChange((value) => {
           this.expression = value;
@@ -183,10 +186,10 @@ export class SpreadEditModal extends Modal {
 
     pageEl.createDiv({
       cls: "fc-field-hint fc-calc-expr-help",
-      text: "输入时实时校验：括号配对、运算符位置、系列代号是否已定义。支持 + − × / 和括号，示例：A+B、A/B、(A+B)/2、A+C/B",
+      text: t("输入时实时校验：括号配对、运算符位置、系列代号是否已定义。支持 + − × / 和括号，示例：A+B、A/B、(A+B)/2、A+C/B"),
     });
 
-    pageEl.createDiv({ cls: "fc-field-hint fc-hint-mt", text: "系列列表" });
+    pageEl.createDiv({ cls: "fc-field-hint fc-hint-mt", text: t("系列列表") });
     this.rowsEl = pageEl.createDiv("fc-calc-series-rows");
     this.renderSeriesRows();
 
@@ -204,21 +207,21 @@ export class SpreadEditModal extends Modal {
 
     pageEl.createDiv({
       cls: "fc-field-hint",
-      text: "系列代号按字母顺序自动分配，删除后自动重排",
+      text: t("系列代号按字母顺序自动分配，删除后自动重排"),
     });
 
-    new Setting(pageEl).setName("数据范围").addDropdown((dropdown) => {
+    new Setting(pageEl).setName(t("数据范围")).addDropdown((dropdown) => {
       for (const option of RANGE_OPTIONS) {
-        dropdown.addOption(option.value, option.label);
+        dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.range).onChange((value) => {
         this.range = value;
       });
     });
 
-    new Setting(pageEl).setName("周期").addDropdown((dropdown) => {
+    new Setting(pageEl).setName(t("周期")).addDropdown((dropdown) => {
       for (const option of PERIOD_OPTIONS) {
-        dropdown.addOption(option.value, option.label);
+        dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.period).onChange((value) => {
         this.period = value as SeriesPeriod;
@@ -226,11 +229,11 @@ export class SpreadEditModal extends Modal {
     });
 
     new Setting(pageEl)
-      .setName("高度")
-      .setDesc("可选，单位 px（200–1600，默认 400）；开启「Canvas 逻辑 → 高度自适应」后此字段失效。")
+      .setName(t("高度"))
+      .setDesc(t("可选，单位 px（200–1600，默认 400）；开启「Canvas 逻辑 → 高度自适应」后此字段失效。"))
       .addText((text) => {
         text
-          .setPlaceholder("如 400")
+          .setPlaceholder(t("如 400"))
           .setValue(this.height)
           .setDisabled(this.heightAuto)
           .onChange((value) => {
@@ -262,7 +265,8 @@ export class SpreadEditModal extends Modal {
         false,
         this.openSymbolPicker,
         undefined,
-        this.openFredPicker
+        this.openFredPicker,
+        this.customSources
       );
       this.editors.push(editor);
     });
@@ -271,7 +275,7 @@ export class SpreadEditModal extends Modal {
   private updateAddRow() {
     if (!this.addRowEl) return;
     const full = this.refs.length >= MAX_SERIES;
-    this.addRowEl.textContent = full ? "系列数量已达上限" : `+ 新增系列（${letterAt(this.refs.length)}）`;
+    this.addRowEl.textContent = full ? t("系列数量已达上限") : t("+ 新增系列（{letter}）", { letter: letterAt(this.refs.length) });
     this.addRowEl.disabled = full;
   }
 
@@ -288,7 +292,7 @@ export class SpreadEditModal extends Modal {
         this.errorEl.addClass("fc-hidden");
       }
       if (invalid && !result.ok) {
-        this.errorEl.lastElementChild!.textContent = `公式错误：${result.error}`;
+        this.errorEl.lastElementChild!.textContent = t("公式错误：{msg}", { msg: t(result.error) });
       }
     }
     if (this.saveBtn) {
@@ -299,9 +303,9 @@ export class SpreadEditModal extends Modal {
   // ==================== 显示设置 ====================
 
   private renderDisplayPage(pageEl: HTMLElement) {
-    new Setting(pageEl).setName("主题").addDropdown((dropdown) => {
+    new Setting(pageEl).setName(t("主题")).addDropdown((dropdown) => {
       for (const option of THEME_OPTIONS) {
-        dropdown.addOption(option.value, option.label);
+        dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.theme).onChange((value) => {
         this.theme = value as ChartTheme;
@@ -309,17 +313,17 @@ export class SpreadEditModal extends Modal {
     });
 
     new Setting(pageEl)
-      .setName("图表类型")
-      .setDesc("计算结果固定为折线图。")
+      .setName(t("图表类型"))
+      .setDesc(t("计算结果固定为折线图。"))
       .addDropdown((dropdown) => {
-        dropdown.addOption("line", "折线 (Line)");
+        dropdown.addOption("line", t("折线 (Line)"));
         dropdown.setValue("line");
         dropdown.setDisabled(true);
       });
 
     new Setting(pageEl)
-      .setName("线宽")
-      .setDesc("1–4 的整数，单位 px；默认 2。")
+      .setName(t("线宽"))
+      .setDesc(t("1–4 的整数，单位 px；默认 2。"))
       .addText((text) => {
         text
           .setPlaceholder("2")
@@ -330,7 +334,7 @@ export class SpreadEditModal extends Modal {
         text.inputEl.addClass("fc-mono");
       });
 
-    new Setting(pageEl).setName("线条颜色").setDesc("默认为蓝色。").addColorPicker((picker) =>
+    new Setting(pageEl).setName(t("线条颜色")).setDesc(t("默认为蓝色。")).addColorPicker((picker) =>
       picker.setValue(this.lineColor).onChange((value) => {
         this.lineColor = value;
       })
@@ -341,8 +345,8 @@ export class SpreadEditModal extends Modal {
 
   private renderCanvasPage(pageEl: HTMLElement) {
     new Setting(pageEl)
-      .setName("宽度自适应")
-      .setDesc("卡片宽度跟随 Canvas 节点宽度缩放。")
+      .setName(t("宽度自适应"))
+      .setDesc(t("卡片宽度跟随 Canvas 节点宽度缩放。"))
       .addToggle((toggle) =>
         toggle.setValue(this.widthAuto).onChange((value) => {
           this.widthAuto = value;
@@ -350,8 +354,8 @@ export class SpreadEditModal extends Modal {
       );
 
     new Setting(pageEl)
-      .setName("高度自适应")
-      .setDesc("开启后跟随节点高度，「基础设置」的高度字段失效。")
+      .setName(t("高度自适应"))
+      .setDesc(t("开启后跟随节点高度，「基础设置」的高度字段失效。"))
       .addToggle((toggle) =>
         toggle.setValue(this.heightAuto).onChange((value) => {
           this.heightAuto = value;
@@ -360,8 +364,8 @@ export class SpreadEditModal extends Modal {
       );
 
     const bleedSetting = new Setting(pageEl)
-      .setName("出血尺寸")
-      .setDesc("卡片内容与 Canvas 节点边缘的留白。");
+      .setName(t("出血尺寸"))
+      .setDesc(t("卡片内容与 Canvas 节点边缘的留白。"));
     addStepper(bleedSetting.controlEl, {
       get: () => this.bleed,
       set: (value) => {
@@ -378,14 +382,14 @@ export class SpreadEditModal extends Modal {
   private save() {
     const parsed = parseExpression(this.expression, this.refs.length);
     if (!parsed.ok) {
-      new Notice(`公式错误：${parsed.error}`);
+      new Notice(t("公式错误：{msg}", { msg: t(parsed.error) }));
       return;
     }
 
     for (let i = 0; i < this.editors.length; i++) {
       const error = this.editors[i].validate();
       if (error) {
-        new Notice(`系列 ${letterAt(i)}：${error}`);
+        new Notice(t("系列 {letter}：{msg}", { letter: letterAt(i), msg: error }));
         return;
       }
     }
@@ -394,7 +398,7 @@ export class SpreadEditModal extends Modal {
     if (this.height) {
       const parsedHeight = Number(this.height);
       if (!Number.isInteger(parsedHeight) || parsedHeight < 200 || parsedHeight > 1600) {
-        new Notice("高度应为 200–1600 的整数（单位 px）。");
+        new Notice(t("高度应为 200–1600 的整数（单位 px）。"));
         return;
       }
       height = parsedHeight;
@@ -402,7 +406,7 @@ export class SpreadEditModal extends Modal {
 
     const lineWidth = Number(this.lineWidth);
     if (!Number.isInteger(lineWidth) || lineWidth < 1 || lineWidth > 4) {
-      new Notice("线宽应为 1–4 的整数（单位 px）。");
+      new Notice(t("线宽应为 1–4 的整数（单位 px）。"));
       return;
     }
 

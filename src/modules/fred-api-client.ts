@@ -1,4 +1,5 @@
 import { get } from "https";
+import { acquireHttpSlot } from "./http";
 import type { FredSeriesInfo, SeriesPoint } from "../types";
 
 export class FredApiError extends Error {
@@ -90,6 +91,7 @@ export class FredApiClient {
       limit: String(limit),
     });
 
+    await acquireHttpSlot();
     const { status, json: rawJson } = await httpGetJson(`${this.baseUrl}/series/search?${params.toString()}`);
     const json = rawJson as FredSearchResponse;
 
@@ -130,6 +132,7 @@ export class FredApiClient {
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
+        await acquireHttpSlot();
         const { status, json: rawJson } = await httpGetJson(`${this.baseUrl}/series/observations?${params.toString()}`);
         const json = rawJson as FredObservationsResponse;
 

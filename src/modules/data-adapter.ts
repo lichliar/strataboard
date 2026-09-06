@@ -1,25 +1,26 @@
 import { Notice } from "obsidian";
-import type { AssetType, Freq, MacroSeriesDef, MarketData, OhlcvRow, ParsedCardSpec, SeriesPoint } from "../types";
-import { MACRO_SERIES_OPTIONS, findMacroSeriesDef } from "../types";
+import type { AssetType, CustomSourceDef, Freq, MacroSeriesDef, MarketData, OhlcvRow, ParsedCardSpec, SeriesPoint } from "../types";
+import { MACRO_SERIES_OPTIONS, cacheAssetKey, findMacroSeriesDef } from "../types";
 import { resolveDateRange, formatDate, parseDateYmd, nextTradingDate, prevTradingDate } from "../utils/date";
 import { SqliteCache } from "./sqlite-cache";
 import { TushareApiClient, TushareApiError } from "./tushare-api-client";
-import { TencentApiClient } from "./tencent-api-client";
-import { EastmoneyApiClient } from "./eastmoney-api-client";
+import { CustomQuoteClient } from "./custom-quote-client";
+import { t } from "../i18n";
 
 interface DataAdapterOptions {
   cache: SqliteCache;
   token: string;
+  customSources: CustomSourceDef[];
 }
 
 export class DataAdapter {
   private client: TushareApiClient;
-  private txClient = new TencentApiClient();
-  private emClient = new EastmoneyApiClient();
+  private customSources: CustomSourceDef[];
   private cache: SqliteCache;
 
   constructor(options: DataAdapterOptions) {
     this.client = new TushareApiClient(options.token);
+    this.customSources = options.customSources;
     this.cache = options.cache;
   }
 
@@ -27,19 +28,33 @@ export class DataAdapter {
     this.client.setToken(token);
   }
 
-  // Server-side quote search for the token-free sources (tx/em), used by
+  setCustomSources(sources: CustomSourceDef[]) {
+    this.customSources = sources;
+  }
+
+  // Resolves the enabled CustomSourceDef behind a sourceId, or throws the
+  // guidance every custom-source path shares.
+  private resolveCustomSource(sourceId: string | undefined): CustomSourceDef {
+    const def = this.customSources.find((s) => s.id === sourceId && s.enabled);
+    if (!def) {
+      throw new Error(t("自定义数据源「{id}」不存在或已停用，请在设置页检查。", { id: sourceId ?? "" }));
+    }
+    return def;
+  }
+
+  // Server-side quote search for a custom source, used by
   // RemoteQuoteSearchModal. Local-index types never reach this.
-  async searchRemoteQuotes(assetType: "tx" | "em", text: string) {
-    return assetType === "tx" ? this.txClient.searchQuotes(text) : this.emClient.searchQuotes(text);
+  async searchRemoteQuotes(sourceId: string, text: string) {
+    return new CustomQuoteClient(this.resolveCustomSource(sourceId)).searchQuotes(text);
   }
 
   // Asset types whose quote API only has daily bars (fund_daily,
   // fut_index_daily, hk_daily, index_global, cb_daily, fut_daily, fx_daily,
-  // sw_daily — and the token-free tx/em endpoints, which this plugin pulls
-  // daily-only): always cached as daily rows and resampled to W/M at read
-  // time. Caching resampled rows broke incremental refresh: the trailing
-  // partial week/month re-fetched from "last cached date + 1" would overwrite
-  // the complete period row with an incomplete one.
+  // sw_daily — and user custom sources, which this plugin pulls daily-only):
+  // always cached as daily rows and resampled to W/M at read time. Caching
+  // resampled rows broke incremental refresh: the trailing partial week/month
+  // re-fetched from "last cached date + 1" would overwrite the complete
+  // period row with an incomplete one.
   private static isDailyOnly(assetType: AssetType): boolean {
     return (
       assetType === "fund" ||
@@ -50,15 +65,14 @@ export class DataAdapter {
       assetType === "fut" ||
       assetType === "fx" ||
       assetType === "sw" ||
-      assetType === "tx" ||
-      assetType === "em"
+      assetType === "custom"
     );
   }
 
   private toKey(spec: ParsedCardSpec) {
     return {
       symbol: spec.symbol,
-      assetType: spec.assetType,
+      assetType: cacheAssetKey(spec.assetType, spec.sourceId),
       freq: DataAdapter.isDailyOnly(spec.assetType) ? ("D" as Freq) : spec.freq,
     };
   }
@@ -121,12 +135,9 @@ export class DataAdapter {
   }
 
   private async fetchOhlcv(spec: ParsedCardSpec, start: string, end: string): Promise<OhlcvRow[]> {
-    // Token-free sources return ready-mapped rows and bypass Tushare entirely.
-    if (spec.assetType === "tx") {
-      return this.txClient.fetchKline(spec.symbol, start, end);
-    }
-    if (spec.assetType === "em") {
-      return this.emClient.fetchKline(spec.symbol, start, end);
+    // Custom sources return ready-mapped rows and bypass Tushare entirely.
+    if (spec.assetType === "custom") {
+      return new CustomQuoteClient(this.resolveCustomSource(spec.sourceId)).fetchKline(spec.symbol, start, end);
     }
 
     const { apiName, params } = this.buildTushareRequest(spec, start, end);
@@ -330,7 +341,7 @@ export class DataAdapter {
   async loadMacroSeries(seriesId: string, startDate: string, endDate: string): Promise<SeriesPoint[]> {
     const def = findMacroSeriesDef(seriesId);
     if (!def) {
-      throw new TushareApiError(`未知的宏观序列：${seriesId}`);
+      throw new TushareApiError(t("未知的宏观序列：{id}", { id: seriesId }));
     }
     const maxDate = await this.cache.getMacroSeriesMaxDate(def.api, seriesId);
     if (!maxDate || maxDate < DataAdapter.expectedLatestDate(def.freq)) {
@@ -338,7 +349,7 @@ export class DataAdapter {
         await this.fetchMacroApi(def.api);
       } catch (e) {
         console.error(`Failed to refresh macro data (${def.api}):`, e);
-        new Notice("StrataBoard: 宏观数据刷新失败，显示缓存数据。");
+        new Notice(t("StrataBoard: 宏观数据刷新失败，显示缓存数据。"));
       }
     }
     return this.cache.loadMacroSeries(def.api, seriesId, startDate, endDate);
@@ -370,7 +381,7 @@ export class DataAdapter {
   private async fetchMacroApi(api: string): Promise<void> {
     const defs = MACRO_SERIES_OPTIONS.filter((o) => o.api === api);
     if (defs.length === 0) {
-      throw new TushareApiError(`未知的宏观接口：${api}`);
+      throw new TushareApiError(t("未知的宏观接口：{api}", { api }));
     }
     if (api === "yc_cb") {
       await this.fetchYcCbSeries(defs);

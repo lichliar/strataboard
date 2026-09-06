@@ -24,6 +24,7 @@ import { CanvasToolbar } from "./modules/toolbar";
 import { ChartCardCodeBlockRenderer, applyCanvasDisplayOptions } from "./modules/chart-card-base";
 import { SeriesAdapter } from "./modules/series-adapter";
 import { formatExpressionTitle } from "./modules/expression";
+import { setRequestInterval } from "./modules/http";
 import { SeriesChartRenderer, type SeriesChartLine } from "./modules/series-chart-renderer";
 import {
   DEFAULT_OVERLAY_SPEC,
@@ -42,6 +43,8 @@ import { SymbolSearchModal } from "./ui/symbol-search-modal";
 import { FredSearchModal } from "./ui/fred-search-modal";
 import { MacroSearchModal } from "./ui/macro-search-modal";
 import { RemoteQuoteSearchModal } from "./ui/remote-quote-modal";
+import { ManualSymbolModal } from "./ui/manual-symbol-modal";
+import { UnifiedSearchModal } from "./ui/unified-search-modal";
 import { SourcePickerModal } from "./ui/source-picker-modal";
 import { WidgetInputModal } from "./ui/widget-input-modal";
 import { UnifiedCardEditModal } from "./ui/unified-card-edit-modal";
@@ -49,10 +52,11 @@ import { CalendarEditModal } from "./ui/calendar-edit-modal";
 import { OverlayEditModal } from "./ui/overlay-edit-modal";
 import { SpreadEditModal } from "./ui/spread-edit-modal";
 import { ConfirmModal } from "./ui/confirm-modal";
-import { findMacroSeriesDef, ASSET_TYPE_LABELS, fredTransformIsPercent, fredTransformLabel } from "./types";
-import type { AssetType, FredCardSpec, FredSeriesInfo, MacroCardSpec, MacroSeriesDef, OverlaySpec, ParsedCardSpec, SeriesPeriod, SeriesPoint, SeriesRef, SpreadSpec, SymbolItem } from "./types";
+import { findMacroSeriesDef, fredTransformIsPercent, fredTransformLabel } from "./types";
+import type { AssetType, CustomSourceDef, FredCardSpec, FredSeriesInfo, MacroCardSpec, MacroSeriesDef, OverlaySpec, ParsedCardSpec, SeriesPeriod, SeriesPoint, SeriesRef, SpreadSpec, SymbolItem, ToolbarSourceId } from "./types";
 import { resolveDateRange, formatIsoDate, parseDateYmd } from "./utils/date";
 import { onAttached } from "./utils/dom";
+import { t, setLanguage } from "./i18n";
 
 class TushareCodeBlockRenderer extends MarkdownRenderChild {
   private plugin: StrataBoardPlugin;
@@ -236,11 +240,11 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
   private deleteFromCanvas() {
     const nodeEl = this.findCanvasNodeEl();
     if (!nodeEl) return;
-    new ConfirmModal(this.plugin.app, "从画布中移除该卡片？卡片文件仍保留在卡片库中。", () => {
+    new ConfirmModal(this.plugin.app, t("从画布中移除该卡片？卡片文件仍保留在卡片库中。"), () => {
       const view = this.plugin.app.workspace.getActiveViewOfType(ItemView) as any;
       const canvas = view?.canvas;
       if (!canvas?.nodes) {
-        new Notice("当前没有激活的 Canvas 视图。");
+        new Notice(t("当前没有激活的 Canvas 视图。"));
         return;
       }
       let target: any = null;
@@ -252,7 +256,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
         }
       }
       if (!target) {
-        new Notice("找不到对应的画布节点。");
+        new Notice(t("找不到对应的画布节点。"));
         return;
       }
       if (typeof canvas.removeNode === "function") {
@@ -260,11 +264,11 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
       } else if (typeof target.remove === "function") {
         target.remove();
       } else {
-        new Notice("当前 Obsidian 版本不支持从画布移除节点。");
+        new Notice(t("当前 Obsidian 版本不支持从画布移除节点。"));
         return;
       }
       canvas.requestSave?.();
-      new Notice("已从画布移除卡片（文件保留在卡片库中）。");
+      new Notice(t("已从画布移除卡片（文件保留在卡片库中）。"));
     }).open();
   }
 
@@ -295,7 +299,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
 
     if (!this.result.ok) {
       this.containerEl.createEl("div", {
-        text: `错误：${this.result.error.message}`,
+        text: t("错误：{msg}", { msg: this.result.error.message }),
         cls: "strataboard-error",
       });
       return;
@@ -307,12 +311,12 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
     // path below) empties the container when done.
     this.containerEl.createEl("div", {
       cls: "strataboard-empty",
-      text: `正在加载数据：${spec.symbol}…`,
+      text: t("正在加载数据：{symbol}…", { symbol: spec.symbol }),
     });
 
     try {
       const data = await this.loadData(spec);
-      const symbolInfo = await this.plugin.symbolIndex.lookup(spec.symbol, spec.assetType);
+      const symbolInfo = await this.plugin.symbolIndex.lookup(spec.symbol, spec.assetType, spec.sourceId);
       this.chartRenderer = new ChartRenderer(this.containerEl, {
         spec,
         data,
@@ -336,11 +340,11 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
         cls: "strataboard-empty strataboard-load-error",
       });
       errorEl.createEl("div", {
-        text: `加载数据失败：${e instanceof Error ? e.message : String(e)}`,
+        text: t("加载数据失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }),
       });
       const retryBtn = errorEl.createEl("button", {
         cls: "strataboard-retry-btn",
-        text: "重试",
+        text: t("重试"),
       });
       retryBtn.addEventListener("click", () => void this.render());
     }
@@ -413,7 +417,8 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
       fredAvailable: this.plugin.pluginSettings.fredApiKey.trim().length > 0,
       openFredPicker: (onSelect) => this.plugin.openFredSearch(onSelect),
       openMacroPicker: (onSelect) => this.plugin.openMacroSearch(onSelect),
-      openSymbolPicker: (onSelect) => this.plugin.openSymbolSearch(onSelect),
+      openSymbolPicker: (onSelect, assetType, sourceId) => this.plugin.openSymbolSearch(onSelect, assetType, sourceId),
+      customSources: this.plugin.enabledCustomSources(),
       onSubmit: (source, newSpec) => {
         if (source === "tushare") {
           void this.saveSpec(newSpec as ParsedCardSpec);
@@ -432,7 +437,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
       this.result = { ok: true, spec: newSpec };
       await this.render();
     } catch (e) {
-      new Notice(`保存卡片设置失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(t("保存卡片设置失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
     }
   }
 }
@@ -463,7 +468,7 @@ class WidgetCodeBlockRenderer extends MarkdownRenderChild {
 
     if (!this.result.ok) {
       this.containerEl.createEl("div", {
-        text: `错误：${this.result.error.message}`,
+        text: t("错误：{msg}", { msg: this.result.error.message }),
         cls: "strataboard-error",
       });
       return;
@@ -526,7 +531,7 @@ class CalendarCodeBlockRenderer extends MarkdownRenderChild {
 
     if (!this.result.ok) {
       this.containerEl.createEl("div", {
-        text: `错误：${this.result.error.message}`,
+        text: t("错误：{msg}", { msg: this.result.error.message }),
         cls: "strataboard-error",
       });
       return;
@@ -617,7 +622,7 @@ function normalizeToPctChange(points: SeriesPoint[]): SeriesPoint[] {
 }
 
 function buildOverlayLine(ref: SeriesRef, points: SeriesPoint[], normalize: boolean): OverlayLine {
-  let name = ref.label || SeriesAdapter.defaultLabel(ref);
+  let name = ref.label || t(SeriesAdapter.defaultLabel(ref));
 
   // Quote lines normalize to % change only when the card's 归一化 toggle is
   // on; only then do they count as percent-ish for the legend suffix.
@@ -643,7 +648,7 @@ function buildOverlayLine(ref: SeriesRef, points: SeriesPoint[], normalize: bool
   if (ref.source === "fred") {
     const percentish = fredTransformIsPercent(ref.transform) ?? (ref.units ? /percent/i.test(ref.units) : true);
     if (ref.transform) {
-      name += `（${fredTransformLabel(ref.transform)}）`;
+      name += t("（{label}）", { label: t(fredTransformLabel(ref.transform)) });
     }
     return { line: { name, points }, percentish };
   }
@@ -654,7 +659,7 @@ function buildOverlayLine(ref: SeriesRef, points: SeriesPoint[], normalize: bool
   const def = ref.seriesId ? findMacroSeriesDef(ref.seriesId) : undefined;
   if (def?.kind === "money") {
     const divisor = def.divisor ?? 10000;
-    name += "（万亿元）";
+    name += t("（万亿元）");
     return {
       line: { name, points: points.map((p) => ({ date: p.date, value: p.value / divisor })) },
       percentish: false,
@@ -687,7 +692,7 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
     if (!this.result.spec) {
       this.containerEl.createEl("div", {
-        text: `错误：${this.result.error ?? "无效的卡片配置。"}`,
+        text: t("错误：{msg}", { msg: this.result.error ?? t("无效的卡片配置。") }),
         cls: "strataboard-error",
       });
       return;
@@ -708,7 +713,7 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     // error path below) empties the container when done.
     this.containerEl.createEl("div", {
       cls: "strataboard-empty",
-      text: "正在加载数据…",
+      text: t("正在加载数据…"),
     });
 
     try {
@@ -726,8 +731,8 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
       // Title composes the line names; 归一化 marks normalized cards.
       const lineNames = spec.series.map((ref) => ref.label || SeriesAdapter.defaultLabel(ref));
-      let title = `资产叠加（${lineNames.join("+")}）`;
-      if (normalize) title += "（归一化）";
+      let title = t("资产叠加（{names}）", { names: lineNames.join("+") });
+      if (normalize) title += t("（归一化）");
 
       // Subtitle: the date each normalized (quote) line is rebased to — its
       // first point's actual observation date (resampling keeps real dates).
@@ -741,8 +746,8 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
         });
         if (bases.length > 0) {
           subtitle = bases.every((b) => b.date === bases[0].date)
-            ? `归一基准：${bases[0].date}`
-            : `归一基准：${bases.map((b) => `${b.name} ${b.date}`).join(" · ")}`;
+            ? t("归一基准：{date}", { date: bases[0].date })
+            : t("归一基准：{bases}", { bases: bases.map((b) => `${b.name} ${b.date}`).join(" · ") });
         }
       }
 
@@ -771,9 +776,11 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       (newSpec) => {
         void this.fcPlugin.updateOverlayCard(this.sourcePath, newSpec);
       },
-      (onSelect, assetType) => this.fcPlugin.openSymbolSearch(onSelect, assetType),
+      (onSelect, assetType, sourceId) => this.fcPlugin.openSymbolSearch(onSelect, assetType, sourceId),
       () => this.fcPlugin.listSpreadCards(),
-      (onSelect) => this.fcPlugin.openFredSearch(onSelect)
+      (onSelect) => this.fcPlugin.openFredSearch(onSelect),
+      undefined,
+      this.fcPlugin.enabledCustomSources()
     ).open();
   }
 
@@ -810,11 +817,11 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       cls: "strataboard-empty strataboard-load-error",
     });
     errorEl.createEl("div", {
-      text: `加载数据失败：${e instanceof Error ? e.message : String(e)}`,
+      text: t("加载数据失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }),
     });
     const retryBtn = errorEl.createEl("button", {
       cls: "strataboard-retry-btn",
-      text: "重试",
+      text: t("重试"),
     });
     retryBtn.addEventListener("click", () => void this.renderBody());
   }
@@ -842,7 +849,7 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
     if (!this.result.spec) {
       this.containerEl.createEl("div", {
-        text: `错误：${this.result.error ?? "无效的卡片配置。"}`,
+        text: t("错误：{msg}", { msg: this.result.error ?? t("无效的卡片配置。") }),
         cls: "strataboard-error",
       });
       return;
@@ -861,7 +868,7 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
     this.containerEl.createEl("div", {
       cls: "strataboard-empty",
-      text: "正在加载数据…",
+      text: t("正在加载数据…"),
     });
 
     try {
@@ -892,8 +899,10 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       (newSpec) => {
         void this.fcPlugin.updateSpreadCard(this.sourcePath, newSpec);
       },
-      (onSelect, assetType) => this.fcPlugin.openSymbolSearch(onSelect, assetType),
-      (onSelect) => this.fcPlugin.openFredSearch(onSelect)
+      (onSelect, assetType, sourceId) => this.fcPlugin.openSymbolSearch(onSelect, assetType, sourceId),
+      (onSelect) => this.fcPlugin.openFredSearch(onSelect),
+      undefined,
+      this.fcPlugin.enabledCustomSources()
     ).open();
   }
 
@@ -924,11 +933,11 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       cls: "strataboard-empty strataboard-load-error",
     });
     errorEl.createEl("div", {
-      text: `加载数据失败：${e instanceof Error ? e.message : String(e)}`,
+      text: t("加载数据失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }),
     });
     const retryBtn = errorEl.createEl("button", {
       cls: "strataboard-retry-btn",
-      text: "重试",
+      text: t("重试"),
     });
     retryBtn.addEventListener("click", () => void this.renderBody());
   }
@@ -958,7 +967,7 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
     if (!this.result.spec) {
       this.containerEl.createEl("div", {
-        text: `错误：${this.result.error ?? "无效的卡片配置。"}`,
+        text: t("错误：{msg}", { msg: this.result.error ?? t("无效的卡片配置。") }),
         cls: "strataboard-error",
       });
       return;
@@ -973,7 +982,7 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
     this.containerEl.createEl("div", {
       cls: "strataboard-empty",
-      text: "正在加载数据…",
+      text: t("正在加载数据…"),
     });
 
     let points: SeriesPoint[];
@@ -996,14 +1005,14 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     title.createEl("span", { cls: "strataboard-header-name", text: name });
     titleWrap.createEl("div", {
       cls: "strataboard-header-code",
-      text: [spec.seriesId, spec.frequency, spec.transform ? fredTransformLabel(spec.transform) : undefined]
+      text: [spec.seriesId, spec.frequency, spec.transform ? t(fredTransformLabel(spec.transform)) : undefined]
         .filter(Boolean)
         .join(" · "),
     });
     const actions = topRow.createEl("div", { cls: "strataboard-header-actions" });
     const refreshBtn = actions.createEl("button", { cls: "strataboard-header-refresh" });
     setIcon(refreshBtn, "refresh-cw");
-    setTooltip(refreshBtn, "刷新数据");
+    setTooltip(refreshBtn, t("刷新数据"));
     refreshBtn.addEventListener("click", () => void this.renderBody(true));
 
     if (points.length > 0) {
@@ -1026,7 +1035,7 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     ];
     for (const p of periods) {
       const btn = tabsEl.createEl("button", {
-        text: p.label,
+        text: t(p.label),
         cls: p.id === period ? "is-active" : "",
       });
       btn.addEventListener("click", () => {
@@ -1060,7 +1069,8 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       fredAvailable: this.fcPlugin.pluginSettings.fredApiKey.trim().length > 0,
       openFredPicker: (onSelect) => this.fcPlugin.openFredSearch(onSelect),
       openMacroPicker: (onSelect) => this.fcPlugin.openMacroSearch(onSelect),
-      openSymbolPicker: (onSelect) => this.fcPlugin.openSymbolSearch(onSelect),
+      openSymbolPicker: (onSelect, assetType, sourceId) => this.fcPlugin.openSymbolSearch(onSelect, assetType, sourceId),
+      customSources: this.fcPlugin.enabledCustomSources(),
       onSubmit: (source, newSpec) => {
         if (source === "fred") {
           void this.fcPlugin.updateFredCard(this.sourcePath, newSpec as FredCardSpec);
@@ -1100,11 +1110,11 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       cls: "strataboard-empty strataboard-load-error",
     });
     errorEl.createEl("div", {
-      text: `加载数据失败：${e instanceof Error ? e.message : String(e)}`,
+      text: t("加载数据失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }),
     });
     const retryBtn = errorEl.createEl("button", {
       cls: "strataboard-retry-btn",
-      text: "重试",
+      text: t("重试"),
     });
     retryBtn.addEventListener("click", () => void this.renderBody());
   }
@@ -1135,7 +1145,7 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
     if (!this.result.spec) {
       this.containerEl.createEl("div", {
-        text: `错误：${this.result.error ?? "无效的卡片配置。"}`,
+        text: t("错误：{msg}", { msg: this.result.error ?? t("无效的卡片配置。") }),
         cls: "strataboard-error",
       });
       return;
@@ -1144,21 +1154,21 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     const def = findMacroSeriesDef(spec.seriesId);
     if (!def) {
       this.containerEl.createEl("div", {
-        text: `错误：未知的宏观序列 ${spec.seriesId}。`,
+        text: t("错误：未知的宏观序列 {id}。", { id: spec.seriesId }),
         cls: "strataboard-error",
       });
       return;
     }
     const period = spec.period ?? "D";
     const valueSuffix = def.kind === "percent" ? "%" : undefined;
-    let name = def.label;
+    let name = t(def.label);
     if (def.kind === "money") {
-      name += "（万亿元）";
+      name += t("（万亿元）");
     }
 
     this.containerEl.createEl("div", {
       cls: "strataboard-empty",
-      text: "正在加载数据…",
+      text: t("正在加载数据…"),
     });
 
     let points: SeriesPoint[];
@@ -1187,12 +1197,12 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     title.createEl("span", { cls: "strataboard-header-name", text: name });
     titleWrap.createEl("div", {
       cls: "strataboard-header-code",
-      text: `${def.group} · ${def.freq === "Q" ? "季度" : def.freq === "D" ? "日度" : "月度"}`,
+      text: `${t(def.group)} · ${def.freq === "Q" ? t("季度") : def.freq === "D" ? t("日度") : t("月度")}`,
     });
     const actions = topRow.createEl("div", { cls: "strataboard-header-actions" });
     const refreshBtn = actions.createEl("button", { cls: "strataboard-header-refresh" });
     setIcon(refreshBtn, "refresh-cw");
-    setTooltip(refreshBtn, "刷新数据");
+    setTooltip(refreshBtn, t("刷新数据"));
     refreshBtn.addEventListener("click", () => void this.renderBody(true));
 
     if (points.length > 0) {
@@ -1215,7 +1225,7 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     ];
     for (const p of periods) {
       const btn = tabsEl.createEl("button", {
-        text: p.label,
+        text: t(p.label),
         cls: p.id === period ? "is-active" : "",
       });
       btn.addEventListener("click", () => {
@@ -1249,7 +1259,8 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       fredAvailable: this.fcPlugin.pluginSettings.fredApiKey.trim().length > 0,
       openFredPicker: (onSelect) => this.fcPlugin.openFredSearch(onSelect),
       openMacroPicker: (onSelect) => this.fcPlugin.openMacroSearch(onSelect),
-      openSymbolPicker: (onSelect) => this.fcPlugin.openSymbolSearch(onSelect),
+      openSymbolPicker: (onSelect, assetType, sourceId) => this.fcPlugin.openSymbolSearch(onSelect, assetType, sourceId),
+      customSources: this.fcPlugin.enabledCustomSources(),
       onSubmit: (source, newSpec) => {
         if (source === "macro") {
           void this.fcPlugin.updateMacroCard(this.sourcePath, newSpec as MacroCardSpec);
@@ -1289,11 +1300,11 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       cls: "strataboard-empty strataboard-load-error",
     });
     errorEl.createEl("div", {
-      text: `加载数据失败：${e instanceof Error ? e.message : String(e)}`,
+      text: t("加载数据失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }),
     });
     const retryBtn = errorEl.createEl("button", {
       cls: "strataboard-retry-btn",
-      text: "重试",
+      text: t("重试"),
     });
     retryBtn.addEventListener("click", () => void this.renderBody());
   }
@@ -1331,6 +1342,7 @@ export default class StrataBoardPlugin extends Plugin {
     this.dataAdapter = new DataAdapter({
       cache: this.sqliteCache,
       token: this.pluginSettings.tushareToken,
+      customSources: this.pluginSettings.customSources,
     });
 
     this.seriesAdapter = new SeriesAdapter({
@@ -1351,6 +1363,7 @@ export default class StrataBoardPlugin extends Plugin {
       cardLibraryPath: this.pluginSettings.cardLibraryPath,
       widgetCardPath: this.pluginSettings.widgetCardPath,
       componentCardPath: this.pluginSettings.componentCardPath,
+      resolveSourceName: (sourceId) => this.pluginSettings.customSources.find((s) => s.id === sourceId)?.name,
     });
 
     this.toolbar = new CanvasToolbar(this);
@@ -1359,7 +1372,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.addCommand({
       id: "open-settings",
-      name: "打开金融卡片设置",
+      name: t("打开金融卡片设置"),
       callback: () => {
         (this.app as any).setting.open();
         (this.app as any).setting.openTabById(this.manifest.id);
@@ -1368,7 +1381,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-financial-card",
-      name: "插入资产数据卡片",
+      name: t("插入资产数据卡片"),
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(ItemView);
         if (view?.getViewType() === "canvas") {
@@ -1383,7 +1396,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-widget-card",
-      name: "插入 HTML / TradingView 小组件",
+      name: t("插入 HTML / TradingView 小组件"),
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(ItemView);
         if (view?.getViewType() === "canvas") {
@@ -1398,7 +1411,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-calendar-card",
-      name: "插入日历卡片",
+      name: t("插入日历卡片"),
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(ItemView);
         if (view?.getViewType() === "canvas") {
@@ -1413,7 +1426,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-overlay-card",
-      name: "插入资产叠加卡片",
+      name: t("插入资产叠加卡片"),
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(ItemView);
         if (view?.getViewType() === "canvas") {
@@ -1428,7 +1441,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-spread-card",
-      name: "插入数据计算卡片",
+      name: t("插入数据计算卡片"),
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(ItemView);
         if (view?.getViewType() === "canvas") {
@@ -1443,7 +1456,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-fred-card",
-      name: "插入FRED数据卡片",
+      name: t("插入FRED数据卡片"),
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(ItemView);
         if (view?.getViewType() === "canvas") {
@@ -1458,7 +1471,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-macro-card",
-      name: "插入宏观数据卡片",
+      name: t("插入宏观数据卡片"),
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(ItemView);
         if (view?.getViewType() === "canvas") {
@@ -1521,7 +1534,7 @@ export default class StrataBoardPlugin extends Plugin {
         if (!(view instanceof MarkdownView)) return;
         menu.addItem((item) => {
           item
-            .setTitle("插入金融卡片")
+            .setTitle(t("插入金融卡片"))
             .setIcon("line-chart")
             .onClick(() => this.insertCardIntoMd(editor));
         });
@@ -1542,18 +1555,32 @@ export default class StrataBoardPlugin extends Plugin {
   async loadSettings() {
     const stored = (await this.loadData()) as Partial<StrataBoardSettings> | null;
     this.pluginSettings = Object.assign({}, DEFAULT_SETTINGS, stored);
+    setRequestInterval(this.pluginSettings.requestIntervalMs);
+    setLanguage(this.pluginSettings.language);
     // Merge per-source toolbar visibility so a stale data.json (missing
     // sources added later) still gets defaults, and the live settings never
-    // share object references with DEFAULT_SETTINGS.
-    this.pluginSettings.toolbarSources = { ...DEFAULT_SETTINGS.toolbarSources, ...stored?.toolbarSources };
+    // share object references with DEFAULT_SETTINGS. Keys are filtered
+    // against the known sources so dropped ones vanish.
+    const storedSources = stored?.toolbarSources ?? {};
+    const knownSourceKeys = new Set<string>(Object.keys(DEFAULT_SETTINGS.toolbarSources));
+    this.pluginSettings.toolbarSources = { ...DEFAULT_SETTINGS.toolbarSources };
+    for (const [key, value] of Object.entries(storedSources) as [string, boolean][]) {
+      if (knownSourceKeys.has(key)) {
+        this.pluginSettings.toolbarSources[key as ToolbarSourceId] = value;
+      }
+    }
     // Normalize the stored order: drop unknown ids, append entries the stored
-    // list doesn't know about yet (e.g. added by a newer plugin version).
-    const storedOrder = (stored?.toolbarOrder ?? []).filter((id) =>
-      DEFAULT_SETTINGS.toolbarOrder.includes(id)
-    );
-    this.pluginSettings.toolbarOrder = [
+    // list doesn't know about yet (new plugin-version entries). 「插入数据」is
+    // pinned first — a stored legacy order must not push it down.
+    const defaultOrder = DEFAULT_SETTINGS.toolbarOrder;
+    const storedOrder = (stored?.toolbarOrder ?? []).filter((id) => defaultOrder.includes(id));
+    const merged = [
       ...storedOrder,
-      ...DEFAULT_SETTINGS.toolbarOrder.filter((id) => !storedOrder.includes(id)),
+      ...defaultOrder.filter((id) => !storedOrder.includes(id)),
+    ];
+    this.pluginSettings.toolbarOrder = [
+      "insert-data",
+      ...merged.filter((id) => id !== "insert-data"),
     ];
     // Corner anchors; old "left" | "right" values (and anything unknown) map
     // to the bottom corner on the same side. Idempotent for valid values.
@@ -1565,7 +1592,9 @@ export default class StrataBoardPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.pluginSettings);
+    setRequestInterval(this.pluginSettings.requestIntervalMs);
     this.dataAdapter?.setToken(this.pluginSettings.tushareToken);
+    this.dataAdapter?.setCustomSources(this.pluginSettings.customSources);
     this.symbolIndex?.setToken(this.pluginSettings.tushareToken);
     this.cardService?.setPaths({
       cardLibraryPath: this.pluginSettings.cardLibraryPath,
@@ -1575,27 +1604,69 @@ export default class StrataBoardPlugin extends Plugin {
     this.toolbar?.reload();
   }
 
+  // Enabled custom sources, for the pickers and edit modals.
+  enabledCustomSources(): CustomSourceDef[] {
+    return this.pluginSettings.customSources.filter((s) => s.enabled);
+  }
+
+  // Unified 「插入数据」 entry (canvas toolbar): one search modal fanning out
+  // across the local symbol index, the Tushare macro catalog, FRED, and every
+  // enabled custom source. Custom items are upserted into the symbol cache
+  // first (keyed custom:<sourceId>) so chart headers resolve names later.
+  openUnifiedSearch() {
+    new UnifiedSearchModal(this.app, {
+      hasTushare: this.pluginSettings.tushareToken.trim().length > 0,
+      hasFred: this.pluginSettings.fredApiKey.trim().length > 0,
+      loadSymbols: () => this.symbolIndex.loadAll(),
+      searchFred: (text) => this.seriesAdapter.searchFredSeries(text),
+      customSources: this.enabledCustomSources(),
+      searchCustom: (sourceId, text) => this.dataAdapter.searchRemoteQuotes(sourceId, text),
+      onSymbol: (item) => this.insertSymbolCard(item),
+      onFred: (info) => void this.createFredCard(info),
+      onMacro: (def) => void this.createMacroCard(def),
+      onManual: (sourceId, sourceName) =>
+        new ManualSymbolModal(this.app, sourceId, sourceName, (item) => this.insertSymbolCard(item)).open(),
+    }).open();
+  }
+
+  private insertSymbolCard(item: SymbolItem) {
+    if (item.assetType === "custom") void this.sqliteCache.upsertSymbols([item]);
+    void this.insertCard(item);
+  }
+
   // Single entry point for the asset search modal (toolbar menu + command).
-  // tx/em are the token-free sources: they skip the Tushare-token guard and
-  // open a remote search modal instead of the local symbol index; the picked
-  // item is upserted into the symbol cache so chart headers can resolve its
-  // name later. The token check for Tushare types lives here so every path
-  // fails with the same guidance instead of an empty search modal.
-  openSymbolSearch(onSelect: (item: SymbolItem) => void, assetType?: AssetType) {
-    if (assetType === "tx" || assetType === "em") {
-      new RemoteQuoteSearchModal(
-        this.app,
-        ASSET_TYPE_LABELS[assetType],
-        (text) => this.dataAdapter.searchRemoteQuotes(assetType, text),
-        (item) => {
-          void this.sqliteCache.upsertSymbols([item]);
-          onSelect(item);
-        }
-      ).open();
+  // Custom sources (assetType "custom" + sourceId) skip the Tushare-token
+  // guard and open their own picker — remote search when the source defines a
+  // searchUrl, manual code entry otherwise; the picked item is upserted into
+  // the symbol cache (keyed custom:<sourceId>) so chart headers can resolve
+  // its name later. The token check for Tushare types lives here so every
+  // path fails with the same guidance instead of an empty search modal.
+  openSymbolSearch(onSelect: (item: SymbolItem) => void, assetType?: AssetType, sourceId?: string) {
+    if (assetType === "custom") {
+      const def = this.pluginSettings.customSources.find((s) => s.id === sourceId && s.enabled);
+      if (!def) {
+        new Notice(t("自定义数据源「{id}」不存在或已停用，请在设置页检查。", { id: sourceId ?? "" }));
+        return;
+      }
+      const onPick = (item: SymbolItem) => {
+        const picked: SymbolItem = { ...item, assetType: "custom", sourceId: def.id };
+        void this.sqliteCache.upsertSymbols([picked]);
+        onSelect(picked);
+      };
+      if (def.searchUrl) {
+        new RemoteQuoteSearchModal(
+          this.app,
+          def.name,
+          (text) => this.dataAdapter.searchRemoteQuotes(def.id, text),
+          onPick
+        ).open();
+      } else {
+        new ManualSymbolModal(this.app, def.id, def.name, onPick).open();
+      }
       return;
     }
     if (!this.pluginSettings.tushareToken) {
-      new Notice("请先在金融卡片设置中配置 Tushare Token。");
+      new Notice(t("请先在金融卡片设置中配置 Tushare Token。"));
       return;
     }
     new SymbolSearchModal({
@@ -1609,8 +1680,8 @@ export default class StrataBoardPlugin extends Plugin {
   // 插入资产数据 unified entry (command palette counterpart of the toolbar):
   // every data source leads to its own standalone-card picker — project rule:
   // any series usable in overlay/spread cards must also exist as a standalone
-  // card. tx/em are always listed (token-free); Tushare/FRED entries appear
-  // only when their key is configured.
+  // card. Each enabled custom source gets its own entry; Tushare/FRED entries
+  // appear only when their key is configured.
   insertAssetDataCard() {
     const hasTushare = this.pluginSettings.tushareToken.trim().length > 0;
     const hasFred = this.pluginSettings.fredApiKey.trim().length > 0;
@@ -1630,16 +1701,13 @@ export default class StrataBoardPlugin extends Plugin {
             },
           ]
         : []),
-      {
-        name: "腾讯行情",
-        desc: "A股/港股/美股/指数/ETF · 免 Token",
-        onPick: () => this.openSymbolSearch((item) => void this.insertCard(item), "tx"),
-      },
-      {
-        name: "东方财富",
-        desc: "A股/港股/美股/指数/ETF · 免 Token",
-        onPick: () => this.openSymbolSearch((item) => void this.insertCard(item), "em"),
-      },
+      ...this.pluginSettings.customSources
+        .filter((def) => def.enabled)
+        .map((def) => ({
+          name: def.name,
+          desc: "自定义数据源 · 用户配置",
+          onPick: () => this.openSymbolSearch((item) => void this.insertCard(item), "custom", def.id),
+        })),
       ...(hasFred
         ? [
             {
@@ -1688,16 +1756,13 @@ export default class StrataBoardPlugin extends Plugin {
             },
           ]
         : []),
-      {
-        name: "腾讯行情",
-        desc: "A股/港股/美股/指数/ETF · 免 Token",
-        onPick: () => this.openSymbolSearch((item) => void this.insertCard(item, editor), "tx"),
-      },
-      {
-        name: "东方财富",
-        desc: "A股/港股/美股/指数/ETF · 免 Token",
-        onPick: () => this.openSymbolSearch((item) => void this.insertCard(item, editor), "em"),
-      },
+      ...this.pluginSettings.customSources
+        .filter((def) => def.enabled)
+        .map((def) => ({
+          name: def.name,
+          desc: "自定义数据源 · 用户配置",
+          onPick: () => this.openSymbolSearch((item) => void this.insertCard(item, editor), "custom", def.id),
+        })),
       ...(hasFred
         ? [
             {
@@ -1734,6 +1799,7 @@ export default class StrataBoardPlugin extends Plugin {
     const spec: ParsedCardSpec = {
       symbol: item.tsCode,
       assetType: item.assetType,
+      ...(item.sourceId ? { sourceId: item.sourceId } : {}),
       freq: "D",
       range: this.resolveDefaultRange(),
       version: 1,
@@ -1749,7 +1815,7 @@ export default class StrataBoardPlugin extends Plugin {
       const file = await this.cardService.createOrReuse(spec, undefined, item.name);
       this.toolbar.placeFileNode(file);
     } catch (e) {
-      new Notice(`创建卡片失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(t("创建卡片失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
       console.error("创建卡片失败:", e);
     }
   }
@@ -1767,7 +1833,7 @@ export default class StrataBoardPlugin extends Plugin {
   async insertWidgetCard(title: string, input: string, savePath?: string, editor?: Editor) {
     const parsed = parseWidgetInput(input, title || undefined);
     if (!parsed) {
-      new Notice("输入内容为空或无法解析。");
+      new Notice(t("输入内容为空或无法解析。"));
       return;
     }
 
@@ -1795,7 +1861,7 @@ export default class StrataBoardPlugin extends Plugin {
       const file = await this.cardService.createOrReuse(spec, savePath);
       this.toolbar.placeFileNode(file);
     } catch (e) {
-      new Notice(`创建小组件卡片失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(t("创建小组件卡片失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
       console.error("创建小组件卡片失败:", e);
     }
   }
@@ -1820,7 +1886,7 @@ export default class StrataBoardPlugin extends Plugin {
       const file = await this.cardService.createOrReuse(spec);
       this.toolbar.placeFileNode(file);
     } catch (e) {
-      new Notice(`创建日历卡片失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(t("创建日历卡片失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
       console.error("创建日历卡片失败:", e);
     }
   }
@@ -1832,7 +1898,7 @@ export default class StrataBoardPlugin extends Plugin {
     // Same token guard as openSymbolSearch; a FRED key is NOT required at
     // insert time (the default series are macro).
     if (!this.pluginSettings.tushareToken) {
-      new Notice("请先在金融卡片设置中配置 Tushare Token。");
+      new Notice(t("请先在金融卡片设置中配置 Tushare Token。"));
       return;
     }
 
@@ -1840,16 +1906,17 @@ export default class StrataBoardPlugin extends Plugin {
       this.app,
       DEFAULT_OVERLAY_SPEC,
       (spec) => void this.createOverlayCard(spec, editor),
-      (onSelect, assetType) => this.openSymbolSearch(onSelect, assetType),
+      (onSelect, assetType, sourceId) => this.openSymbolSearch(onSelect, assetType, sourceId),
       () => this.listSpreadCards(),
       (onSelect) => this.openFredSearch(onSelect),
-      "新建资产叠加卡"
+      t("新建资产叠加卡"),
+      this.enabledCustomSources()
     ).open();
   }
 
   async insertSpreadCard(editor?: Editor) {
     if (!this.pluginSettings.tushareToken) {
-      new Notice("请先在金融卡片设置中配置 Tushare Token。");
+      new Notice(t("请先在金融卡片设置中配置 Tushare Token。"));
       return;
     }
 
@@ -1857,9 +1924,10 @@ export default class StrataBoardPlugin extends Plugin {
       this.app,
       DEFAULT_SPREAD_SPEC,
       (spec) => void this.createSpreadCard(spec, editor),
-      (onSelect, assetType) => this.openSymbolSearch(onSelect, assetType),
+      (onSelect, assetType, sourceId) => this.openSymbolSearch(onSelect, assetType, sourceId),
       (onSelect) => this.openFredSearch(onSelect),
-      "新建数据计算卡"
+      t("新建数据计算卡"),
+      this.enabledCustomSources()
     ).open();
   }
 
@@ -1868,7 +1936,7 @@ export default class StrataBoardPlugin extends Plugin {
   // fails with the same guidance instead of an empty modal.
   openFredSearch(onSelect: (info: FredSeriesInfo) => void) {
     if (!this.pluginSettings.fredApiKey) {
-      new Notice("请先在金融卡片设置中配置 FRED API Key。");
+      new Notice(t("请先在金融卡片设置中配置 FRED API Key。"));
       return;
     }
     new FredSearchModal(
@@ -1906,7 +1974,7 @@ export default class StrataBoardPlugin extends Plugin {
       const file = await this.cardService.createRawCard(baseName, "fred", stringifyFredCardSpec(spec));
       this.toolbar.placeFileNode(file);
     } catch (e) {
-      new Notice(`创建FRED数据卡片失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(t("创建FRED数据卡片失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
       console.error("创建FRED数据卡片失败:", e);
     }
   }
@@ -1915,7 +1983,7 @@ export default class StrataBoardPlugin extends Plugin {
   // modal; local catalog, no token check beyond a configured Tushare token.
   openMacroSearch(onSelect: (def: MacroSeriesDef) => void) {
     if (!this.pluginSettings.tushareToken) {
-      new Notice("请先在设置中配置 Tushare Token。");
+      new Notice(t("请先在设置中配置 Tushare Token。"));
       return;
     }
     new MacroSearchModal(this.app, onSelect).open();
@@ -1944,7 +2012,7 @@ export default class StrataBoardPlugin extends Plugin {
       const file = await this.cardService.createRawCard(baseName, "macro", stringifyMacroCardSpec(spec));
       this.toolbar.placeFileNode(file);
     } catch (e) {
-      new Notice(`创建宏观数据卡片失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(t("创建宏观数据卡片失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
       console.error("创建宏观数据卡片失败:", e);
     }
   }
@@ -1959,7 +2027,7 @@ export default class StrataBoardPlugin extends Plugin {
       const file = await this.cardService.createRawCard("资产叠加.md", "overlay", stringifyOverlaySpec(spec));
       this.toolbar.placeFileNode(file);
     } catch (e) {
-      new Notice(`创建资产叠加卡片失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(t("创建资产叠加卡片失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
       console.error("创建资产叠加卡片失败:", e);
     }
   }
@@ -1992,7 +2060,7 @@ export default class StrataBoardPlugin extends Plugin {
       const file = await this.cardService.createRawCard("数据计算.md", "spread", stringifySpreadSpec(spec));
       this.toolbar.placeFileNode(file);
     } catch (e) {
-      new Notice(`创建数据计算卡片失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(t("创建数据计算卡片失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
       console.error("创建数据计算卡片失败:", e);
     }
   }
@@ -2071,7 +2139,7 @@ export default class StrataBoardPlugin extends Plugin {
   ) {
     const file = this.app.vault.getAbstractFileByPath(sourcePath);
     if (!(file instanceof TFile)) {
-      new Notice(`找不到${cardLabel}文件。`);
+      new Notice(t("找不到{label}文件。", { label: t(cardLabel) }));
       return;
     }
 
@@ -2091,9 +2159,9 @@ export default class StrataBoardPlugin extends Plugin {
       if (newContent !== content) {
         await this.app.vault.modify(file, newContent);
       }
-      new Notice(`${cardLabel}已保存。`);
+      new Notice(t("{label}已保存。", { label: t(cardLabel) }));
     } catch (e) {
-      new Notice(`保存${cardLabel}失败：${e instanceof Error ? e.message : String(e)}`);
+      new Notice(t("保存{label}失败：{msg}", { label: t(cardLabel), msg: e instanceof Error ? e.message : String(e) }));
       console.error(`保存${cardLabel}失败:`, e);
     }
   }

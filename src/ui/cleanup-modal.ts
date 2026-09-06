@@ -1,4 +1,5 @@
 import { App, Modal } from "obsidian";
+import { t } from "../i18n";
 
 export interface CleanupItem {
   id: string;
@@ -35,8 +36,8 @@ export class CleanupConfirmModal extends Modal {
     contentEl.createDiv({ cls: "fc-field-hint", text: this.options.desc });
 
     const toolbar = contentEl.createDiv("fc-cleanup-toolbar");
-    const selectAll = toolbar.createEl("button", { text: "全选" });
-    const selectNone = toolbar.createEl("button", { text: "全不选" });
+    const selectAll = toolbar.createEl("button", { text: t("全选") });
+    const selectNone = toolbar.createEl("button", { text: t("全不选") });
 
     const list = contentEl.createDiv("fc-cleanup-list");
     const checkboxes: HTMLInputElement[] = [];
@@ -69,7 +70,7 @@ export class CleanupConfirmModal extends Modal {
     });
 
     const footer = contentEl.createDiv("fc-cleanup-footer");
-    const cancel = footer.createEl("button", { text: "取消" });
+    const cancel = footer.createEl("button", { text: t("取消") });
     cancel.addEventListener("click", () => this.close());
     this.confirmButton = footer.createEl("button", { cls: "mod-warning" });
     this.confirmButton.addEventListener("click", () => void this.runConfirm());

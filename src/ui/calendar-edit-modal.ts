@@ -1,5 +1,6 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { addStepper } from "./stepper";
+import { t } from "../i18n";
 
 // Calendar card editor (wireframe #screen-calendar): a month-grid picker
 // (year navigation + 4×3 month cells) replacing the old inline year/month
@@ -44,21 +45,21 @@ export class CalendarEditModal extends Modal {
     this.height = initial.height ? String(initial.height) : "";
     this.display = { ...display };
     this.onSave = onSave;
-    this.setTitle("编辑日历");
+    this.setTitle(t("编辑日历"));
   }
 
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
 
-    contentEl.createDiv({ cls: "fc-timeline-group-title", text: "显示月份" });
+    contentEl.createDiv({ cls: "fc-timeline-group-title", text: t("显示月份") });
     const pickerBox = contentEl.createDiv("fc-timeline-range-box");
 
     // Year navigation row.
     const nav = pickerBox.createDiv("fc-month-nav");
-    const prevBtn = nav.createEl("button", { cls: "fc-month-nav-btn", text: "‹", attr: { type: "button", "aria-label": "上一年" } });
+    const prevBtn = nav.createEl("button", { cls: "fc-month-nav-btn", text: "‹", attr: { type: "button", "aria-label": t("上一年") } });
     this.yearLabelEl = nav.createSpan("fc-month-nav-label");
-    const nextBtn = nav.createEl("button", { cls: "fc-month-nav-btn", text: "›", attr: { type: "button", "aria-label": "下一年" } });
+    const nextBtn = nav.createEl("button", { cls: "fc-month-nav-btn", text: "›", attr: { type: "button", "aria-label": t("下一年") } });
     prevBtn.addEventListener("click", () => {
       this.year--;
       this.renderPicker();
@@ -72,8 +73,8 @@ export class CalendarEditModal extends Modal {
     this.renderPicker();
 
     new Setting(contentEl)
-      .setName("跟随当前月份")
-      .setDesc("开启后省略月份字段，日历始终显示当月。")
+      .setName(t("跟随当前月份"))
+      .setDesc(t("开启后省略月份字段，日历始终显示当月。"))
       .addToggle((toggle) =>
         toggle.setValue(this.followCurrent).onChange((value) => {
           this.followCurrent = value;
@@ -82,11 +83,11 @@ export class CalendarEditModal extends Modal {
       );
 
     new Setting(contentEl)
-      .setName("高度")
-      .setDesc("可选，单位 px（200–1600，默认 400）；留空使用默认高度。")
+      .setName(t("高度"))
+      .setDesc(t("可选，单位 px（200–1600，默认 400）；留空使用默认高度。"))
       .addText((text) => {
         text
-          .setPlaceholder("如 400")
+          .setPlaceholder(t("如 400"))
           .setValue(this.height)
           .onChange((value) => {
             this.height = value.trim();
@@ -96,9 +97,9 @@ export class CalendarEditModal extends Modal {
 
     // Plugin-global display settings (wireframe: dashed group with steppers).
     const group = contentEl.createDiv("fc-canvas-logic-group");
-    group.createDiv({ cls: "fc-canvas-logic-title", text: "显示设置（插件全局）" });
+    group.createDiv({ cls: "fc-canvas-logic-title", text: t("显示设置（插件全局）") });
 
-    const daySetting = new Setting(group).setName("日号字体");
+    const daySetting = new Setting(group).setName(t("日号字体"));
     addStepper(daySetting.controlEl, {
       get: () => this.display.dayFontSize,
       set: (value) => {
@@ -109,7 +110,7 @@ export class CalendarEditModal extends Modal {
       unit: "px",
     });
 
-    const excerptSetting = new Setting(group).setName("摘要字体");
+    const excerptSetting = new Setting(group).setName(t("摘要字体"));
     addStepper(excerptSetting.controlEl, {
       get: () => this.display.excerptFontSize,
       set: (value) => {
@@ -120,7 +121,7 @@ export class CalendarEditModal extends Modal {
       unit: "px",
     });
 
-    const linesSetting = new Setting(group).setName("最大行数");
+    const linesSetting = new Setting(group).setName(t("最大行数"));
     addStepper(linesSetting.controlEl, {
       get: () => this.display.maxLines,
       set: (value) => {
@@ -132,13 +133,13 @@ export class CalendarEditModal extends Modal {
 
     group.createDiv({
       cls: "fc-field-hint",
-      text: "每日摘要截断行数，超出显示省略号；以上设置对所有日历卡片生效",
+      text: t("每日摘要截断行数，超出显示省略号；以上设置对所有日历卡片生效"),
     });
 
     const footer = contentEl.createDiv("fc-modal-footer");
-    const cancelBtn = footer.createEl("button", { text: "取消" });
+    const cancelBtn = footer.createEl("button", { text: t("取消") });
     cancelBtn.addEventListener("click", () => this.close());
-    const saveBtn = footer.createEl("button", { text: "保存", cls: "mod-cta" });
+    const saveBtn = footer.createEl("button", { text: t("保存"), cls: "mod-cta" });
     saveBtn.addEventListener("click", () => this.save());
   }
 
@@ -148,7 +149,7 @@ export class CalendarEditModal extends Modal {
 
   private renderPicker() {
     if (this.yearLabelEl) {
-      this.yearLabelEl.textContent = `${this.year} 年`;
+      this.yearLabelEl.textContent = t("{y} 年", { y: this.year });
     }
     const grid = this.gridEl;
     if (!grid) return;
@@ -157,7 +158,7 @@ export class CalendarEditModal extends Modal {
     for (let m = 1; m <= 12; m++) {
       const cell = grid.createEl("button", {
         cls: `fc-month-cell${m === this.month ? " is-selected" : ""}`,
-        text: `${m}月`,
+        text: t("{m}月", { m }),
         attr: { type: "button" },
       });
       cell.addEventListener("click", () => {
@@ -173,7 +174,7 @@ export class CalendarEditModal extends Modal {
     if (this.height) {
       const parsed = Number(this.height);
       if (!Number.isInteger(parsed) || parsed < 200 || parsed > 1600) {
-        new Notice("高度应为 200–1600 的整数（单位 px）。");
+        new Notice(t("高度应为 200–1600 的整数（单位 px）。"));
         return;
       }
       height = parsed;

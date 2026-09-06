@@ -2,6 +2,7 @@ import { Menu, Notice, TFile, setTooltip, type WorkspaceLeaf } from "obsidian";
 import { parseCardSpec } from "./card-spec";
 import { TB_ICONS } from "./toolbar-icons";
 import { appendSvg } from "../utils/dom";
+import { t } from "../i18n";
 import type StrataBoardPlugin from "../main";
 import type { ToolbarEntryId, ToolbarSourceId } from "../types";
 
@@ -19,7 +20,7 @@ interface ToolbarMenuItem {
 }
 
 // A reorderable top-level entry. `source` ties the entry to its 工具栏显示
-// toggle; entries without one (overlay/spread/components) always render.
+// toggle; entries without one (insert-data/data-tools/components) always render.
 interface ToolbarEntryDef {
   id: ToolbarEntryId;
   label: string;
@@ -60,29 +61,30 @@ export class CanvasToolbar {
     } else {
       appendSvg(logo, LOGO_SVG);
     }
-    setTooltip(logo, "StrataBoard — 点击展开/折叠工具栏");
+    setTooltip(logo, t("StrataBoard — 点击展开/折叠工具栏"));
     logo.addEventListener("click", () => this.toggleCollapsed());
 
     // Drag handle: drag moves the bar in 2D, offset persists.
     const drag = this.toolbarEl.createDiv("fc-tb-drag");
-    setTooltip(drag, "拖拽移动工具栏");
+    setTooltip(drag, t("拖拽移动工具栏"));
     drag.addEventListener("pointerdown", (event) => this.startDrag(event));
 
     // Width handle: vertical strip on the canvas-facing edge; dragging it
     // resizes the bar (persists as toolbarWidth).
     const resize = this.toolbarEl.createDiv("fc-tb-resize");
-    setTooltip(resize, "拖拽调整工具栏宽度");
+    setTooltip(resize, t("拖拽调整工具栏宽度"));
     resize.addEventListener("pointerdown", (event) => this.startResize(event));
 
     // Source-classified entries, rendered in the user-defined order. Entries
-    // tied to a source are gated by its 工具栏显示 toggle; 数据叠加/数据计算/
-    // 组件 are cross-source tools (quote legs may come from Tushare, tx, em,
-    // FRED, …) so they always render. Token/key guidance lives in the plugin
-    // methods themselves (openSymbolSearch / insertMacroCard / …), so
-    // hidden-source gating is the only filtering here.
+    // tied to a source are gated by its 工具栏显示 toggle; 「插入数据」fans out
+    // across every source and 「数据处理」/「组件」are cross-source tools
+    // (quote legs may come from Tushare, custom sources, FRED, …), so they
+    // always render. Token/key guidance lives in the plugin methods
+    // themselves (openUnifiedSearch / insertMacroCard / …), so hidden-source
+    // gating is the only filtering here.
     const sources = this.plugin.pluginSettings.toolbarSources;
     for (const def of this.entryDefs()) {
-      if (def.source && !sources[def.source]) continue;
+      if (def.source && !(sources[def.source] ?? true)) continue;
       if (def.menu) this.createMenuButton(def.icon, def.label, def.menu);
       else if (def.onClick) this.createButton(def.icon, def.label, def.onClick);
     }
@@ -97,44 +99,20 @@ export class CanvasToolbar {
   // Entry metadata in one place; render order comes from settings.toolbarOrder.
   private entryDefs(): ToolbarEntryDef[] {
     const defs: Record<ToolbarEntryId, ToolbarEntryDef> = {
-      tushare: {
-        id: "tushare",
-        label: "Tushare",
-        icon: "tushare",
-        source: "tushare",
+      "insert-data": {
+        id: "insert-data",
+        label: "插入数据",
+        icon: "insert-data",
+        onClick: () => this.plugin.openUnifiedSearch(),
+      },
+      "data-tools": {
+        id: "data-tools",
+        label: "数据处理",
+        icon: "data-tools",
         menu: [
-          {
-            text: "资产数据（股票/基金/指数/可转债/期货/外汇…）",
-            icon: "trending-up",
-            onClick: () => this.plugin.openSymbolSearch((symbol) => void this.plugin.insertCard(symbol)),
-          },
-          {
-            text: "宏观数据（CPI/PMI/社融/国债收益率…）",
-            icon: "bar-chart-3",
-            onClick: () => void this.plugin.insertMacroCard(),
-          },
+          { text: "数据叠加", icon: "layers", onClick: () => this.insertOverlay() },
+          { text: "数据计算", icon: "calculator", onClick: () => this.insertSpread() },
         ],
-      },
-      tencent: {
-        id: "tencent",
-        label: "腾讯行情",
-        icon: "tencent",
-        source: "tencent",
-        onClick: () => this.plugin.openSymbolSearch((symbol) => void this.plugin.insertCard(symbol), "tx"),
-      },
-      eastmoney: {
-        id: "eastmoney",
-        label: "东方财富",
-        icon: "eastmoney",
-        source: "eastmoney",
-        onClick: () => this.plugin.openSymbolSearch((symbol) => void this.plugin.insertCard(symbol), "em"),
-      },
-      fred: {
-        id: "fred",
-        label: "FRED",
-        icon: "fred",
-        source: "fred",
-        onClick: () => void this.plugin.insertFredCard(),
       },
       tradingview: {
         id: "tradingview",
@@ -142,18 +120,6 @@ export class CanvasToolbar {
         icon: "tradingview",
         source: "tradingview",
         onClick: () => this.insertWidget(),
-      },
-      overlay: {
-        id: "overlay",
-        label: "数据叠加",
-        icon: "overlay",
-        onClick: () => this.insertOverlay(),
-      },
-      spread: {
-        id: "spread",
-        label: "数据计算",
-        icon: "spread",
-        onClick: () => this.insertSpread(),
       },
       components: {
         id: "components",
@@ -253,14 +219,15 @@ export class CanvasToolbar {
 
   // Buttons render as a bare icon (tooltip carries the name) or a text label,
   // per the 显示效果 setting. Icons are inline Tabler SVGs from TB_ICONS.
+  // label arrives as a Chinese i18n key and is translated here.
   private createButton(icon: keyof typeof TB_ICONS, label: string, onClick: () => void) {
     const btn = this.toolbarEl!.createEl("button");
     if (this.plugin.pluginSettings.toolbarStyle === "text") {
-      btn.setText(label);
+      btn.setText(t(label));
       btn.addClass("fc-tb-text-btn");
     } else {
       appendSvg(btn, TB_ICONS[icon]);
-      setTooltip(btn, label);
+      setTooltip(btn, t(label));
     }
     btn.addEventListener("click", onClick);
   }
@@ -268,11 +235,11 @@ export class CanvasToolbar {
   private createMenuButton(icon: keyof typeof TB_ICONS, label: string, items: ToolbarMenuItem[]) {
     const btn = this.toolbarEl!.createEl("button");
     if (this.plugin.pluginSettings.toolbarStyle === "text") {
-      btn.setText(label);
+      btn.setText(t(label));
       btn.addClass("fc-tb-text-btn");
     } else {
       appendSvg(btn, TB_ICONS[icon]);
-      setTooltip(btn, label);
+      setTooltip(btn, t(label));
     }
     btn.addEventListener("click", (event) => {
       // Force DOM menus: on macOS Obsidian defaults to native menus, which
@@ -290,7 +257,7 @@ export class CanvasToolbar {
   private addMenuItems(menu: Menu, items: ToolbarMenuItem[]) {
     for (const item of items) {
       menu.addItem((menuItem) => {
-        menuItem.setTitle(item.text).setIcon(item.icon);
+        menuItem.setTitle(t(item.text)).setIcon(item.icon);
         if (item.submenu) {
           // setSubmenu() is internal (absent from obsidian.d.ts) but is how
           // Obsidian itself nests menus (e.g. table row/column). Unlike an
@@ -369,7 +336,7 @@ export class CanvasToolbar {
     const cardNodes = nodes.filter((node) => node.filePath && node.filePath.startsWith(libraryPath + "/"));
 
     if (cardNodes.length === 0) {
-      new Notice("当前画布上没有金融卡片。");
+      new Notice(t("当前画布上没有金融卡片。"));
       return;
     }
 
@@ -403,13 +370,17 @@ export class CanvasToolbar {
     }
     await Promise.all(workers);
 
-    new Notice(`已刷新 ${refreshed} 张卡片${failed > 0 ? `，${failed} 张失败` : ""}。`);
+    new Notice(
+      failed > 0
+        ? t("已刷新 {n} 张卡片，{m} 张失败。", { n: refreshed, m: failed })
+        : t("已刷新 {n} 张卡片。", { n: refreshed })
+    );
   }
 
   placeFileNode(file: TFile | string) {
     const view = this.activeLeaf?.view as any;
     if (!view?.canvas) {
-      new Notice("当前没有激活的 Canvas 视图。");
+      new Notice(t("当前没有激活的 Canvas 视图。"));
       return;
     }
 
@@ -418,7 +389,7 @@ export class CanvasToolbar {
     const tfile = typeof file === "string" ? this.plugin.app.vault.getAbstractFileByPath(file) : file;
 
     if (!tfile || !(tfile instanceof TFile)) {
-      new Notice("找不到要放置的卡片文件。");
+      new Notice(t("找不到要放置的卡片文件。"));
       console.error("placeFileNode: file not found", file);
       return;
     }
@@ -449,7 +420,7 @@ export class CanvasToolbar {
       canvas.requestSave();
       this.fitNodeHeightToCard(node, canvas);
     } else {
-      new Notice("在画布上放置卡片失败");
+      new Notice(t("在画布上放置卡片失败"));
       console.error("placeFileNode: createFileNode returned undefined", { file: tfile.path, center });
     }
   }

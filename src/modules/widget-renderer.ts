@@ -2,6 +2,7 @@ import { MarkdownRenderChild } from "obsidian";
 import type { ParsedCardSpec } from "../types";
 import type StrataBoardPlugin from "../main";
 import { onAttached } from "../utils/dom";
+import { t } from "../i18n";
 
 export interface WidgetRendererOptions {
   height?: number;
@@ -49,7 +50,7 @@ export class WidgetRenderer extends MarkdownRenderChild {
     if (!src) {
       this.containerEl.createEl("div", {
         cls: "strataboard-empty",
-        text: "未配置 iframe URL 或 HTML 内容。",
+        text: t("未配置 iframe URL 或 HTML 内容。"),
       });
       return;
     }

@@ -6,6 +6,7 @@ import {
   type AssetType,
   type ChartTheme,
   type ChartType,
+  type CustomSourceDef,
   type FredCardSpec,
   type FredTransform,
   type Freq,
@@ -28,14 +29,16 @@ import {
 import { MA_COLORS } from "../modules/chart-renderer";
 import type { OpenFredPicker } from "./series-ref-editor";
 import { addStepper } from "./stepper";
+import { t } from "../i18n";
 
 // Unified asset-card editor (wireframe #screen-unified): one modal for
-// tushare, FRED and macro data cards. The data-source selector sits on top
-// and the form below switches with it; the tushare form is split into three
-// sub-pages (基础设置 / 显示设置 / 均线系统), the FRED and macro forms are
-// single flat pages. Saving with a source different from the card's own
-// converts the card's code block to the other type (handled by the onSubmit
-// caller).
+// tushare, FRED and macro data cards. Top-level tabs: 数据源 (source
+// selector) + the current source's form pages — the tushare form is split
+// into 基础设置 / 显示设置 / 均线系统, the FRED and macro forms share a single
+// 基础设置 page. Tushare quote and macro cards both count as the "Tushare"
+// source (no separate 宏观 entry). Saving with a source different from the
+// card's own converts the card's code block to the other type (handled by
+// the onSubmit caller).
 
 export type UnifiedCardSource = "tushare" | "fred" | "macro";
 
@@ -54,7 +57,9 @@ export interface UnifiedCardEditModalOptions {
   /** Macro series picker over the local catalog. */
   openMacroPicker: (onSelect: (def: MacroSeriesDef) => void) => void;
   /** Symbol picker, needed when converting a FRED card into a tushare card. */
-  openSymbolPicker: (onSelect: (item: SymbolItem) => void) => void;
+  openSymbolPicker: (onSelect: (item: SymbolItem) => void, assetType?: AssetType, sourceId?: string) => void;
+  /** Enabled custom sources, listed as extra entries in the source grid. */
+  customSources: CustomSourceDef[];
   onSubmit: (source: UnifiedCardSource, spec: ParsedCardSpec | FredCardSpec | MacroCardSpec) => void;
 }
 
@@ -115,13 +120,7 @@ const RANGE_PRESET_VALUES = RANGE_OPTIONS.map((o) => o.value as string);
 // earliest data "max" resolves to in resolveDateRange().
 const MIN_RANGE_YEAR = 1990;
 
-type TushareSubPage = "basic" | "display" | "ma";
-
-const SUB_PAGES: { id: TushareSubPage; label: string }[] = [
-  { id: "basic", label: "基础设置" },
-  { id: "display", label: "显示设置" },
-  { id: "ma", label: "均线系统" },
-];
+type TopTab = "source" | "basic" | "display" | "ma";
 
 interface DateParts {
   y: number;
@@ -179,6 +178,7 @@ export class UnifiedCardEditModal extends Modal {
   // ---- Tushare form state ----
   private symbol: string;
   private assetType: AssetType;
+  private customSourceId: string | undefined;
   private freq: Freq;
   private rangePreset: RangePreset | "custom";
   private customStart: DateParts;
@@ -218,7 +218,7 @@ export class UnifiedCardEditModal extends Modal {
 
   // Cross-page linkage: 高度 (basic) greys out while 高度自适应 (display) is on.
   private heightText: TextComponent | null = null;
-  private activeSubPage: TushareSubPage = "basic";
+  private activeTab: TopTab = "basic";
   private maPreviewChipsEl: HTMLElement | null = null;
 
   constructor(app: App, options: UnifiedCardEditModalOptions) {
@@ -226,38 +226,39 @@ export class UnifiedCardEditModal extends Modal {
     this.options = options;
     this.source = options.source;
 
-    const t = options.tushareSpec;
-    this.symbol = t?.symbol ?? "";
-    this.assetType = t?.assetType ?? "stock";
-    this.freq = t?.freq ?? "D";
+    const spec = options.tushareSpec;
+    this.symbol = spec?.symbol ?? "";
+    this.assetType = spec?.assetType ?? "stock";
+    this.customSourceId = spec?.sourceId;
+    this.freq = spec?.freq ?? "D";
     this.rangePreset =
-      t && RANGE_PRESET_VALUES.includes(t.range) ? (t.range as RangePreset) : t ? "custom" : "1y";
+      spec && RANGE_PRESET_VALUES.includes(spec.range) ? (spec.range as RangePreset) : spec ? "custom" : "1y";
     const today = new Date();
     const todayParts: DateParts = { y: today.getFullYear(), m: today.getMonth() + 1, d: today.getDate() };
     this.customStart = { ...todayParts, y: todayParts.y - 1 };
     this.customEnd = todayParts;
     this.customEndNow = true;
-    if (t && this.rangePreset === "custom" && isDateRangeString(t.range)) {
-      const [start, end] = t.range.split("~");
+    if (spec && this.rangePreset === "custom" && isDateRangeString(spec.range)) {
+      const [start, end] = spec.range.split("~");
       this.customStart = parseDateParts(start);
       this.customEnd = parseDateParts(end);
       this.customEndNow = false;
     }
-    this.visibleRange = t?.visibleRange ?? "";
-    this.height = String(t?.height ?? DEFAULT_CARD_HEIGHT);
-    this.chartType = t?.chartType ?? "candlestick";
-    this.theme = t?.theme ?? "auto";
-    this.riseColor = t?.riseColor ?? "#ef4444";
-    this.fallColor = t?.fallColor ?? "#22c55e";
-    this.logScale = t?.logScale ?? false;
-    this.showHeader = t?.showHeader ?? true;
-    this.showMarketData = t?.showMarketData ?? true;
-    this.showVolume = t?.showVolume ?? true;
-    this.paneRatios = t?.paneRatios?.join(",") ?? "";
-    this.maPeriods = t?.maPeriods?.join(",") ?? "";
-    this.widthAuto = t?.widthAuto ?? true;
-    this.heightAuto = t?.heightAuto ?? true;
-    this.bleed = t?.bleed ?? DEFAULT_CARD_BLEED;
+    this.visibleRange = spec?.visibleRange ?? "";
+    this.height = String(spec?.height ?? DEFAULT_CARD_HEIGHT);
+    this.chartType = spec?.chartType ?? "candlestick";
+    this.theme = spec?.theme ?? "auto";
+    this.riseColor = spec?.riseColor ?? "#ef4444";
+    this.fallColor = spec?.fallColor ?? "#22c55e";
+    this.logScale = spec?.logScale ?? false;
+    this.showHeader = spec?.showHeader ?? true;
+    this.showMarketData = spec?.showMarketData ?? true;
+    this.showVolume = spec?.showVolume ?? true;
+    this.paneRatios = spec?.paneRatios?.join(",") ?? "";
+    this.maPeriods = spec?.maPeriods?.join(",") ?? "";
+    this.widthAuto = spec?.widthAuto ?? true;
+    this.heightAuto = spec?.heightAuto ?? true;
+    this.bleed = spec?.bleed ?? DEFAULT_CARD_BLEED;
 
     const f = options.fredSpec;
     this.fredSeriesId = f?.seriesId ?? "";
@@ -275,7 +276,7 @@ export class UnifiedCardEditModal extends Modal {
     this.macroPeriod = mc?.period ?? "D";
     this.macroHeight = mc?.height ? String(mc.height) : "";
 
-    this.setTitle("编辑数据卡");
+    this.setTitle(t("编辑数据卡"));
   }
 
   onOpen() {
@@ -292,129 +293,161 @@ export class UnifiedCardEditModal extends Modal {
     this.heightText = null;
     this.maPreviewChipsEl = null;
 
-    contentEl.createDiv({ cls: "fc-field-hint", text: "数据源" });
-    this.renderSourceGrid(contentEl);
-
-    if (this.source === "tushare") {
-      this.renderTushareForm(contentEl);
-    } else if (this.source === "fred") {
-      this.renderFredForm(contentEl);
-    } else {
-      this.renderMacroForm(contentEl);
-    }
-
-    const footer = contentEl.createDiv("fc-modal-footer");
-    const cancelBtn = footer.createEl("button", { text: "取消" });
-    cancelBtn.addEventListener("click", () => this.close());
-    const saveBtn = footer.createEl("button", { text: "保存", cls: "mod-cta" });
-    saveBtn.addEventListener("click", () => this.save());
-  }
-
-  // Source selector cards, generated from the sources configured in settings
-  // (Tushare token / FRED key) plus the always-present extension placeholder.
-  private renderSourceGrid(containerEl: HTMLElement) {
-    const grid = containerEl.createDiv("fc-source-grid");
-    const sources: { id: UnifiedCardSource; name: string; desc: string; available: boolean }[] = [
-      {
-        id: "tushare",
-        name: "Tushare",
-        desc: "A股股票/基金/指数/南华指数 · 日K/周K/月K",
-        available: this.options.tushareAvailable,
-      },
-      {
-        id: "macro",
-        name: "Tushare 宏观",
-        desc: "中国宏观经济数据 · CPI/PMI/货币供应/社融…",
-        available: this.options.tushareAvailable,
-      },
-      {
-        id: "fred",
-        name: "FRED",
-        desc: "美国宏观经济数据 · 利率/就业/GDP…",
-        available: this.options.fredAvailable,
-      },
+    // Top-level tabs: 数据源 (source selector) + the current source's form
+    // pages (tushare gets three, FRED/macro a single 基础设置 page).
+    const tabs: { id: TopTab; label: string }[] = [
+      { id: "source", label: "数据源" },
+      { id: "basic", label: "基础设置" },
     ];
-    for (const source of sources) {
-      const selected = this.source === source.id;
-      // The card's own source stays clickable even if its key was removed
-      // from settings — otherwise the open card could not be edited back.
-      const clickable = source.available || selected;
-      const card = grid.createDiv({
-        cls: `fc-source-card${selected ? " selected" : ""}${clickable ? "" : " is-disabled"}`,
-      });
-      card.createDiv({ cls: "fc-source-card-name", text: source.name });
-      card.createDiv({ cls: "fc-source-card-desc", text: source.desc });
-      if (!clickable) {
-        card.setAttr("title", "请先在设置中配置该数据源的密钥");
-        continue;
-      }
-      card.addEventListener("click", () => {
-        if (this.source === source.id) return;
-        this.source = source.id;
-        this.render();
-      });
+    if (this.source === "tushare") {
+      tabs.push({ id: "display", label: "显示设置" }, { id: "ma", label: "均线系统" });
     }
-    const placeholder = grid.createDiv("fc-source-card fc-source-card-placeholder");
-    placeholder.createDiv({ cls: "fc-source-card-name", text: "其他数据接口" });
-    placeholder.createDiv({ cls: "fc-source-card-desc", text: "预留扩展 · 自定义数据源" });
-  }
+    if (!tabs.some((tab) => tab.id === this.activeTab)) this.activeTab = "basic";
 
-  // ==================== Tushare form (three sub-pages) ====================
-
-  private renderTushareForm(containerEl: HTMLElement) {
-    const tabBar = containerEl.createDiv("fc-subtabs");
-    const pagesEl = containerEl.createDiv();
-    const pages: Record<TushareSubPage, HTMLElement> = {
-      basic: pagesEl.createDiv(),
-      display: pagesEl.createDiv(),
-      ma: pagesEl.createDiv(),
-    };
+    const tabBar = contentEl.createDiv("fc-subtabs");
+    const pagesEl = contentEl.createDiv();
+    const pages = new Map<TopTab, HTMLElement>();
+    for (const tab of tabs) pages.set(tab.id, pagesEl.createDiv());
 
     const applyActive = () => {
-      for (const tab of SUB_PAGES) {
-        pages[tab.id].toggleClass("fc-hidden", tab.id !== this.activeSubPage);
+      for (const tab of tabs) {
+        pages.get(tab.id)!.toggleClass("fc-hidden", tab.id !== this.activeTab);
       }
       tabBar.querySelectorAll(".fc-subtab").forEach((el, i) => {
-        el.classList.toggle("is-active", SUB_PAGES[i].id === this.activeSubPage);
+        el.classList.toggle("is-active", tabs[i].id === this.activeTab);
       });
     };
-    SUB_PAGES.forEach((tab) => {
-      const btn = tabBar.createEl("button", { text: tab.label, cls: "fc-subtab" });
+    tabs.forEach((tab) => {
+      const btn = tabBar.createEl("button", { text: t(tab.label), cls: "fc-subtab" });
       btn.addEventListener("click", () => {
-        this.activeSubPage = tab.id;
+        this.activeTab = tab.id;
         applyActive();
       });
     });
     applyActive();
 
-    this.renderBasicPage(pages.basic);
-    this.renderDisplayPage(pages.display);
-    this.renderMaPage(pages.ma);
+    this.renderSourceGrid(pages.get("source")!);
+    if (this.source === "tushare") {
+      this.renderBasicPage(pages.get("basic")!);
+      this.renderDisplayPage(pages.get("display")!);
+      this.renderMaPage(pages.get("ma")!);
+    } else if (this.source === "fred") {
+      this.renderFredForm(pages.get("basic")!);
+    } else {
+      this.renderMacroForm(pages.get("basic")!);
+    }
+
+    const footer = contentEl.createDiv("fc-modal-footer");
+    const cancelBtn = footer.createEl("button", { text: t("取消") });
+    cancelBtn.addEventListener("click", () => this.close());
+    const saveBtn = footer.createEl("button", { text: t("保存"), cls: "mod-cta" });
+    saveBtn.addEventListener("click", () => this.save());
   }
+
+  // Source selector page, generated from the sources configured in settings
+  // (Tushare token / FRED key / enabled custom sources). Tushare quote and
+  // macro cards share one Tushare entry. Sources with no key configured are
+  // hidden entirely — except the open card's own source, which stays so the
+  // card can still be edited back after its key was removed from settings.
+  private renderSourceGrid(containerEl: HTMLElement) {
+    containerEl.createDiv({
+      cls: "fc-field-hint",
+      text: t("选择此卡片的数据来源；仅列出已在设置页配置的数据源。"),
+    });
+    const grid = containerEl.createDiv("fc-source-grid");
+    const customSelected = this.source === "tushare" && this.assetType === "custom";
+    // Macro is Tushare too — quote and macro cards share the Tushare entry.
+    const tushareSelected = (this.source === "tushare" && !customSelected) || this.source === "macro";
+    const sources: { id: "tushare" | "fred"; name: string; desc: string; available: boolean; selected: boolean }[] = [
+      {
+        id: "tushare",
+        name: "Tushare",
+        desc: t("A股行情与中国宏观 · 股票/基金/指数/期货/CPI/PMI/社融…"),
+        available: this.options.tushareAvailable,
+        selected: tushareSelected,
+      },
+      {
+        id: "fred",
+        name: "FRED",
+        desc: t("美国宏观经济数据 · 利率/就业/GDP…"),
+        available: this.options.fredAvailable,
+        selected: this.source === "fred",
+      },
+    ];
+    for (const source of sources) {
+      if (!source.available && !source.selected) continue;
+      const card = grid.createDiv({ cls: `fc-source-card${source.selected ? " selected" : ""}` });
+      card.createDiv({ cls: "fc-source-card-name", text: source.name });
+      card.createDiv({ cls: "fc-source-card-desc", text: source.desc });
+      card.addEventListener("click", () => {
+        if (source.selected) return;
+        this.source = source.id;
+        if (customSelected) {
+          // Leaving a custom source: the custom code is not a Tushare symbol.
+          this.symbol = "";
+          this.assetType = "stock";
+          this.customSourceId = undefined;
+        }
+        this.activeTab = "basic";
+        this.render();
+      });
+    }
+
+    // One entry per enabled custom source; each switches to the tushare form
+    // with the symbol picker bound to that source.
+    const customDefs = [...this.options.customSources];
+    if (customSelected && this.customSourceId && !customDefs.some((d) => d.id === this.customSourceId)) {
+      // The card's own (disabled/deleted) source stays selectable so the open
+      // card can still be edited back.
+      customDefs.push({ id: this.customSourceId, name: this.customSourceId, enabled: false, format: "json", klineUrl: "" });
+    }
+    for (const def of customDefs) {
+      const selected = customSelected && this.customSourceId === def.id;
+      const card = grid.createDiv({ cls: `fc-source-card${selected ? " selected" : ""}` });
+      card.createDiv({ cls: "fc-source-card-name", text: def.name });
+      card.createDiv({ cls: "fc-source-card-desc", text: t("自定义数据源 · 用户配置") });
+      card.addEventListener("click", () => {
+        if (selected) return;
+        this.source = "tushare";
+        if (this.customSourceId !== def.id) {
+          this.symbol = "";
+          this.assetType = "custom";
+          this.customSourceId = def.id;
+        }
+        this.activeTab = "basic";
+        this.render();
+      });
+    }
+  }
+
+  // ==================== Tushare form (基础设置 / 显示设置 / 均线系统) ====================
 
   private renderBasicPage(pageEl: HTMLElement) {
     // 代码: read-only for existing tushare cards; becomes a symbol picker when
     // converting a FRED card (no symbol to show yet).
-    const symbolSetting = new Setting(pageEl).setName("代码");
+    const symbolSetting = new Setting(pageEl).setName(t("代码"));
     const hintEl = symbolSetting.descEl;
     const updateHint = () => {
       hintEl.setText(
-        this.symbol ? `资产类型：${ASSET_TYPE_LABELS[this.assetType]} · 只读` : "点击输入框选择标的"
+        this.symbol ? t("资产类型：{type} · 只读", { type: t(ASSET_TYPE_LABELS[this.assetType]) }) : t("点击输入框选择标的")
       );
     };
     updateHint();
     symbolSetting.addText((text) => {
-      text.setPlaceholder("点击选择标的").setValue(this.symbol);
+      text.setPlaceholder(t("点击选择标的")).setValue(this.symbol);
       text.inputEl.readOnly = true;
       text.inputEl.addClass("fc-mono");
       if (this.symbol) return;
       const openPicker = () => {
+        // Custom-source cards pick from their own source's search /
+        // manual-entry modal instead of the Tushare symbol index.
         this.options.openSymbolPicker((item) => {
           this.symbol = item.tsCode;
           this.assetType = item.assetType;
+          this.customSourceId = item.assetType === "custom" ? item.sourceId : undefined;
           text.setValue(item.tsCode);
           updateHint();
-        });
+        }, this.assetType === "custom" ? "custom" : undefined, this.customSourceId);
       };
       text.inputEl.addEventListener("click", openPicker);
       text.inputEl.addEventListener("keydown", (event) => {
@@ -425,9 +458,9 @@ export class UnifiedCardEditModal extends Modal {
       });
     });
 
-    new Setting(pageEl).setName("周期").addDropdown((dropdown) => {
+    new Setting(pageEl).setName(t("周期")).addDropdown((dropdown) => {
       for (const option of FREQ_OPTIONS) {
-        dropdown.addOption(option.value, option.label);
+        dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.freq).onChange((value) => {
         this.freq = value as Freq;
@@ -437,8 +470,8 @@ export class UnifiedCardEditModal extends Modal {
     this.renderRangeSetting(pageEl);
 
     new Setting(pageEl)
-      .setName("高度")
-      .setDesc("200–1600px，默认 400。开启「显示设置 → 高度自适应」后此字段失效。")
+      .setName(t("高度"))
+      .setDesc(t("200–1600px，默认 400。开启「显示设置 → 高度自适应」后此字段失效。"))
       .addText((text) => {
         text
           .setPlaceholder(String(DEFAULT_CARD_HEIGHT))
@@ -452,8 +485,8 @@ export class UnifiedCardEditModal extends Modal {
       });
 
     new Setting(pageEl)
-      .setName("面板比例")
-      .setDesc("价格窗格与成交量窗格的高度比，例如 3,1。留空使用默认值 3:1。")
+      .setName(t("面板比例"))
+      .setDesc(t("价格窗格与成交量窗格的高度比，例如 3,1。留空使用默认值 3:1。"))
       .addText((text) =>
         text
           .setPlaceholder("3,1")
@@ -469,13 +502,13 @@ export class UnifiedCardEditModal extends Modal {
     const customEndPartDropdowns: DropdownComponent[] = [];
 
     new Setting(pageEl)
-      .setName("范围")
-      .setDesc("选择预设；选「自定义」则在下方按年/月/日选择起止日期。")
+      .setName(t("范围"))
+      .setDesc(t("选择预设；选「自定义」则在下方按年/月/日选择起止日期。"))
       .addDropdown((dropdown) => {
         for (const option of RANGE_OPTIONS) {
-          dropdown.addOption(option.value, option.label);
+          dropdown.addOption(option.value, t(option.label));
         }
-        dropdown.addOption("custom", "自定义");
+        dropdown.addOption("custom", t("自定义"));
         dropdown.setValue(this.rangePreset).onChange((value) => {
           this.rangePreset = value as RangePreset | "custom";
           const disabled = value !== "custom";
@@ -489,20 +522,24 @@ export class UnifiedCardEditModal extends Modal {
     const currentYear = new Date().getFullYear();
     const yearOptions: { value: string; label: string }[] = [];
     for (let y = currentYear; y >= MIN_RANGE_YEAR; y--) {
-      yearOptions.push({ value: String(y), label: `${y}年` });
+      yearOptions.push({ value: String(y), label: t("{y}年", { y }) });
     }
     const monthOptions: { value: string; label: string }[] = [];
     for (let m = 1; m <= 12; m++) {
-      monthOptions.push({ value: String(m), label: `${m}月` });
+      monthOptions.push({ value: String(m), label: t("{m}月", { m }) });
     }
     const dayOptions: { value: string; label: string }[] = [];
     for (let d = 1; d <= 31; d++) {
-      dayOptions.push({ value: String(d), label: `${d}日` });
+      dayOptions.push({ value: String(d), label: t("{d}日", { d }) });
     }
 
+    // Six part-dropdowns in one control row would squeeze the name/desc
+    // column into a narrow strip — stack info above the controls instead
+    // (see .fc-setting-stacked in styles.css).
     const customSetting = new Setting(pageEl)
-      .setName("自定义范围")
-      .setDesc("开始日期 ~ 结束日期；结束日期的年份选「至今」则取保存当天。");
+      .setName(t("自定义范围"))
+      .setDesc(t("开始日期 ~ 结束日期；结束日期的年份选「至今」则取保存当天。"));
+    customSetting.settingEl.addClass("fc-setting-stacked");
 
     const addPartDropdown = (
       options: { value: string; label: string }[],
@@ -534,7 +571,7 @@ export class UnifiedCardEditModal extends Modal {
     });
 
     addPartDropdown(
-      [{ value: "now", label: "至今" }, ...yearOptions],
+      [{ value: "now", label: t("至今") }, ...yearOptions],
       this.customEndNow ? "now" : String(this.customEnd.y),
       (value) => {
         this.customEndNow = value === "now";
@@ -566,25 +603,25 @@ export class UnifiedCardEditModal extends Modal {
   }
 
   private renderDisplayPage(pageEl: HTMLElement) {
-    new Setting(pageEl).setName("主题").addDropdown((dropdown) => {
+    new Setting(pageEl).setName(t("主题")).addDropdown((dropdown) => {
       for (const option of THEME_OPTIONS) {
-        dropdown.addOption(option.value, option.label);
+        dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.theme).onChange((value) => {
         this.theme = value as ChartTheme;
       });
     });
 
-    new Setting(pageEl).setName("图表类型").addDropdown((dropdown) => {
+    new Setting(pageEl).setName(t("图表类型")).addDropdown((dropdown) => {
       for (const option of CHART_TYPE_OPTIONS) {
-        dropdown.addOption(option.value, option.label);
+        dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.chartType).onChange((value) => {
         this.chartType = value as ChartType;
       });
     });
 
-    new Setting(pageEl).setName("涨色 / 跌色").setDesc("红涨绿跌为 A 股惯例。").addColorPicker((picker) =>
+    new Setting(pageEl).setName(t("涨色 / 跌色")).setDesc(t("红涨绿跌为 A 股惯例。")).addColorPicker((picker) =>
       picker.setValue(this.riseColor).onChange((value) => {
         this.riseColor = value;
       })
@@ -594,15 +631,15 @@ export class UnifiedCardEditModal extends Modal {
       })
     );
 
-    new Setting(pageEl).setName("显示标题").addToggle((toggle) =>
+    new Setting(pageEl).setName(t("显示标题")).addToggle((toggle) =>
       toggle.setValue(this.showHeader).onChange((value) => {
         this.showHeader = value;
       })
     );
 
     new Setting(pageEl)
-      .setName("显示市场数据")
-      .setDesc("市值、市盈率、量比等一行数据；仅对股票生效。")
+      .setName(t("显示市场数据"))
+      .setDesc(t("市值、市盈率、量比等一行数据；仅对股票生效。"))
       .addToggle((toggle) =>
         toggle
           .setValue(this.showMarketData)
@@ -613,8 +650,8 @@ export class UnifiedCardEditModal extends Modal {
       );
 
     new Setting(pageEl)
-      .setName("显示成交量")
-      .setDesc("主图下方的成交量副图。")
+      .setName(t("显示成交量"))
+      .setDesc(t("主图下方的成交量副图。"))
       .addToggle((toggle) =>
         toggle.setValue(this.showVolume).onChange((value) => {
           this.showVolume = value;
@@ -622,18 +659,18 @@ export class UnifiedCardEditModal extends Modal {
       );
 
     new Setting(pageEl)
-      .setName("可见范围")
-      .setDesc("图表初始显示的时间窗口；保存后按此预设重新定义视图。")
+      .setName(t("可见范围"))
+      .setDesc(t("图表初始显示的时间窗口；保存后按此预设重新定义视图。"))
       .addDropdown((dropdown) => {
         for (const option of VISIBLE_RANGE_OPTIONS) {
-          dropdown.addOption(option.value, option.label);
+          dropdown.addOption(option.value, t(option.label));
         }
         dropdown.setValue(this.visibleRange).onChange((value) => {
           this.visibleRange = value as VisibleRangePreset | "";
         });
       });
 
-    new Setting(pageEl).setName("对数坐标").addToggle((toggle) =>
+    new Setting(pageEl).setName(t("对数坐标")).addToggle((toggle) =>
       toggle.setValue(this.logScale).onChange((value) => {
         this.logScale = value;
       })
@@ -641,11 +678,11 @@ export class UnifiedCardEditModal extends Modal {
 
     // Canvas 显示逻辑 group (wireframe: dashed separator + group title).
     const group = pageEl.createDiv("fc-canvas-logic-group");
-    group.createDiv({ cls: "fc-canvas-logic-title", text: "Canvas 显示逻辑" });
+    group.createDiv({ cls: "fc-canvas-logic-title", text: t("Canvas 显示逻辑") });
 
     new Setting(group)
-      .setName("宽度自适应")
-      .setDesc("卡片宽度跟随 Canvas 节点宽度缩放。")
+      .setName(t("宽度自适应"))
+      .setDesc(t("卡片宽度跟随 Canvas 节点宽度缩放。"))
       .addToggle((toggle) =>
         toggle.setValue(this.widthAuto).onChange((value) => {
           this.widthAuto = value;
@@ -653,8 +690,8 @@ export class UnifiedCardEditModal extends Modal {
       );
 
     new Setting(group)
-      .setName("高度自适应")
-      .setDesc("开启后跟随节点高度，「基础设置」的高度字段失效。")
+      .setName(t("高度自适应"))
+      .setDesc(t("开启后跟随节点高度，「基础设置」的高度字段失效。"))
       .addToggle((toggle) =>
         toggle.setValue(this.heightAuto).onChange((value) => {
           this.heightAuto = value;
@@ -663,8 +700,8 @@ export class UnifiedCardEditModal extends Modal {
       );
 
     const bleedSetting = new Setting(group)
-      .setName("出血尺寸")
-      .setDesc("卡片内容与 Canvas 节点边缘的留白。");
+      .setName(t("出血尺寸"))
+      .setDesc(t("卡片内容与 Canvas 节点边缘的留白。"));
     addStepper(bleedSetting.controlEl, {
       get: () => this.bleed,
       set: (value) => {
@@ -678,8 +715,8 @@ export class UnifiedCardEditModal extends Modal {
 
   private renderMaPage(pageEl: HTMLElement) {
     new Setting(pageEl)
-      .setName("均线")
-      .setDesc("均线周期（逗号分隔，最多 8 条）。留空使用默认值 5,10,20,60。")
+      .setName(t("均线"))
+      .setDesc(t("均线周期（逗号分隔，最多 8 条）。留空使用默认值 5,10,20,60。"))
       .addText((text) =>
         text
           .setPlaceholder("5,10,20,60")
@@ -691,7 +728,7 @@ export class UnifiedCardEditModal extends Modal {
       );
 
     const preview = pageEl.createDiv("fc-ma-preview");
-    preview.createDiv({ cls: "fc-ma-preview-title", text: "均线预览" });
+    preview.createDiv({ cls: "fc-ma-preview-title", text: t("均线预览") });
     this.maPreviewChipsEl = preview.createDiv("fc-ma-preview-chips");
     this.renderMaPreview();
   }
@@ -713,8 +750,8 @@ export class UnifiedCardEditModal extends Modal {
   // ==================== FRED form ====================
 
   private renderFredForm(containerEl: HTMLElement) {
-    new Setting(containerEl).setName("数据系列").addText((text) => {
-      text.setPlaceholder("点击选择 FRED 系列").setValue(this.fredDisplayText());
+    new Setting(containerEl).setName(t("数据系列")).addText((text) => {
+      text.setPlaceholder(t("点击选择 FRED 系列")).setValue(this.fredDisplayText());
       text.inputEl.readOnly = true;
       const openPicker = () => {
         this.options.openFredPicker((info) => {
@@ -737,30 +774,30 @@ export class UnifiedCardEditModal extends Modal {
     });
 
     new Setting(containerEl)
-      .setName("数据变换")
-      .setDesc("由 FRED 服务端对原始值做变换（如同比/环比增速），默认使用原始值。")
+      .setName(t("数据变换"))
+      .setDesc(t("由 FRED 服务端对原始值做变换（如同比/环比增速），默认使用原始值。"))
       .addDropdown((dropdown) => {
-        dropdown.addOption("", "原始值");
+        dropdown.addOption("", t("原始值"));
         for (const option of FRED_TRANSFORM_OPTIONS) {
-          dropdown.addOption(option.value, option.label);
+          dropdown.addOption(option.value, t(option.label));
         }
         dropdown.setValue(this.fredTransform).onChange((value) => {
           this.fredTransform = value as FredTransform | "";
         });
       });
 
-    new Setting(containerEl).setName("数据范围").addDropdown((dropdown) => {
+    new Setting(containerEl).setName(t("数据范围")).addDropdown((dropdown) => {
       for (const option of FRED_RANGE_OPTIONS) {
-        dropdown.addOption(option.value, option.label);
+        dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.fredRange).onChange((value) => {
         this.fredRange = value;
       });
     });
 
-    new Setting(containerEl).setName("周期").addDropdown((dropdown) => {
+    new Setting(containerEl).setName(t("周期")).addDropdown((dropdown) => {
       for (const option of PERIOD_OPTIONS) {
-        dropdown.addOption(option.value, option.label);
+        dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.fredPeriod).onChange((value) => {
         this.fredPeriod = value as SeriesPeriod;
@@ -768,11 +805,11 @@ export class UnifiedCardEditModal extends Modal {
     });
 
     new Setting(containerEl)
-      .setName("高度")
-      .setDesc("可选，单位 px；留空使用默认高度。")
+      .setName(t("高度"))
+      .setDesc(t("可选，单位 px；留空使用默认高度。"))
       .addText((text) => {
         text
-          .setPlaceholder("如 400")
+          .setPlaceholder(t("如 400"))
           .setValue(this.fredHeight)
           .onChange((value) => {
             this.fredHeight = value;
@@ -788,8 +825,8 @@ export class UnifiedCardEditModal extends Modal {
   // ==================== Macro form ====================
 
   private renderMacroForm(containerEl: HTMLElement) {
-    new Setting(containerEl).setName("数据系列").addText((text) => {
-      text.setPlaceholder("点击选择宏观序列").setValue(this.macroDisplayText());
+    new Setting(containerEl).setName(t("数据系列")).addText((text) => {
+      text.setPlaceholder(t("点击选择宏观序列")).setValue(this.macroDisplayText());
       text.inputEl.readOnly = true;
       const openPicker = () => {
         this.options.openMacroPicker((def) => {
@@ -808,18 +845,18 @@ export class UnifiedCardEditModal extends Modal {
       });
     });
 
-    new Setting(containerEl).setName("数据范围").addDropdown((dropdown) => {
+    new Setting(containerEl).setName(t("数据范围")).addDropdown((dropdown) => {
       for (const option of FRED_RANGE_OPTIONS) {
-        dropdown.addOption(option.value, option.label);
+        dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.macroRange).onChange((value) => {
         this.macroRange = value;
       });
     });
 
-    new Setting(containerEl).setName("周期").addDropdown((dropdown) => {
+    new Setting(containerEl).setName(t("周期")).addDropdown((dropdown) => {
       for (const option of PERIOD_OPTIONS) {
-        dropdown.addOption(option.value, option.label);
+        dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.macroPeriod).onChange((value) => {
         this.macroPeriod = value as SeriesPeriod;
@@ -827,11 +864,11 @@ export class UnifiedCardEditModal extends Modal {
     });
 
     new Setting(containerEl)
-      .setName("高度")
-      .setDesc("可选，单位 px；留空使用默认高度。")
+      .setName(t("高度"))
+      .setDesc(t("可选，单位 px；留空使用默认高度。"))
       .addText((text) => {
         text
-          .setPlaceholder("如 400")
+          .setPlaceholder(t("如 400"))
           .setValue(this.macroHeight)
           .onChange((value) => {
             this.macroHeight = value;
@@ -842,7 +879,7 @@ export class UnifiedCardEditModal extends Modal {
 
   private macroDisplayText(): string {
     const def = this.macroSeriesId ? findMacroSeriesDef(this.macroSeriesId) : undefined;
-    return def ? `${def.label} (${def.group})` : this.macroSeriesId;
+    return def ? `${t(def.label)} (${t(def.group)})` : this.macroSeriesId;
   }
 
   // ==================== Save ====================
@@ -868,7 +905,7 @@ export class UnifiedCardEditModal extends Modal {
 
   private buildTushareSpec(): ParsedCardSpec | null {
     if (!this.symbol.trim()) {
-      new Notice("请先选择标的（代码）。");
+      new Notice(t("请先选择标的（代码）。"));
       return null;
     }
 
@@ -881,13 +918,13 @@ export class UnifiedCardEditModal extends Modal {
           })()
         : this.customEnd;
       if (!isValidDateParts(this.customStart) || !isValidDateParts(end)) {
-        new Notice("自定义范围包含无效日期（如 2 月 30 日）。");
+        new Notice(t("自定义范围包含无效日期（如 2 月 30 日）。"));
         return null;
       }
       const startStr = formatDateParts(this.customStart);
       const endStr = formatDateParts(end);
       if (startStr > endStr) {
-        new Notice("开始日期不能晚于结束日期。");
+        new Notice(t("开始日期不能晚于结束日期。"));
         return null;
       }
       range = `${startStr}~${endStr}`;
@@ -897,7 +934,7 @@ export class UnifiedCardEditModal extends Modal {
 
     const height = Number(this.height);
     if (!Number.isInteger(height) || height < MIN_CARD_HEIGHT || height > MAX_CARD_HEIGHT) {
-      new Notice(`高度应为 ${MIN_CARD_HEIGHT}–${MAX_CARD_HEIGHT} 的整数（单位 px）。`);
+      new Notice(t("高度应为 {min}–{max} 的整数（单位 px）。", { min: MIN_CARD_HEIGHT, max: MAX_CARD_HEIGHT }));
       return null;
     }
 
@@ -905,7 +942,7 @@ export class UnifiedCardEditModal extends Modal {
     if (this.paneRatios.length > 0) {
       const parsed = parsePaneRatios(this.paneRatios);
       if (!parsed) {
-        new Notice("面板比例格式应为两个以上的正数，例如 3,1。");
+        new Notice(t("面板比例格式应为两个以上的正数，例如 3,1。"));
         return null;
       }
       paneRatios = parsed;
@@ -915,7 +952,7 @@ export class UnifiedCardEditModal extends Modal {
     if (this.maPeriods.length > 0) {
       const parsed = parseMaPeriods(this.maPeriods);
       if (!parsed) {
-        new Notice("均线格式应为逗号分隔的正整数，例如 5,10,20,60。");
+        new Notice(t("均线格式应为逗号分隔的正整数，例如 5,10,20,60。"));
         return null;
       }
       maPeriods = parsed;
@@ -926,6 +963,7 @@ export class UnifiedCardEditModal extends Modal {
       ...base,
       symbol: this.symbol.trim(),
       assetType: this.assetType,
+      sourceId: this.assetType === "custom" ? this.customSourceId : undefined,
       freq: this.freq,
       range,
       version: base?.version ?? 1,
@@ -954,7 +992,7 @@ export class UnifiedCardEditModal extends Modal {
 
   private buildFredSpec(): FredCardSpec | null {
     if (!this.fredSeriesId.trim()) {
-      new Notice("请选择 FRED 系列。");
+      new Notice(t("请选择 FRED 系列。"));
       return null;
     }
 
@@ -962,7 +1000,7 @@ export class UnifiedCardEditModal extends Modal {
     if (this.fredHeight.trim()) {
       const parsed = Number(this.fredHeight.trim());
       if (!Number.isFinite(parsed) || parsed <= 0) {
-        new Notice("高度应为正数（单位 px）。");
+        new Notice(t("高度应为正数（单位 px）。"));
         return null;
       }
       height = parsed;
@@ -983,7 +1021,7 @@ export class UnifiedCardEditModal extends Modal {
   private buildMacroSpec(): MacroCardSpec | null {
     const seriesId = this.macroSeriesId.trim();
     if (!seriesId || !findMacroSeriesDef(seriesId)) {
-      new Notice("请选择宏观序列。");
+      new Notice(t("请选择宏观序列。"));
       return null;
     }
 
@@ -991,7 +1029,7 @@ export class UnifiedCardEditModal extends Modal {
     if (this.macroHeight.trim()) {
       const parsed = Number(this.macroHeight.trim());
       if (!Number.isFinite(parsed) || parsed <= 0) {
-        new Notice("高度应为正数（单位 px）。");
+        new Notice(t("高度应为正数（单位 px）。"));
         return null;
       }
       height = parsed;

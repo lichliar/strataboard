@@ -7,6 +7,7 @@ import { DataAdapter } from "./data-adapter";
 import { FredApiClient } from "./fred-api-client";
 import { parseSpreadSpec } from "./series-spec";
 import { evalExpression, parseExpression, type ExprNode } from "./expression";
+import { t } from "../i18n";
 
 interface SeriesAdapterOptions {
   app: App;
@@ -53,16 +54,16 @@ export class SeriesAdapter {
     const cardPath = ref.cardPath!;
     const file = this.app.vault.getAbstractFileByPath(cardPath);
     if (!(file instanceof TFile)) {
-      throw new Error(`无法读取卡片：${cardPath}（文件不存在）。`);
+      throw new Error(t("无法读取卡片：{path}（文件不存在）。", { path: cardPath }));
     }
     const content = await this.app.vault.cachedRead(file);
     const match = content.match(/```spread\n([\s\S]*?)\n```/);
     if (!match) {
-      throw new Error(`无法读取卡片：${cardPath}（未找到 spread 代码块）。`);
+      throw new Error(t("无法读取卡片：{path}（未找到 spread 代码块）。", { path: cardPath }));
     }
     const result = parseSpreadSpec(match[1]);
     if (!result.spec) {
-      throw new Error(`无法读取卡片：${cardPath}（${result.error ?? "配置无效"}）。`);
+      throw new Error(t("无法读取卡片：{path}（{reason}）。", { path: cardPath, reason: result.error ?? t("配置无效") }));
     }
     return this.loadSpread(result.spec, range, period);
   }
@@ -71,6 +72,7 @@ export class SeriesAdapter {
     const spec: ParsedCardSpec = {
       symbol: ref.tsCode!,
       assetType: ref.assetType!,
+      sourceId: ref.sourceId,
       freq: "D",
       range,
       version: 1,
@@ -106,7 +108,7 @@ export class SeriesAdapter {
       } catch (e) {
         console.error("Failed to refresh FRED series:", e);
         const reason = e instanceof Error ? e.message : String(e);
-        new Notice(`StrataBoard: FRED 数据刷新失败（${reason}），显示缓存数据。`);
+        new Notice(t("StrataBoard: FRED 数据刷新失败（{reason}），显示缓存数据。", { reason }));
       }
     }
     return this.cache.loadMacroSeries("fred", cacheId, startIso, endIso);
@@ -136,7 +138,7 @@ export class SeriesAdapter {
   async loadSpread(spec: SpreadSpec, range: string, period: SeriesPeriod = "D"): Promise<SeriesPoint[]> {
     const parsed = parseExpression(spec.expression, spec.series.length);
     if (!parsed.ok) {
-      throw new Error(`公式错误：${parsed.error}`);
+      throw new Error(t("公式错误：{msg}", { msg: parsed.error }));
     }
     const ast = parsed.ast;
 

@@ -1,4 +1,5 @@
 import { App, Modal, Setting, SuggestModal } from "obsidian";
+import { t } from "../i18n";
 
 // Folder path picker shared by the settings page and the card edit modals
 // (IMPLEMENTATION.md phase 1/2): a dropdown-style button opens a searchable
@@ -26,7 +27,7 @@ class FolderSuggestModal extends SuggestModal<FolderChoice> {
     super(app);
     this.folders = listVaultFolders(app);
     this.onPick = onPick;
-    this.setPlaceholder("搜索文件夹…");
+    this.setPlaceholder(t("搜索文件夹…"));
   }
 
   getSuggestions(query: string): FolderChoice[] {
@@ -38,7 +39,7 @@ class FolderSuggestModal extends SuggestModal<FolderChoice> {
 
   renderSuggestion(choice: FolderChoice, el: HTMLElement): void {
     if (choice.kind === "manual") {
-      el.createSpan({ text: "手动输入路径…", cls: "fc-folder-manual-entry" });
+      el.createSpan({ text: t("手动输入路径…"), cls: "fc-folder-manual-entry" });
       return;
     }
     el.createSpan({ text: choice.path });
@@ -60,7 +61,7 @@ class ManualPathModal extends Modal {
 
   onOpen(): void {
     const { contentEl } = this;
-    contentEl.createEl("h3", { text: "手动输入路径" });
+    contentEl.createEl("h3", { text: t("手动输入路径") });
 
     let input = "";
     const submit = () => {
@@ -70,10 +71,10 @@ class ManualPathModal extends Modal {
     };
 
     new Setting(contentEl)
-      .setName("文件夹路径")
-      .setDesc("Vault 内的相对路径。")
+      .setName(t("文件夹路径"))
+      .setDesc(t("Vault 内的相对路径。"))
       .addText((text) => {
-        text.setPlaceholder("如：金融卡片/自定义");
+        text.setPlaceholder(t("如：金融卡片/自定义"));
         text.inputEl.addClass("fc-mono");
         text.onChange((value) => {
           input = value;
@@ -87,7 +88,7 @@ class ManualPathModal extends Modal {
         window.setTimeout(() => text.inputEl.focus(), 0);
       });
 
-    new Setting(contentEl).addButton((button) => button.setButtonText("确定").setCta().onClick(submit));
+    new Setting(contentEl).addButton((button) => button.setButtonText(t("确定")).setCta().onClick(submit));
   }
 }
 

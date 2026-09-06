@@ -1,14 +1,14 @@
 import { SuggestModal, type App } from "obsidian";
 import type { SymbolItem } from "../types";
+import { t } from "../i18n";
 
 export type SearchQuotes = (text: string) => Promise<SymbolItem[]>;
 
 /**
- * Remote quote picker for the token-free sources (腾讯行情 / 东方财富).
- * Unlike SymbolSearchModal (local fuzzy index over a bulk list), these
- * sources only offer per-keystroke server-side search — same interaction
- * model as FredSearchModal: debounced, sequence-guarded against stale
- * responses.
+ * Remote quote picker for custom data sources with a searchUrl. Unlike
+ * SymbolSearchModal (local fuzzy index over a bulk list), these sources only
+ * offer per-keystroke server-side search — same interaction model as
+ * FredSearchModal: debounced, sequence-guarded against stale responses.
  */
 export class RemoteQuoteSearchModal extends SuggestModal<SymbolItem> {
   private search: SearchQuotes;
@@ -19,14 +19,14 @@ export class RemoteQuoteSearchModal extends SuggestModal<SymbolItem> {
     super(app);
     this.search = search;
     this.onSelectCallback = onSelect;
-    this.setPlaceholder(`输入代码或名称搜索（${sourceLabel}，如 茅台 / 00700 / AAPL）…`);
+    this.setPlaceholder(t("输入代码或名称搜索（{source}，如 茅台 / 00700 / AAPL）…", { source: sourceLabel }));
     this.setInstructions([
-      { command: "↑↓", purpose: "选择" },
-      { command: "↵", purpose: "确认" },
-      { command: "esc", purpose: "关闭" },
+      { command: "↑↓", purpose: t("选择") },
+      { command: "↵", purpose: t("确认") },
+      { command: "esc", purpose: t("关闭") },
     ]);
     // SuggestModal shows this while getSuggestions returns nothing.
-    this.emptyStateText = "输入关键词开始搜索。";
+    this.emptyStateText = t("输入关键词开始搜索。");
   }
 
   async getSuggestions(query: string): Promise<SymbolItem[]> {
@@ -44,7 +44,7 @@ export class RemoteQuoteSearchModal extends SuggestModal<SymbolItem> {
       return await this.search(text);
     } catch (e) {
       console.error("RemoteQuoteSearchModal: search failed", e);
-      this.emptyStateText = "搜索失败，请稍后重试。";
+      this.emptyStateText = t("搜索失败，请稍后重试。");
       return [];
     }
   }

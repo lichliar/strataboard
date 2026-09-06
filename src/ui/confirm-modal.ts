@@ -1,4 +1,5 @@
 import { App, Modal, Setting } from "obsidian";
+import { t } from "../i18n";
 
 // Minimal generic confirmation dialog: a message paragraph plus 取消/确认
 // buttons. The confirm action carries Obsidian's warning styling — this modal
@@ -20,13 +21,13 @@ export class ConfirmModal extends Modal {
 
     new Setting(contentEl)
       .addButton((button) =>
-        button.setButtonText("取消").onClick(() => {
+        button.setButtonText(t("取消")).onClick(() => {
           this.close();
         })
       )
       .addButton((button) =>
         button
-          .setButtonText("确认")
+          .setButtonText(t("确认"))
           .setWarning()
           .onClick(() => {
             this.close();

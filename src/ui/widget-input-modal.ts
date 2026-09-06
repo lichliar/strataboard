@@ -1,6 +1,7 @@
 import { App, Modal, Notice, Setting, type TextAreaComponent, type TextComponent } from "obsidian";
 import { parseWidgetCode, type WidgetCodeParse } from "../modules/widget-parser";
 import { FolderPathSelect } from "./folder-suggester";
+import { t } from "../i18n";
 
 // TradingView Widget insert modal. Two sub-pages: 插入数据 (docs CTA + title
 // + code + detected pill + save path) and 可修改参数 (interval / theme /
@@ -55,7 +56,7 @@ export class WidgetInputModal extends Modal {
     super(app);
     this.onSubmit = onSubmit;
     this.defaultSavePath = defaultSavePath;
-    this.setTitle("插入TradingView Widget");
+    this.setTitle(t("插入TradingView Widget"));
   }
 
   onOpen() {
@@ -76,7 +77,7 @@ export class WidgetInputModal extends Modal {
       });
     };
     (["insert", "params"] as SubPage[]).forEach((id) => {
-      const btn = tabBar.createEl("button", { text: id === "insert" ? "插入数据" : "可修改参数", cls: "fc-subtab" });
+      const btn = tabBar.createEl("button", { text: id === "insert" ? t("插入数据") : t("可修改参数"), cls: "fc-subtab" });
       btn.addEventListener("click", () => {
         this.activeSubPage = id;
         applyActive();
@@ -89,12 +90,12 @@ export class WidgetInputModal extends Modal {
     this.reparse();
 
     const footer = contentEl.createDiv("fc-modal-footer");
-    const cancelBtn = footer.createEl("button", { text: "取消" });
+    const cancelBtn = footer.createEl("button", { text: t("取消") });
     cancelBtn.addEventListener("click", () => this.close());
-    const insertBtn = footer.createEl("button", { text: "插入", cls: "mod-cta" });
+    const insertBtn = footer.createEl("button", { text: t("插入"), cls: "mod-cta" });
     insertBtn.addEventListener("click", () => {
       if (!this.code.trim()) {
-        new Notice("请粘贴组件代码或 iframe URL。");
+        new Notice(t("请粘贴组件代码或 iframe URL。"));
         return;
       }
       this.close();
@@ -123,29 +124,29 @@ export class WidgetInputModal extends Modal {
     const docsBox = pageEl.createDiv("fc-widget-docs-box");
     const docsBtn = docsBox.createEl("button", {
       cls: "fc-widget-docs-cta",
-      text: "打开 TradingView 组件文档 ↗",
+      text: t("打开 TradingView 组件文档 ↗"),
       attr: { type: "button" },
     });
     docsBtn.addEventListener("click", () => window.open(DOCS_URL));
     docsBox.createDiv({
       cls: "fc-field-hint",
-      text: "在 TradingView 网站挑选组件并完成配置，复制生成的代码粘贴到下方代码框，点击「插入」。",
+      text: t("在 TradingView 网站挑选组件并完成配置，复制生成的代码粘贴到下方代码框，点击「插入」。"),
     });
     docsBox.createDiv({
       cls: "fc-widget-net-notice",
-      text: "⚠ 中国大陆用户注意：TradingView 组件的访问与显示需要可用的国际网络环境。",
+      text: t("⚠ 中国大陆用户注意：TradingView 组件的访问与显示需要可用的国际网络环境。"),
     });
 
     // 标题 + 自动识别 badge
     const titleField = pageEl.createDiv("fc-widget-field");
     const titleLabelRow = titleField.createDiv("fc-widget-label-row");
     const titleLabel = titleLabelRow.createSpan("fc-widget-label");
-    titleLabel.appendText("标题");
-    this.autoBadgeEl = titleLabel.createSpan({ cls: "fc-pill fc-pill-sm", text: "自动识别" });
+    titleLabel.appendText(t("标题"));
+    this.autoBadgeEl = titleLabel.createSpan({ cls: "fc-pill fc-pill-sm", text: t("自动识别") });
     this.autoBadgeEl.addClass("fc-hidden");
-    titleField.createDiv({ cls: "fc-field-hint", text: "从代码的 symbol 字段生成，手动修改后不再被覆盖" });
+    titleField.createDiv({ cls: "fc-field-hint", text: t("从代码的 symbol 字段生成，手动修改后不再被覆盖") });
     new Setting(titleField).addText((text) => {
-      text.setPlaceholder("例如：USINTR 利率走势").setValue(this.titleValue).onChange((value) => {
+      text.setPlaceholder(t("例如：USINTR 利率走势")).setValue(this.titleValue).onChange((value) => {
         this.titleValue = value;
         // Clearing the field resumes auto-detection; any real text sticks.
         this.titleManual = value.trim().length > 0;
@@ -157,8 +158,8 @@ export class WidgetInputModal extends Modal {
     // 组件代码
     const codeField = pageEl.createDiv("fc-widget-field");
     const codeLabelRow = codeField.createDiv("fc-widget-label-row");
-    codeLabelRow.createSpan({ cls: "fc-widget-label", text: "组件代码" });
-    codeField.createDiv({ cls: "fc-field-hint", text: "粘贴后自动解析配置对象，提取的参数见「可修改参数」子页面" });
+    codeLabelRow.createSpan({ cls: "fc-widget-label", text: t("组件代码") });
+    codeField.createDiv({ cls: "fc-field-hint", text: t("粘贴后自动解析配置对象，提取的参数见「可修改参数」子页面") });
     new Setting(codeField).setClass("fc-widget-code-setting").addTextArea((area) => {
       area
         .setPlaceholder("<!-- TradingView Widget BEGIN -->\n...")
@@ -177,13 +178,13 @@ export class WidgetInputModal extends Modal {
 
     // 保存路径（folder suggester）
     const pathField = pageEl.createDiv("fc-widget-field");
-    pathField.createDiv({ cls: "fc-widget-label-row" }).createSpan({ cls: "fc-widget-label", text: "保存路径" });
-    pathField.createDiv({ cls: "fc-field-hint", text: "选择预设目录或输入 Vault 内相对路径，留空使用默认路径" });
+    pathField.createDiv({ cls: "fc-widget-label-row" }).createSpan({ cls: "fc-widget-label", text: t("保存路径") });
+    pathField.createDiv({ cls: "fc-field-hint", text: t("选择预设目录或输入 Vault 内相对路径，留空使用默认路径") });
     const pathSetting = new Setting(pathField).setClass("fc-widget-path-setting");
     new FolderPathSelect(pathSetting.controlEl, {
       app: this.app,
       value: this.savePathValue,
-      placeholder: this.defaultSavePath || "默认目录",
+      placeholder: this.defaultSavePath || t("默认目录"),
       onChange: (path) => {
         this.savePathValue = path === this.defaultSavePath ? "" : path;
       },
@@ -229,11 +230,11 @@ export class WidgetInputModal extends Modal {
       const pill = row.createSpan("fc-pill");
       pill.createSpan("fc-pill-dot");
       const paramCount = this.availableParamCount(parsed.config);
-      pill.appendText(`已识别：TradingView ${parsed.widgetName ?? "组件"} · 提取 ${paramCount} 项可修改参数`);
+      pill.appendText(t("已识别：TradingView {name} · 提取 {n} 项可修改参数", { name: t(parsed.widgetName ?? "组件"), n: paramCount }));
     }
     row.createSpan({
       cls: "fc-field-hint",
-      text: "支持嵌入代码 / iframe URL；任意 HTML 片段降级为手动编辑",
+      text: t("支持嵌入代码 / iframe URL；任意 HTML 片段降级为手动编辑"),
     });
   }
 
@@ -253,22 +254,22 @@ export class WidgetInputModal extends Modal {
     pageEl.empty();
     const config = this.parsed?.config;
     if (!config || this.availableParamCount(config) === 0) {
-      pageEl.createDiv({ cls: "fc-field-hint", text: "未识别到可修改参数" });
+      pageEl.createDiv({ cls: "fc-field-hint", text: t("未识别到可修改参数") });
       return;
     }
 
     const head = pageEl.createDiv("fc-widget-pill-row");
     const pill = head.createSpan("fc-pill");
     pill.createSpan("fc-pill-dot");
-    pill.appendText(`从组件代码提取 ${this.availableParamCount(config)} 项参数`);
-    head.createSpan({ cls: "fc-field-hint", text: "修改后自动写回「插入数据」子页面的组件代码" });
+    pill.appendText(t("从组件代码提取 {n} 项参数", { n: this.availableParamCount(config) }));
+    head.createSpan({ cls: "fc-field-hint", text: t("修改后自动写回「插入数据」子页面的组件代码") });
 
     if ("interval" in config) {
       const current = String(config.interval ?? "");
       const options = INTERVAL_OPTIONS.some((o) => o.value === current)
         ? INTERVAL_OPTIONS
         : [...INTERVAL_OPTIONS, { value: current, label: current }];
-      const setting = new Setting(pageEl).setName("显示周期").setDesc("对应配置字段 interval。");
+      const setting = new Setting(pageEl).setName(t("显示周期")).setDesc(t("对应配置字段 interval。"));
       this.addSegmented(setting.controlEl, options, current, (value) => {
         this.applyParam("interval", value);
       });
@@ -276,7 +277,7 @@ export class WidgetInputModal extends Modal {
 
     if ("theme" in config) {
       const current = config.theme === "light" || config.theme === "dark" ? config.theme : "auto";
-      const setting = new Setting(pageEl).setName("主题").setDesc("对应配置字段 theme。");
+      const setting = new Setting(pageEl).setName(t("主题")).setDesc(t("对应配置字段 theme。"));
       this.addSegmented(
         setting.controlEl,
         THEME_CHOICES.map((c) => ({ value: c.value, label: c.label })),
@@ -294,8 +295,8 @@ export class WidgetInputModal extends Modal {
     if ("hide_side_toolbar" in config) {
       const shown = !(config.hide_side_toolbar === true || config.hide_side_toolbar === "true" || config.hide_side_toolbar === "1");
       new Setting(pageEl)
-        .setName("侧边工具栏")
-        .setDesc("显示绘图工具；对应配置字段 hide_side_toolbar。")
+        .setName(t("侧边工具栏"))
+        .setDesc(t("显示绘图工具；对应配置字段 hide_side_toolbar。"))
         .addToggle((toggle) =>
           toggle.setValue(shown).onChange((value) => {
             this.applyParam("hide_side_toolbar", !value);
@@ -314,7 +315,7 @@ export class WidgetInputModal extends Modal {
     for (const option of options) {
       const item = segmented.createEl("button", {
         cls: `fc-segmented-item${option.value === current ? " is-active" : ""}`,
-        text: option.label,
+        text: t(option.label),
         attr: { type: "button" },
       });
       item.addEventListener("click", () => {

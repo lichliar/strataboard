@@ -1,5 +1,5 @@
 import { TFile, type App } from "obsidian";
-import { findMacroSeriesDef, type AssetType, type SeriesRef } from "../types";
+import { cacheAssetKey, findMacroSeriesDef, type AssetType, type SeriesRef } from "../types";
 import { parseCardSpec } from "./card-spec";
 import {
   parseFredCardSpec,
@@ -8,6 +8,7 @@ import {
   parseSpreadSpec,
 } from "./series-spec";
 import type { SqliteCache } from "./sqlite-cache";
+import { t } from "../i18n";
 
 // Scan logic for the two settings-tab cleanup features (orphan card files,
 // stale cache entries). Pure data collection — all UI lives in
@@ -145,7 +146,7 @@ async function collectBlockKeys(
       if (!result.ok) return;
       const spec = result.spec;
       if (spec.contentType || spec.widgetType) return; // widget/calendar: no market data
-      keys.quotes.add(`${spec.symbol}|${spec.assetType}`);
+      keys.quotes.add(`${spec.symbol}|${cacheAssetKey(spec.assetType, spec.sourceId)}`);
       return;
     }
     case "fred": {
@@ -181,7 +182,7 @@ async function collectRefKeys(
 ): Promise<void> {
   switch (ref.source) {
     case "quote":
-      keys.quotes.add(`${ref.tsCode}|${ref.assetType}`);
+      keys.quotes.add(`${ref.tsCode}|${cacheAssetKey(ref.assetType!, ref.sourceId)}`);
       return;
     case "macro":
       if (ref.seriesId) addMacroKey(keys, ref.seriesId);
@@ -239,7 +240,7 @@ export async function findStaleCacheEntries(
     stale.push({
       kind: "ohlcv",
       label: `${key.symbol} · ${key.assetType}`,
-      detail: `行情数据 · ${key.rows} 行`,
+      detail: t("行情数据 · {rows} 行", { rows: key.rows }),
       rows: key.rows,
       symbol: key.symbol,
       assetType: key.assetType,
@@ -252,7 +253,7 @@ export async function findStaleCacheEntries(
     stale.push({
       kind: "market",
       label: `${key.symbol} · ${key.assetType}`,
-      detail: `市场数据 · ${key.rows} 行`,
+      detail: t("市场数据 · {rows} 行", { rows: key.rows }),
       rows: key.rows,
       symbol: key.symbol,
       assetType: key.assetType,
@@ -268,7 +269,7 @@ export async function findStaleCacheEntries(
     stale.push({
       kind: "macro",
       label: `${key.source} · ${key.seriesId}`,
-      detail: `${key.source === "fred" ? "FRED" : "宏观"}序列 · ${key.rows} 行`,
+      detail: t("{kind}序列 · {rows} 行", { kind: key.source === "fred" ? "FRED" : t("宏观"), rows: key.rows }),
       rows: key.rows,
       source: key.source,
       seriesId: key.seriesId,

@@ -2,6 +2,7 @@ import { App, normalizePath, Notice, TFile } from "obsidian";
 import type { ParsedCardSpec } from "../types";
 import { buildCardFileName } from "../utils/slug";
 import { buildCardFrontmatter, canonicalKey, stringifyCardSpec } from "./card-spec";
+import { t } from "../i18n";
 
 // Exported so the md-editor insertion path (main.ts) can fence a spec with
 // the same block type a card file would use.
@@ -16,6 +17,9 @@ interface CardServiceOptions {
   cardLibraryPath: string;
   widgetCardPath: string;
   componentCardPath: string;
+  // Resolves a custom source's display name for card file names
+  // (命名规则：资产名称-代码-数据源).
+  resolveSourceName?: (sourceId: string) => string | undefined;
 }
 
 export class CardService {
@@ -40,7 +44,7 @@ export class CardService {
     const key = canonicalKey(spec);
     const existing = await this.findExistingCard(key);
     if (existing) {
-      new Notice(`已复用现有卡片：${existing.basename}`);
+      new Notice(t("已复用现有卡片：{name}", { name: existing.basename }));
       return existing;
     }
 
@@ -56,7 +60,12 @@ export class CardService {
         ? "日历.md"
         : spec.widgetType
           ? this.buildWidgetFileName(spec)
-          : buildCardFileName(displayName, spec.symbol, spec.assetType);
+          : buildCardFileName(
+              displayName,
+              spec.symbol,
+              spec.assetType,
+              spec.sourceId ? this.options.resolveSourceName?.(spec.sourceId) : undefined
+            );
     const filePath = await this.uniqueFilePath(libraryPath, baseName);
 
     const blockType = codeBlockTypeFor(spec);

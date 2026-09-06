@@ -8,6 +8,7 @@ import {
   resolveDailyNotesConfig,
   type DailyNotesConfig,
 } from "./daily-notes";
+import { t } from "../i18n";
 
 interface CalendarDisplaySettings {
   calendarExcerptFontSize: number;
@@ -93,12 +94,12 @@ export class CalendarRenderer extends MarkdownRenderChild {
 
     const header = this.containerEl.createDiv({ cls: "financial-calendar-header" });
     const prevBtn = header.createEl("button", { text: "‹", cls: "financial-calendar-nav" });
-    prevBtn.setAttribute("aria-label", "上个月");
+    prevBtn.setAttribute("aria-label", t("上个月"));
     prevBtn.addEventListener("click", () => this.shiftMonth(-1));
 
     this.renderTitle(header);
 
-    const todayBtn = header.createEl("button", { text: "今天", cls: "financial-calendar-today" });
+    const todayBtn = header.createEl("button", { text: t("今天"), cls: "financial-calendar-today" });
     todayBtn.addEventListener("click", () => {
       const now = new Date();
       this.viewYear = now.getFullYear();
@@ -107,12 +108,12 @@ export class CalendarRenderer extends MarkdownRenderChild {
     });
 
     const nextBtn = header.createEl("button", { text: "›", cls: "financial-calendar-nav" });
-    nextBtn.setAttribute("aria-label", "下个月");
+    nextBtn.setAttribute("aria-label", t("下个月"));
     nextBtn.addEventListener("click", () => this.shiftMonth(1));
 
     const weekdays = this.containerEl.createDiv({ cls: "financial-calendar-weekdays" });
     for (const label of WEEKDAY_LABELS) {
-      weekdays.createDiv({ cls: "financial-calendar-weekday", text: label });
+      weekdays.createDiv({ cls: "financial-calendar-weekday", text: t(label) });
     }
 
     this.gridEl = this.containerEl.createDiv({ cls: "financial-calendar-grid" });
@@ -156,9 +157,9 @@ export class CalendarRenderer extends MarkdownRenderChild {
   private renderTitle(header: HTMLElement) {
     const title = header.createDiv({
       cls: "financial-calendar-title",
-      text: `${this.viewYear}年${this.viewMonth + 1}月`,
+      text: t("{y}年{m}月", { y: this.viewYear, m: this.viewMonth + 1 }),
     });
-    title.title = "点击编辑日历";
+    title.title = t("点击编辑日历");
     title.addEventListener("click", () => {
       this.onOpenEditor?.();
     });

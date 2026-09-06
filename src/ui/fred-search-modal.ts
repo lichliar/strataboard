@@ -1,5 +1,6 @@
 import { SuggestModal, type App } from "obsidian";
 import type { FredSeriesInfo } from "../types";
+import { t } from "../i18n";
 
 export type SearchFredSeries = (text: string) => Promise<FredSeriesInfo[]>;
 
@@ -38,11 +39,11 @@ export class FredSearchModal extends SuggestModal<FredSeriesInfo> {
     super(app);
     this.search = search;
     this.onSelectCallback = onSelect;
-    this.setPlaceholder("输入英文关键词搜索 FRED 系列（如 cpi、treasury、oil）…");
+    this.setPlaceholder(t("输入英文关键词搜索 FRED 系列（如 cpi、treasury、oil）…"));
     this.setInstructions([
-      { command: "↑↓", purpose: "选择" },
-      { command: "↵", purpose: "确认" },
-      { command: "esc", purpose: "关闭" },
+      { command: "↑↓", purpose: t("选择") },
+      { command: "↵", purpose: t("确认") },
+      { command: "esc", purpose: t("关闭") },
     ]);
   }
 

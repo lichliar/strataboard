@@ -5,6 +5,8 @@
 // title formatting all live here so the edit modal and the series adapter
 // share exactly one grammar.
 
+import { t } from "../i18n";
+
 export type ExprNode =
   | { kind: "num"; value: number }
   | { kind: "ref"; letter: string }
@@ -46,7 +48,7 @@ function tokenize(src: string): Token[] | string {
       while (j < src.length && /[0-9.]/.test(src[j])) j++;
       const raw = src.slice(i, j);
       if (!/^\d+(\.\d+)?$|^\.\d+$/.test(raw)) {
-        return `无法识别的数字「${raw}」。`;
+        return t("无法识别的数字「{raw}」。", { raw });
       }
       tokens.push({ kind: "num", value: raw });
       i = j;
@@ -72,7 +74,7 @@ function tokenize(src: string): Token[] | string {
       i++;
       continue;
     }
-    return `无法识别的字符「${ch}」。`;
+    return t("无法识别的字符「{ch}」。", { ch });
   }
   return tokens;
 }
@@ -85,7 +87,7 @@ function tokenize(src: string): Token[] | string {
 export function parseExpression(src: string, seriesCount: number): ExprParseResult {
   const trimmed = src.trim();
   if (!trimmed) {
-    return { ok: false, error: "请输入公式。" };
+    return { ok: false, error: t("请输入公式。") };
   }
   const tokens = tokenize(trimmed);
   if (typeof tokens === "string") {
@@ -127,7 +129,7 @@ export function parseExpression(src: string, seriesCount: number): ExprParseResu
   const parseFactor = (): ExprNode | string => {
     const token = peek();
     if (!token) {
-      return "公式不完整 — 末尾缺少系列代号或数字。";
+      return t("公式不完整 — 末尾缺少系列代号或数字。");
     }
     if (token.kind === "op") {
       if (token.value === "-" || token.value === "+") {
@@ -136,7 +138,7 @@ export function parseExpression(src: string, seriesCount: number): ExprParseResu
         if (typeof operand === "string") return operand;
         return token.value === "-" ? { kind: "neg", operand } : operand;
       }
-      return `「${displayOp(token.value)}」前面缺少系列代号或数字。`;
+      return t("「{op}」前面缺少系列代号或数字。", { op: displayOp(token.value) });
     }
     if (token.kind === "num") {
       pos++;
@@ -148,8 +150,8 @@ export function parseExpression(src: string, seriesCount: number): ExprParseResu
       if (index >= seriesCount) {
         const last = String.fromCharCode(65 + seriesCount - 1);
         return seriesCount > 0
-          ? `系列代号「${token.value}」未定义（当前只有 A–${last}）。`
-          : `系列代号「${token.value}」未定义（请先在下方新增系列）。`;
+          ? t("系列代号「{letter}」未定义（当前只有 A–{last}）。", { letter: token.value, last })
+          : t("系列代号「{letter}」未定义（请先在下方新增系列）。", { letter: token.value });
       }
       return { kind: "ref", letter: token.value };
     }
@@ -158,12 +160,12 @@ export function parseExpression(src: string, seriesCount: number): ExprParseResu
       const inner = parseExpr();
       if (typeof inner === "string") return inner;
       if (peek()?.kind !== "rparen") {
-        return "括号不匹配 —「(」缺少对应的「)」。";
+        return t("括号不匹配 —「(」缺少对应的「)」。");
       }
       pos++;
       return inner;
     }
-    return "括号不匹配 — 多余的「)」。";
+    return t("括号不匹配 — 多余的「)」。");
   };
 
   const ast = parseExpr();
@@ -175,7 +177,7 @@ export function parseExpression(src: string, seriesCount: number): ExprParseResu
     // A valid factor followed by more input, e.g. "A B" or "A)".
     return {
       ok: false,
-      error: rest.kind === "rparen" ? "括号不匹配 — 多余的「)」。" : `「${tokenText(rest)}」位置不正确。`,
+      error: rest.kind === "rparen" ? t("括号不匹配 — 多余的「)」。") : t("「{text}」位置不正确。", { text: tokenText(rest) }),
     };
   }
   return { ok: true, ast };

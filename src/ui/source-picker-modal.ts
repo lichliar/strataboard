@@ -1,4 +1,5 @@
 import { App, Modal } from "obsidian";
+import { t } from "../i18n";
 
 export interface SourcePickerEntry {
   name: string;      // e.g. "Tushare 资产"
@@ -19,14 +20,15 @@ export class SourcePickerModal extends Modal {
   }
 
   onOpen() {
-    this.setTitle("插入资产数据");
+    this.setTitle(t("插入资产数据"));
     const { contentEl } = this;
-    contentEl.createDiv({ cls: "fc-field-hint", text: "数据源" });
+    contentEl.createDiv({ cls: "fc-field-hint", text: t("数据源") });
     const grid = contentEl.createDiv("fc-source-grid");
     for (const entry of this.entries) {
       const card = grid.createDiv({ cls: "fc-source-card" });
-      card.createDiv({ cls: "fc-source-card-name", text: entry.name });
-      card.createDiv({ cls: "fc-source-card-desc", text: entry.desc });
+      // name/desc arrive as Chinese i18n keys from the caller.
+      card.createDiv({ cls: "fc-source-card-name", text: t(entry.name) });
+      card.createDiv({ cls: "fc-source-card-desc", text: t(entry.desc) });
       card.addEventListener("click", () => {
         this.close();
         entry.onPick();
