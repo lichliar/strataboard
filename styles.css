@@ -470,6 +470,97 @@ body.theme-dark {
   cursor: not-allowed;
 }
 
+/* ===== 自定义数据源向导 (custom-source setup wizard) ===== */
+
+/* Step header: "1. 填写地址  2. 自动检测  3. 字段映射（可选）". */
+.fc-wizard-steps {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--fc-muted);
+}
+
+.fc-wizard-step.is-active {
+  color: var(--fc-fg);
+  font-weight: 600;
+}
+
+.fc-wizard-step.is-done {
+  color: var(--fc-accent);
+}
+
+/* Live "自动生成的模板" line under the URL fields. */
+.fc-template-preview {
+  word-break: break-all;
+  margin: 4px 0 8px;
+}
+
+/* Detection failure / empty-mapping warning. */
+.fc-detect-error {
+  color: var(--text-error);
+}
+
+/* Parsed kline preview table (step 2 result + step 3 mapping preview). */
+.fc-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.fc-preview-table th,
+.fc-preview-table td {
+  border: 1px solid var(--fc-border);
+  padding: 2px 8px;
+  text-align: right;
+}
+
+.fc-preview-table th:first-child,
+.fc-preview-table td:first-child {
+  text-align: left;
+}
+
+.fc-mapping-preview {
+  margin-top: 12px;
+}
+
+/* Raw response dump shown when no data list is found. */
+.fc-sample-dump {
+  max-height: 140px;
+  overflow: auto;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--fc-surface);
+  border: 1px solid var(--fc-border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+/* Paste area of the 导入 modal. */
+.fc-import-area {
+  width: 100%;
+  min-height: 140px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+/* AI-assist block in the custom-source wizard (copyable endpoint-finding
+   prompt). */
+.fc-ai-help {
+  margin-bottom: 12px;
+}
+
+.fc-prompt-area {
+  width: 100%;
+  min-height: 120px;
+  margin: 6px 0;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
 /* ===== 数据计算卡 modal (wireframe #screen-calc) ===== */
 
 /* Expression error hint sits right under the 公式 input. */
@@ -1808,13 +1899,12 @@ body.theme-dark {
   font-weight: 600;
 }
 
-/* Unified 插入数据 search modal: single-row category chips below the input
-   (horizontal scroll instead of wrapping), styled after the settings tab
-   switcher. */
+/* Unified 插入数据 search modal: category chips below the input wrap onto
+   multiple rows so every category stays visible, styled after the settings
+   tab switcher. */
 .fc-cat-chips {
   display: flex;
-  flex-wrap: nowrap;
-  overflow-x: auto;
+  flex-wrap: wrap;
   gap: 4px;
   margin-top: 8px;
 }

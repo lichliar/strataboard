@@ -6,7 +6,7 @@ import { t, setLanguage, type Language } from "./i18n";
 import { FolderPathSelect } from "./ui/folder-suggester";
 import { CleanupConfirmModal } from "./ui/cleanup-modal";
 import { ConfirmModal } from "./ui/confirm-modal";
-import { CUSTOM_FORMAT_LABELS, CustomSourceModal } from "./ui/custom-source-modal";
+import { CUSTOM_FORMAT_LABELS, CustomSourceImportModal, CustomSourceModal } from "./ui/custom-source-modal";
 import { MIN_REQUEST_INTERVAL_MS } from "./modules/http";
 import {
   collectUsedCacheKeys,
@@ -156,6 +156,12 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   }
 
   private renderGeneralSettings(containerEl: HTMLElement): void {
+    // Plugin version from manifest.json; release.mjs tags GitHub releases with
+    // exactly this version, so the two always match.
+    new Setting(containerEl)
+      .setName(t("插件版本"))
+      .setDesc(this.plugin.manifest.version);
+
     // Language switch; applies immediately except command-palette names
     // (registered at plugin load).
     new Setting(containerEl)
@@ -285,7 +291,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     details.createEl("summary", { text: t("自定义数据源") });
     details.createDiv({
       cls: "fc-field-hint",
-      text: t("自行配置任意 RESTful 行情接口：K线 URL 支持 {code} {start} {end} {endIso} 占位符，搜索 URL 支持 {query}（留空则手工录入代码）。"),
+      text: t("自行配置任意 RESTful 行情接口：粘贴完整 URL 即可自动生成模板（支持 {code} {start} {end} {startIso} {endIso} 占位符），响应格式自动识别。"),
     });
 
     for (const def of this.plugin.pluginSettings.customSources) {
@@ -314,12 +320,37 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       );
     }
 
-    new Setting(details).addButton((btn) =>
-      btn
-        .setButtonText(t("添加数据源"))
-        .setCta()
-        .onClick(() => this.openCustomSourceModal())
-    );
+    new Setting(details)
+      .addButton((btn) =>
+        btn
+          .setButtonText(t("添加数据源"))
+          .setCta()
+          .onClick(() => this.openCustomSourceModal())
+      )
+      .addButton((btn) =>
+        btn.setButtonText(t("导入")).onClick(() => {
+          new CustomSourceImportModal(this.app, (defs) => {
+            this.plugin.pluginSettings.customSources.push(...defs);
+            void this.plugin.saveSettings().then(() => {
+              new Notice(t("导入成功：新增 {n} 个数据源。", { n: defs.length }));
+              this.display();
+            });
+          }).open();
+        })
+      )
+      .addButton((btn) =>
+        btn.setButtonText(t("导出")).onClick(() => {
+          const sources = this.plugin.pluginSettings.customSources;
+          if (sources.length === 0) {
+            new Notice(t("没有可导出的自定义数据源。"));
+            return;
+          }
+          void navigator.clipboard.writeText(JSON.stringify(sources, null, 2)).then(
+            () => new Notice(t("已导出 {n} 个数据源到剪贴板。", { n: sources.length })),
+            () => new Notice(t("导出失败：无法访问剪贴板。")),
+          );
+        })
+      );
   }
 
   private openCustomSourceModal(def?: CustomSourceDef): void {
@@ -562,11 +593,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   // 图表高度) lives in each card's unified edit modal — global defaults were
   // deliberately removed to avoid two config sources overriding each other.
   private renderCardSettings(containerEl: HTMLElement): void {
-    const note = containerEl.createDiv("fc-settings-note");
-    note.appendText(t("卡片级配置（周期 / 时间范围 / 图表类型 / 主题 / 涨跌色 / 图表高度）由各卡片的"));
-    note.createEl("b", { text: t("统合编辑弹窗") });
-    note.appendText(t("独立设置并随卡片保存，此处不再提供全局默认，避免两处配置互相覆盖；新建卡片使用内置默认值。"));
-
     const widgetDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
     widgetDetails.createEl("summary", { text: "TradingView Widgets" });
 
@@ -663,6 +689,11 @@ export class StrataBoardSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    const note = containerEl.createDiv("fc-settings-note");
+    note.appendText(t("卡片级配置（周期 / 时间范围 / 图表类型 / 主题 / 涨跌色 / 图表高度）由各卡片的"));
+    note.createEl("b", { text: t("统合编辑弹窗") });
+    note.appendText(t("独立设置并随卡片保存，此处不再提供全局默认，避免两处配置互相覆盖；新建卡片使用内置默认值。"));
   }
 
   private renderToolbarSettings(containerEl: HTMLElement): void {
