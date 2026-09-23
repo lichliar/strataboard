@@ -63,11 +63,16 @@ export function parseTencentKline(json: any, code: string): OhlcvRow[] {
 // Quoteable classes only — bonds, warrants and the like are filtered out.
 const KEEP_CLASSIFY = new Set(["AStock", "UsStock", "HKStock", "Fund", "Index"]);
 
-// Normalizes a date cell to YYYYMMDD: strips non-digits; 8 digits pass
-// through, 10/13 digits are epoch seconds/milliseconds. Shared by the custom
-// quote client and the format heuristics below.
+// Normalizes a date cell to YYYYMMDD. ISO-ish "YYYY-MM-DD" (optionally
+// followed by a time part) keeps its leading date; otherwise strips
+// non-digits — 8 digits pass through, 10/13 digits are epoch
+// seconds/milliseconds. Shared by the custom quote client and the format
+// heuristics below.
 export function normalizeJsonDate(raw: unknown): string {
-  const digits = String(raw ?? "").replace(/\D/g, "");
+  const text = String(raw ?? "").trim();
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return iso[1] + iso[2] + iso[3];
+  const digits = text.replace(/\D/g, "");
   if (digits.length === 8) return digits;
   if (digits.length === 10) return formatDate(new Date(Number(digits) * 1000));
   if (digits.length === 13) return formatDate(new Date(Number(digits)));
@@ -150,7 +155,7 @@ export function guessCols(candidate: JsonRowCandidate): JsonSourceMap["cols"] | 
 }
 
 function guessArrayCols(row: any): JsonSourceMap["cols"] | null {
-  if (!Array.isArray(row) || row.length < 6) return null;
+  if (!Array.isArray(row) || row.length < 2) return null;
   const dateIndex = row.findIndex((v) => normalizeJsonDate(v) !== "");
   if (dateIndex < 0) return null;
   // Tencent/Eastmoney order (open, close, high, low) is the most common
@@ -162,7 +167,13 @@ function guessArrayCols(row: any): JsonSourceMap["cols"] | null {
     if (Number.isFinite(Number(row[i])) && String(row[i]).trim() !== "") numericAfter.push(i);
   }
   const [o, c, h, l, v, a] = numericAfter;
-  if (o === undefined || c === undefined || h === undefined || l === undefined) return null;
+  if (o === undefined) return null;
+  if (c === undefined || h === undefined || l === undefined) {
+    // Not a kline layout — treat it as a single-value series (yields,
+    // indices) and map only the close column.
+    cols.close = String(o);
+    return cols;
+  }
   cols.open = String(o);
   cols.close = String(c);
   cols.high = String(h);
@@ -179,12 +190,17 @@ function guessObjectCols(row: any): JsonSourceMap["cols"] | null {
   const date = pickBy(NAME_KEYS.date) ?? fields.find((f) => normalizeJsonDate(row[f]) !== "");
   if (!date) return null;
   const open = pickBy(NAME_KEYS.open);
-  const close = pickBy(NAME_KEYS.close);
   const high = pickBy(NAME_KEYS.high);
   const low = pickBy(NAME_KEYS.low);
   const vol = pickBy(NAME_KEYS.vol);
-  if (!open || !close || !high || !low || !vol) return null;
-  const cols: JsonSourceMap["cols"] = { date, open, close, high, low, vol };
+  // Close falls back to the first unmatched numeric field so single-value
+  // series (yields, macro readings) with opaque field names still guess.
+  const taken = new Set([date, open, high, low, vol].filter((f): f is string => Boolean(f)));
+  const close =
+    pickBy(NAME_KEYS.close) ??
+    fields.find((f) => !taken.has(f) && String(row[f] ?? "").trim() !== "" && Number.isFinite(Number(row[f])));
+  if (!close) return null;
+  const cols: JsonSourceMap["cols"] = { date, open: open ?? "", close, high: high ?? "", low: low ?? "", vol: vol ?? "" };
   const amount = pickBy(AMOUNT_KEYS);
   if (amount) cols.amount = amount;
   return cols;
@@ -215,17 +231,52 @@ export function parseMappedKline(json: any, map: JsonSourceMap): OhlcvRow[] {
     const vol = Number(pick(map.cols.vol));
     const amount = map.cols.amount ? Number(pick(map.cols.amount)) : 0;
     if (!tradeDate || !Number.isFinite(close)) continue;
+    // Unmapped/non-finite OHLC fall back to close, so close-only mappings
+    // (single-value series like yields) still form valid candles.
+    const o = Number.isFinite(open) ? open : close;
+    const h = Number.isFinite(high) ? high : Math.max(o, close);
+    const l = Number.isFinite(low) ? low : Math.min(o, close);
     rows.push({
       tradeDate,
-      open,
-      high,
-      low,
+      open: o,
+      high: h,
+      low: l,
       close,
       vol: Number.isFinite(vol) ? vol : 0,
       amount: Number.isFinite(amount) ? amount : 0,
     });
   }
   return rows.sort((a, b) => a.tradeDate.localeCompare(b.tradeDate));
+}
+
+// Splits a composite code "URL部分@映射部分" (e.g. "REPORTNAME@COLUMN" for
+// wide-table report sources): the part before "@" fills {code} in URL
+// templates, the part after fills {code} in column mappings. Plain codes
+// (no "@") fill both — single-dimension sources are unaffected.
+export function splitCompositeCode(code: string): { urlCode: string; mapCode: string } {
+  const at = code.indexOf("@");
+  if (at < 0) return { urlCode: code, mapCode: code };
+  return { urlCode: code.slice(0, at), mapCode: code.slice(at + 1) };
+}
+
+// Substitutes the {code} placeholder in column mappings. Fixed-report
+// sources (one URL, many series as columns — e.g. a yield curve with one
+// tenor per column) map close to "{code}" so the requested code picks the
+// column, the same way it would pick a URL slot for kline sources.
+export function resolveMapCode(map: JsonSourceMap, code: string): JsonSourceMap {  const sub = (value: string): string => (value.includes("{code}") ? value.replaceAll("{code}", code) : value);
+  const cols = map.cols;
+  return {
+    ...map,
+    cols: {
+      date: sub(cols.date),
+      open: sub(cols.open),
+      close: sub(cols.close),
+      high: sub(cols.high),
+      low: sub(cols.low),
+      vol: sub(cols.vol),
+      amount: cols.amount ? sub(cols.amount) : undefined,
+    },
+  };
 }
 
 // Walks a dotted path ("data.klines") into a parsed JSON payload. Exported

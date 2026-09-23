@@ -6,6 +6,7 @@ import type {
   SymbolItem,
 } from "../types";
 import { ASSET_TYPE_LABELS, MACRO_SERIES_OPTIONS } from "../types";
+import { matchSymbolEntry } from "../utils/symbol-list";
 import { t } from "../i18n";
 
 export type UnifiedResult =
@@ -27,37 +28,16 @@ export interface UnifiedSearchOptions {
   onManual: (sourceId: string, sourceName: string) => void;
 }
 
-type CategoryId =
-  | "all"
-  | "stock"
-  | "fund"
-  | "index"
-  | "cb"
-  | "fut"
-  | "fx"
-  | "macro"
-  | "fred"
-  | "custom";
+// Chips are per DATA SOURCE, not per asset class: Tushare / FRED / one chip
+// per enabled custom source. 「全部」(merged view) is prepended when more than
+// one source is configured; with no source at all the chip row is hidden.
+type CategoryId = "all" | "tushare" | "fred" | `custom:${string}`;
 
 interface CategoryDef {
   id: CategoryId;
   label: string;
-  assetTypes?: string[];
   remote?: boolean;
 }
-
-const CATEGORIES: CategoryDef[] = [
-  { id: "all", label: "全部", remote: true },
-  { id: "stock", label: "股票", assetTypes: ["stock", "hk"] },
-  { id: "fund", label: "基金", assetTypes: ["fund"] },
-  { id: "index", label: "指数", assetTypes: ["index", "nhindex", "gbindex", "sw"] },
-  { id: "cb", label: "可转债", assetTypes: ["cb"] },
-  { id: "fut", label: "期货", assetTypes: ["fut"] },
-  { id: "fx", label: "外汇", assetTypes: ["fx"] },
-  { id: "macro", label: "宏观" },
-  { id: "fred", label: "FRED", remote: true },
-  { id: "custom", label: "自定义", remote: true },
-];
 
 const SYMBOL_LIMIT = 20;
 const MACRO_LIMIT = 10;
@@ -82,19 +62,33 @@ function matchesMacro(def: MacroSeriesDef, query: string): boolean {
 }
 
 /**
- * Unified 「插入数据」 picker: one search box with category chips that fans out
- * across the local symbol index, the Tushare macro catalog, the FRED API, and
- * every enabled custom quote source. Custom sources without a search URL
- * surface a constant manual-entry result instead.
+ * Unified 「插入数据」 picker: one search box that fans out across the local
+ * symbol index, the Tushare macro catalog, the FRED API, and every enabled
+ * custom quote source. Category chips are per data source (Tushare / FRED /
+ * each custom source, plus a merged 「全部」 when several are configured);
+ * with no configured source the chip row is hidden. Custom sources without a
+ * search URL surface a constant manual-entry result instead.
  */
 export class UnifiedSearchModal extends SuggestModal<UnifiedResult> {
-  private category: CategoryId = "all";
+  private categories: CategoryDef[];
+  private category: CategoryId;
   private chipEls = new Map<CategoryId, HTMLButtonElement>();
   private symbolsCache: SymbolItem[] | null = null;
   private callSeq = 0;
 
   constructor(app: App, private opts: UnifiedSearchOptions) {
     super(app);
+    const cats: CategoryDef[] = [];
+    if (opts.hasTushare) cats.push({ id: "tushare", label: "Tushare" });
+    if (opts.hasFred) cats.push({ id: "fred", label: "FRED", remote: true });
+    for (const source of opts.customSources) {
+      cats.push({ id: `custom:${source.id}`, label: source.name, remote: true });
+    }
+    if (cats.length >= 2) {
+      cats.unshift({ id: "all", label: "全部", remote: cats.some((c) => c.remote) });
+    }
+    this.categories = cats;
+    this.category = cats[0]?.id ?? "all";
     this.setPlaceholder(t("输入代码或名称搜索（美的集团 / 600519 / DGS10…）"));
     this.setInstructions([
       { command: "↑↓", purpose: t("选择") },
@@ -105,8 +99,11 @@ export class UnifiedSearchModal extends SuggestModal<UnifiedResult> {
 
   onOpen(): void {
     super.onOpen();
+    // A single configured source needs no chip row — the only chip could
+    // never change anything.
+    if (this.categories.length < 2) return;
     const chips = createDiv({ cls: "fc-cat-chips" });
-    for (const cat of CATEGORIES) {
+    for (const cat of this.categories) {
       const chip = chips.createEl("button", {
         cls: `fc-cat-chip${cat.id === this.category ? " fc-cat-chip-active" : ""}`,
         text: t(cat.label),
@@ -146,14 +143,10 @@ export class UnifiedSearchModal extends SuggestModal<UnifiedResult> {
     return this.symbolsCache;
   }
 
-  private searchSymbols(query: string, assetTypes: string[] | undefined): SymbolItem[] {
+  private searchSymbols(query: string): SymbolItem[] {
     if (!this.symbolsCache) return [];
     return this.symbolsCache
-      .filter(
-        (item) =>
-          (!assetTypes || assetTypes.includes(item.assetType)) &&
-          (query.length === 0 || matchesSymbol(item, query)),
-      )
+      .filter((item) => query.length === 0 || matchesSymbol(item, query))
       .slice(0, SYMBOL_LIMIT);
   }
 
@@ -164,10 +157,54 @@ export class UnifiedSearchModal extends SuggestModal<UnifiedResult> {
     ).slice(0, MACRO_LIMIT);
   }
 
-  private async searchRemote(query: string, category: CategoryId): Promise<UnifiedResult[]> {
+  getSuggestions(query: string): Promise<UnifiedResult[]> {
+    const cat = this.categories.find((c) => c.id === this.category) ?? {
+      id: "all" as CategoryId,
+      label: "全部",
+      remote: true,
+    };
+    const trimmed = query.trim().toLowerCase();
+    // SuggestModal renders whatever promise resolves LAST, with no ordering
+    // guard: a slow stale call resolving [] after a fast fresh one would wipe
+    // the list. So only the newest call may resolve; superseded calls stay
+    // pending forever and can never clobber newer results.
+    return new Promise((resolve) => {
+      const seq = ++this.callSeq;
+      const run = () => {
+        if (seq !== this.callSeq) return;
+        void this.collectSuggestions(trimmed, cat).then((results) => {
+          if (seq === this.callSeq) resolve(results);
+        });
+      };
+      // Debounce remote-capable categories.
+      if (cat.remote) setTimeout(run, 300);
+      else run();
+    });
+  }
+
+  private async collectSuggestions(query: string, cat: CategoryDef): Promise<UnifiedResult[]> {
+    if (this.categories.length === 0) {
+      this.updateEmptyState(t("请先在设置页配置 Tushare Token 或 FRED API Key，或使用自定义数据源。"));
+      return [];
+    }
+    this.updateEmptyState(t("输入关键词开始搜索。"));
+
     const results: UnifiedResult[] = [];
+    const wantsTushare = cat.id === "all" || cat.id === "tushare";
+    const wantsFred = cat.id === "all" || cat.id === "fred";
+    const wantedCustomSources =
+      cat.id === "all"
+        ? this.opts.customSources
+        : this.opts.customSources.filter((s) => cat.id === `custom:${s.id}`);
+
+    if (wantsTushare && this.opts.hasTushare) {
+      await this.loadSymbols();
+      results.push(...this.searchSymbols(query).map((item) => ({ kind: "symbol" as const, item })));
+      results.push(...this.searchMacro(query).map((def) => ({ kind: "macro" as const, def })));
+    }
+
     const fetches: Promise<void>[] = [];
-    if ((category === "all" || category === "fred") && this.opts.hasFred) {
+    if (wantsFred && this.opts.hasFred && query.length > 0) {
       fetches.push(
         this.opts
           .searchFred(query)
@@ -177,97 +214,39 @@ export class UnifiedSearchModal extends SuggestModal<UnifiedResult> {
           .catch((err) => console.error("StrataBoard: unified FRED search failed", err)),
       );
     }
-    if (category === "all" || category === "custom") {
-      for (const source of this.opts.customSources) {
-        if (source.searchUrl) {
-          fetches.push(
-            this.opts
-              .searchCustom(source.id, query)
-              .then((items) => {
-                results.push(...items.map((item) => ({ kind: "symbol" as const, item })));
-              })
-              .catch((err) =>
-                console.error(`StrataBoard: custom source search failed (${source.name})`, err),
-              ),
-          );
-        } else {
-          results.push({ kind: "manual", sourceId: source.id, sourceName: source.name });
-        }
+    for (const source of wantedCustomSources) {
+      // Static code table: local named picks without a server-side search.
+      for (const entry of source.symbols ?? []) {
+        if (!matchSymbolEntry(entry, query)) continue;
+        results.push({
+          kind: "symbol" as const,
+          item: {
+            tsCode: entry.code,
+            symbol: entry.code,
+            name: entry.name,
+            exchange: source.name,
+            assetType: "custom",
+            sourceId: source.id,
+          },
+        });
+      }
+      if (!source.searchUrl) {
+        results.push({ kind: "manual", sourceId: source.id, sourceName: source.name });
+      } else if (query.length > 0) {
+        fetches.push(
+          this.opts
+            .searchCustom(source.id, query)
+            .then((items) => {
+              results.push(...items.map((item) => ({ kind: "symbol" as const, item })));
+            })
+            .catch((err) =>
+              console.error(`StrataBoard: custom source search failed (${source.name})`, err),
+            ),
+        );
       }
     }
     await Promise.all(fetches);
-    return results;
-  }
 
-  getSuggestions(query: string): Promise<UnifiedResult[]> {
-    const cat = CATEGORIES.find((c) => c.id === this.category)!;
-    const trimmed = query.trim().toLowerCase();
-    if (cat.remote) {
-      // Debounce remote-capable categories.
-      return new Promise((resolve) => {
-        const seq = ++this.callSeq;
-        setTimeout(() => {
-          void this.collectSuggestions(trimmed, cat).then((results) => {
-            if (seq === this.callSeq) resolve(results);
-            else resolve([]);
-          });
-        }, 300);
-      });
-    }
-    return this.collectSuggestions(trimmed, cat);
-  }
-
-  private async collectSuggestions(query: string, cat: CategoryDef): Promise<UnifiedResult[]> {
-    if (cat.id === "custom" && this.opts.customSources.length === 0) {
-      this.updateEmptyState(t("尚无启用的自定义数据源，请在设置页添加。"));
-      return [];
-    }
-    if (cat.id === "fred" && !this.opts.hasFred) {
-      this.updateEmptyState(t("请先在设置页配置 FRED API Key。"));
-      return [];
-    }
-    if (cat.id === "macro" && !this.opts.hasTushare) {
-      this.updateEmptyState(t("请先在设置页配置 Tushare Token。"));
-      return [];
-    }
-    if (cat.id === "all" && !this.opts.hasTushare && !this.opts.hasFred) {
-      this.updateEmptyState(
-        this.opts.customSources.length === 0
-          ? t("请先在设置页配置 Tushare Token 或 FRED API Key。")
-          : t("请先在设置页配置 Tushare Token 或 FRED API Key，或使用自定义数据源。"),
-      );
-      if (this.opts.customSources.length === 0) return [];
-    } else {
-      this.updateEmptyState(t("输入关键词开始搜索。"));
-    }
-
-    const results: UnifiedResult[] = [];
-    const symbolCats =
-      cat.id === "all"
-        ? ["stock", "fund", "index", "cb", "fut", "fx"]
-        : cat.assetTypes
-          ? [cat.id]
-          : [];
-    const symbolAssetTypes = cat.id === "all" ? undefined : cat.assetTypes;
-
-    if (symbolCats.length > 0 || (cat.id === "all" && this.opts.hasTushare)) {
-      if (this.opts.hasTushare) {
-        await this.loadSymbols();
-        const symbols = this.searchSymbols(query, symbolAssetTypes);
-        if (query.length === 0 && symbols.length === 0) {
-          this.updateEmptyState(t("请先在设置页配置 Tushare Token。"));
-        }
-        results.push(...symbols.map((item) => ({ kind: "symbol" as const, item })));
-      } else if (cat.assetTypes) {
-        this.updateEmptyState(t("请先在设置页配置 Tushare Token。"));
-      }
-    }
-    if (cat.id === "all" || cat.id === "macro") {
-      results.push(...this.searchMacro(query).map((def) => ({ kind: "macro" as const, def })));
-    }
-    if (cat.remote && (query.length > 0 || cat.id === "custom")) {
-      results.push(...(await this.searchRemote(query, cat.id)));
-    }
     if (results.length === 0 && query.length > 0) {
       this.updateEmptyState(t("未找到匹配结果"));
     }

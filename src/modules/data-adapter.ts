@@ -251,9 +251,12 @@ export class DataAdapter {
     }
 
     const result: OhlcvRow[] = [];
-    for (const [period, group] of groups) {
+    for (const group of groups.values()) {
       result.push({
-        tradeDate: period,
+        // Period-end trading date (matches the Tushare weekly/monthly
+        // trade_date convention), so W/M bars from both sources share the
+        // same date semantics and daily-based MAs can be fitted onto them.
+        tradeDate: group[group.length - 1].tradeDate,
         open: group[0].open,
         high: Math.max(...group.map((r) => r.high)),
         low: Math.min(...group.map((r) => r.low)),

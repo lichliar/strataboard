@@ -104,6 +104,11 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
   const widthAuto = extractBoolean(map, "宽度自适应");
   const heightAuto = extractBoolean(map, "高度自适应");
   const bleed = extractBleed(map);
+  const showLegend = extractBoolean(map, "显示图例");
+  const legendFrosted = extractBoolean(map, "图例半透明");
+  const legendOpacity = extractOpacity(map, "图例透明度");
+  const showGrid = extractBoolean(map, "显示网格");
+  const gridOpacity = extractOpacity(map, "网格透明度");
 
   return {
     ok: true,
@@ -131,6 +136,11 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
       widthAuto,
       heightAuto,
       bleed,
+      showLegend,
+      legendFrosted,
+      legendOpacity,
+      showGrid,
+      gridOpacity,
     },
   };
 }
@@ -304,6 +314,23 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
   if (spec.bleed != null && spec.bleed !== DEFAULT_CARD_BLEED) {
     obj.出血 = spec.bleed;
   }
+  // Per-card display overrides are written only when set; absent = the card
+  // follows the plugin-wide 显示设置.
+  if (spec.showLegend != null) {
+    obj.显示图例 = spec.showLegend;
+  }
+  if (spec.legendFrosted != null) {
+    obj.图例半透明 = spec.legendFrosted;
+  }
+  if (spec.legendOpacity != null) {
+    obj.图例透明度 = spec.legendOpacity;
+  }
+  if (spec.showGrid != null) {
+    obj.显示网格 = spec.showGrid;
+  }
+  if (spec.gridOpacity != null) {
+    obj.网格透明度 = spec.gridOpacity;
+  }
   return yaml.dump(obj, { lineWidth: -1, noRefs: true }).trim();
 }
 
@@ -421,6 +448,13 @@ function extractBleed(map: Record<string, unknown>): number | undefined {
   const raw = extractNumber(map, "出血");
   if (raw == null || !Number.isFinite(raw)) return undefined;
   return Math.max(0, Math.min(MAX_CARD_BLEED, Math.round(raw)));
+}
+
+// Display-override opacities are percents, clamped to 0–100.
+function extractOpacity(map: Record<string, unknown>, key: string): number | undefined {
+  const raw = extractNumber(map, key);
+  if (raw == null || !Number.isFinite(raw)) return undefined;
+  return Math.max(0, Math.min(100, Math.round(raw)));
 }
 
 function isAssetType(value: string): value is AssetType {

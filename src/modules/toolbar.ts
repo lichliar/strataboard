@@ -24,6 +24,9 @@ interface ToolbarMenuItem {
 interface ToolbarEntryDef {
   id: ToolbarEntryId;
   label: string;
+  // Shorter label for text display mode, when the full label would stretch
+  // the toolbar (e.g. "TradingView Widget" → "TV Widget").
+  shortLabel?: string;
   icon: keyof typeof TB_ICONS;
   source?: ToolbarSourceId;
   onClick?: () => void;
@@ -85,8 +88,8 @@ export class CanvasToolbar {
     const sources = this.plugin.pluginSettings.toolbarSources;
     for (const def of this.entryDefs()) {
       if (def.source && !(sources[def.source] ?? true)) continue;
-      if (def.menu) this.createMenuButton(def.icon, def.label, def.menu);
-      else if (def.onClick) this.createButton(def.icon, def.label, def.onClick);
+      if (def.menu) this.createMenuButton(def.icon, def.label, def.menu, def.shortLabel);
+      else if (def.onClick) this.createButton(def.icon, def.label, def.onClick, def.shortLabel);
     }
 
     this.createButton("refresh", "全部刷新", () => void this.refreshAll());
@@ -117,6 +120,7 @@ export class CanvasToolbar {
       tradingview: {
         id: "tradingview",
         label: "TradingView Widget",
+        shortLabel: "TV Widget",
         icon: "tradingview",
         source: "tradingview",
         onClick: () => this.insertWidget(),
@@ -128,6 +132,12 @@ export class CanvasToolbar {
         menu: [
           { text: "日历", icon: "calendar-days", onClick: () => this.insertCalendar() },
         ],
+      },
+      "ai-chat": {
+        id: "ai-chat",
+        label: "AI 助手",
+        icon: "ai-chat",
+        onClick: () => void this.plugin.openAiChat(),
       },
     };
     return this.plugin.pluginSettings.toolbarOrder.map((id) => defs[id]);
@@ -220,10 +230,10 @@ export class CanvasToolbar {
   // Buttons render as a bare icon (tooltip carries the name) or a text label,
   // per the 显示效果 setting. Icons are inline Tabler SVGs from TB_ICONS.
   // label arrives as a Chinese i18n key and is translated here.
-  private createButton(icon: keyof typeof TB_ICONS, label: string, onClick: () => void) {
+  private createButton(icon: keyof typeof TB_ICONS, label: string, onClick: () => void, shortLabel?: string) {
     const btn = this.toolbarEl!.createEl("button");
     if (this.plugin.pluginSettings.toolbarStyle === "text") {
-      btn.setText(t(label));
+      btn.setText(t(shortLabel ?? label));
       btn.addClass("fc-tb-text-btn");
     } else {
       appendSvg(btn, TB_ICONS[icon]);
@@ -232,10 +242,10 @@ export class CanvasToolbar {
     btn.addEventListener("click", onClick);
   }
 
-  private createMenuButton(icon: keyof typeof TB_ICONS, label: string, items: ToolbarMenuItem[]) {
+  private createMenuButton(icon: keyof typeof TB_ICONS, label: string, items: ToolbarMenuItem[], shortLabel?: string) {
     const btn = this.toolbarEl!.createEl("button");
     if (this.plugin.pluginSettings.toolbarStyle === "text") {
-      btn.setText(t(label));
+      btn.setText(t(shortLabel ?? label));
       btn.addClass("fc-tb-text-btn");
     } else {
       appendSvg(btn, TB_ICONS[icon]);

@@ -7,6 +7,7 @@ import {
   type ChartTheme,
   type ChartType,
   type CustomSourceDef,
+  type DisplayOverrides,
   type FredCardSpec,
   type FredTransform,
   type Freq,
@@ -29,13 +30,15 @@ import {
 import { MA_COLORS } from "../modules/chart-renderer";
 import type { OpenFredPicker } from "./series-ref-editor";
 import { addStepper } from "./stepper";
+import { renderDisplayOverrideSettings } from "./display-overrides";
 import { t } from "../i18n";
 
 // Unified asset-card editor (wireframe #screen-unified): one modal for
 // tushare, FRED and macro data cards. Top-level tabs: 数据源 (source
 // selector) + the current source's form pages — the tushare form is split
-// into 基础设置 / 显示设置 / 均线系统, the FRED and macro forms share a single
-// 基础设置 page. Tushare quote and macro cards both count as the "Tushare"
+// into 基础设置 / 显示设置 / 均线系统, the FRED and macro forms get 基础设置
+// plus a 显示设置 page carrying only the per-card 图表显示（覆盖全局） group.
+// Tushare quote and macro cards both count as the "Tushare"
 // source (no separate 宏观 entry). Saving with a source different from the
 // card's own converts the card's code block to the other type (handled by
 // the onSubmit caller).
@@ -216,6 +219,9 @@ export class UnifiedCardEditModal extends Modal {
   private macroPeriod: SeriesPeriod;
   private macroHeight: string;
 
+  // Per-card 图表显示 overrides (undefined = follow the plugin-wide 显示设置).
+  private displayOverrides: DisplayOverrides;
+
   // Cross-page linkage: 高度 (basic) greys out while 高度自适应 (display) is on.
   private heightText: TextComponent | null = null;
   private activeTab: TopTab = "basic";
@@ -276,6 +282,19 @@ export class UnifiedCardEditModal extends Modal {
     this.macroPeriod = mc?.period ?? "D";
     this.macroHeight = mc?.height ? String(mc.height) : "";
 
+    // Init from the spec of whichever source the card currently is; absent
+    // fields stay undefined (= 跟随全局).
+    const displaySpec: DisplayOverrides | undefined = options.tushareSpec ?? options.fredSpec ?? options.macroSpec;
+    this.displayOverrides = {
+      showLegend: displaySpec?.showLegend,
+      legendFrosted: displaySpec?.legendFrosted,
+      legendOpacity: displaySpec?.legendOpacity,
+      showLatestValue: displaySpec?.showLatestValue,
+      showPointMarkers: displaySpec?.showPointMarkers,
+      showGrid: displaySpec?.showGrid,
+      gridOpacity: displaySpec?.gridOpacity,
+    };
+
     this.setTitle(t("编辑数据卡"));
   }
 
@@ -294,13 +313,15 @@ export class UnifiedCardEditModal extends Modal {
     this.maPreviewChipsEl = null;
 
     // Top-level tabs: 数据源 (source selector) + the current source's form
-    // pages (tushare gets three, FRED/macro a single 基础设置 page).
+    // pages (tushare gets 基础设置/显示设置/均线系统, FRED/macro 基础设置 plus a
+    // 显示设置 page for the per-card display overrides).
     const tabs: { id: TopTab; label: string }[] = [
       { id: "source", label: "数据源" },
       { id: "basic", label: "基础设置" },
+      { id: "display", label: "显示设置" },
     ];
     if (this.source === "tushare") {
-      tabs.push({ id: "display", label: "显示设置" }, { id: "ma", label: "均线系统" });
+      tabs.push({ id: "ma", label: "均线系统" });
     }
     if (!tabs.some((tab) => tab.id === this.activeTab)) this.activeTab = "basic";
 
@@ -333,8 +354,10 @@ export class UnifiedCardEditModal extends Modal {
       this.renderMaPage(pages.get("ma")!);
     } else if (this.source === "fred") {
       this.renderFredForm(pages.get("basic")!);
+      renderDisplayOverrideSettings(pages.get("display")!, this.displayOverrides, { series: true });
     } else {
       this.renderMacroForm(pages.get("basic")!);
+      renderDisplayOverrideSettings(pages.get("display")!, this.displayOverrides, { series: true });
     }
 
     const footer = contentEl.createDiv("fc-modal-footer");
@@ -711,12 +734,16 @@ export class UnifiedCardEditModal extends Modal {
       max: MAX_CARD_BLEED,
       unit: "px",
     });
+
+    // Per-card overrides of the plugin-wide 显示设置 (tushare K-line cards
+    // have no latest-value/point-marker options, hence series: false).
+    renderDisplayOverrideSettings(pageEl, this.displayOverrides, { series: false });
   }
 
   private renderMaPage(pageEl: HTMLElement) {
     new Setting(pageEl)
       .setName(t("均线"))
-      .setDesc(t("均线周期（逗号分隔，最多 8 条）。留空使用默认值 5,10,20,60。"))
+      .setDesc(t("均线周期以交易日为单位（逗号分隔，最多 8 条）；周线/月线上自动按日线收盘计算并贴合到每根 K 线。留空使用默认值 5,10,20,60。"))
       .addText((text) =>
         text
           .setPlaceholder("5,10,20,60")
@@ -987,6 +1014,8 @@ export class UnifiedCardEditModal extends Modal {
       widthAuto: this.widthAuto ? undefined : false,
       heightAuto: this.heightAuto ? undefined : false,
       bleed: this.bleed === DEFAULT_CARD_BLEED ? undefined : this.bleed,
+      // 图表显示 overrides: undefined fields are dropped by the serializer.
+      ...this.displayOverrides,
     };
   }
 
@@ -1015,6 +1044,8 @@ export class UnifiedCardEditModal extends Modal {
       range: this.fredRange,
       period: this.fredPeriod,
       ...(height !== undefined ? { height } : {}),
+      // 图表显示 overrides: undefined fields are dropped by the serializer.
+      ...this.displayOverrides,
     };
   }
 
@@ -1040,6 +1071,8 @@ export class UnifiedCardEditModal extends Modal {
       range: this.macroRange,
       period: this.macroPeriod,
       ...(height !== undefined ? { height } : {}),
+      // 图表显示 overrides: undefined fields are dropped by the serializer.
+      ...this.displayOverrides,
     };
   }
 }

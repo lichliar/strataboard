@@ -5,9 +5,11 @@ import {
   MACRO_SERIES_OPTIONS,
   type AssetType,
   type ChartTheme,
+  type DisplayOverrides,
   type FredCardSpec,
   type FredTransform,
   type MacroCardSpec,
+  type OverlayCompareMode,
   type OverlaySpec,
   type SeriesPeriod,
   type SeriesRef,
@@ -63,6 +65,11 @@ export const DEFAULT_SPREAD_SPEC: SpreadSpec = {
   range: "10y",
 };
 
+// Overlay cards overlay up to this many series on one chart; the line
+// palette (SERIES_LINE_COLORS) must stay at least this long so every series
+// gets a distinct color.
+export const MAX_OVERLAY_SERIES = 10;
+
 export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlaySpec> {
   const map = parseYamlMap(source);
   if (typeof map === "string") return { error: map };
@@ -70,9 +77,12 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
   if (!Array.isArray(map.series) || map.series.length === 0) {
     return { error: t("缺少必填字段 series（至少需要一个数据系列）。") };
   }
+  if (map.series.length > MAX_OVERLAY_SERIES) {
+    return { error: t("叠加卡最多支持 {max} 个数据系列。", { max: MAX_OVERLAY_SERIES }) };
+  }
   const series: SeriesRef[] = [];
   for (let i = 0; i < map.series.length; i++) {
-    const ref = parseSeriesRef(map.series[i], `series[${i}]`);
+    const ref = parseSeriesRef(map.series[i], `series[${i}]`, true);
     if (typeof ref === "string") return { error: ref };
     series.push(ref);
   }
@@ -87,7 +97,7 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
   const viewEnd = parseViewDate(map.viewEnd, "viewEnd");
   if (viewEnd !== undefined && typeof viewEnd !== "string") return viewEnd;
   const normalize = parseNormalize(map.normalize);
-  if (typeof normalize !== "boolean") return normalize;
+  if (typeof normalize !== "string") return normalize;
   const theme = parseTheme(map.theme);
   if (typeof theme === "object") return theme;
   const widthAuto = parseAutoFlag(map.widthAuto, "widthAuto");
@@ -96,6 +106,8 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
   if (typeof heightAuto !== "boolean" && heightAuto !== undefined) return heightAuto;
   const bleed = parseBleed(map.bleed);
   if (typeof bleed !== "number" && bleed !== undefined) return bleed;
+  const display = parseDisplayOverrides(map);
+  if ("error" in display) return display;
 
   return {
     spec: {
@@ -108,6 +120,7 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
       ...(widthAuto !== undefined ? { widthAuto } : {}),
       ...(heightAuto !== undefined ? { heightAuto } : {}),
       ...(bleed !== undefined ? { bleed } : {}),
+      ...display,
       ...(viewStart ? { viewStart } : {}),
       ...(viewEnd ? { viewEnd } : {}),
     },
@@ -172,6 +185,8 @@ export function parseSpreadSpec(source: string): SeriesSpecParseResult<SpreadSpe
   if (typeof heightAuto !== "boolean" && heightAuto !== undefined) return heightAuto;
   const bleed = parseBleed(map.bleed);
   if (typeof bleed !== "number" && bleed !== undefined) return bleed;
+  const display = parseDisplayOverrides(map);
+  if ("error" in display) return display;
 
   return {
     spec: {
@@ -186,6 +201,7 @@ export function parseSpreadSpec(source: string): SeriesSpecParseResult<SpreadSpe
       ...(widthAuto !== undefined ? { widthAuto } : {}),
       ...(heightAuto !== undefined ? { heightAuto } : {}),
       ...(bleed !== undefined ? { bleed } : {}),
+      ...display,
       ...(viewStart ? { viewStart } : {}),
       ...(viewEnd ? { viewEnd } : {}),
     },
@@ -197,12 +213,13 @@ export function stringifyOverlaySpec(spec: OverlaySpec): string {
     series: spec.series,
     range: spec.range,
     ...(spec.period && spec.period !== "D" ? { period: spec.period } : {}),
-    ...(spec.normalize === false ? { normalize: false } : {}),
+    ...(spec.normalize && spec.normalize !== "percent" ? { normalize: spec.normalize } : {}),
     ...(spec.height ? { height: spec.height } : {}),
     ...(spec.theme && spec.theme !== "auto" ? { theme: spec.theme } : {}),
     ...(spec.widthAuto === false ? { widthAuto: false } : {}),
     ...(spec.heightAuto === false ? { heightAuto: false } : {}),
     ...(spec.bleed != null && spec.bleed !== 8 ? { bleed: spec.bleed } : {}),
+    ...displayOverridesYaml(spec),
     ...(spec.viewStart ? { viewStart: spec.viewStart } : {}),
     ...(spec.viewEnd ? { viewEnd: spec.viewEnd } : {}),
   }).trimEnd();
@@ -221,6 +238,7 @@ export function stringifySpreadSpec(spec: SpreadSpec): string {
     ...(spec.widthAuto === false ? { widthAuto: false } : {}),
     ...(spec.heightAuto === false ? { heightAuto: false } : {}),
     ...(spec.bleed != null && spec.bleed !== 8 ? { bleed: spec.bleed } : {}),
+    ...displayOverridesYaml(spec),
     ...(spec.viewStart ? { viewStart: spec.viewStart } : {}),
     ...(spec.viewEnd ? { viewEnd: spec.viewEnd } : {}),
   }).trimEnd();
@@ -249,6 +267,8 @@ export function parseFredCardSpec(source: string): SeriesSpecParseResult<FredCar
   if (viewStart !== undefined && typeof viewStart !== "string") return viewStart;
   const viewEnd = parseViewDate(map.viewEnd, "viewEnd");
   if (viewEnd !== undefined && typeof viewEnd !== "string") return viewEnd;
+  const display = parseDisplayOverrides(map);
+  if ("error" in display) return display;
 
   return {
     spec: {
@@ -260,6 +280,7 @@ export function parseFredCardSpec(source: string): SeriesSpecParseResult<FredCar
       range,
       period,
       ...(height !== undefined ? { height } : {}),
+      ...display,
       ...(viewStart ? { viewStart } : {}),
       ...(viewEnd ? { viewEnd } : {}),
     },
@@ -276,6 +297,7 @@ export function stringifyFredCardSpec(spec: FredCardSpec): string {
     range: spec.range,
     ...(spec.period && spec.period !== "D" ? { period: spec.period } : {}),
     ...(spec.height ? { height: spec.height } : {}),
+    ...displayOverridesYaml(spec),
     ...(spec.viewStart ? { viewStart: spec.viewStart } : {}),
     ...(spec.viewEnd ? { viewEnd: spec.viewEnd } : {}),
   }).trimEnd();
@@ -299,6 +321,8 @@ export function parseMacroCardSpec(source: string): SeriesSpecParseResult<MacroC
   if (viewStart !== undefined && typeof viewStart !== "string") return viewStart;
   const viewEnd = parseViewDate(map.viewEnd, "viewEnd");
   if (viewEnd !== undefined && typeof viewEnd !== "string") return viewEnd;
+  const display = parseDisplayOverrides(map);
+  if ("error" in display) return display;
 
   return {
     spec: {
@@ -306,6 +330,7 @@ export function parseMacroCardSpec(source: string): SeriesSpecParseResult<MacroC
       range,
       period,
       ...(height !== undefined ? { height } : {}),
+      ...display,
       ...(viewStart ? { viewStart } : {}),
       ...(viewEnd ? { viewEnd } : {}),
     },
@@ -318,6 +343,7 @@ export function stringifyMacroCardSpec(spec: MacroCardSpec): string {
     range: spec.range,
     ...(spec.period && spec.period !== "D" ? { period: spec.period } : {}),
     ...(spec.height ? { height: spec.height } : {}),
+    ...displayOverridesYaml(spec),
     ...(spec.viewStart ? { viewStart: spec.viewStart } : {}),
     ...(spec.viewEnd ? { viewEnd: spec.viewEnd } : {}),
   }).trimEnd();
@@ -338,11 +364,26 @@ function parseYamlMap(source: string): Record<string, unknown> | string {
 }
 
 // Validates one series entry; returns the SeriesRef or an error message.
-function parseSeriesRef(raw: unknown, path: string): SeriesRef | string {
+// `scale` is an overlay-only field — spread cards reject it.
+function parseSeriesRef(raw: unknown, path: string, allowScale = false): SeriesRef | string {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     return t("{path} 必须是一个 YAML 对象。", { path });
   }
   const map = raw as Record<string, unknown>;
+
+  let scaleValue: number | undefined;
+  if (map.scale !== undefined && map.scale !== null) {
+    if (!allowScale) {
+      return t("{path} 不支持 scale 字段（缩放系数仅资产叠加卡可用）。", { path });
+    }
+    const scale = Number(map.scale);
+    if (!Number.isFinite(scale) || scale === 0) {
+      return t("{path} 的 scale 无效：{value}（应为非零数字）。", { path, value: String(map.scale) });
+    }
+    if (scale !== 1) {
+      scaleValue = scale;
+    }
+  }
 
   const source = String(map.source ?? "").trim() as SeriesSource;
   if (!VALID_SOURCES.includes(source)) {
@@ -359,14 +400,17 @@ function parseSeriesRef(raw: unknown, path: string): SeriesRef | string {
     ref.cardPath = cardPath;
   } else if (source === "quote") {
     const tsCode = String(map.tsCode ?? "").trim();
-    // Global-index ts_codes are bare (HSI, XIN9) — the ".XX" suffix is not
-    // required.
-    if (!/^\w+(\.\w+)?$/.test(tsCode)) {
-      return t("{path} 缺少有效的 tsCode（如 600519.SH、HSI）。", { path });
-    }
     const assetType = String(map.assetType ?? "").trim() as AssetType;
     if (!VALID_ASSET_TYPES.includes(assetType)) {
       return t("{path} 的 assetType 无效：{value}（应为 {valid}）。", { path, value: String(map.assetType), valid: VALID_ASSET_TYPES.join(" | ") });
+    }
+    // Tushare codes follow the ts_code shape (global-index ts_codes are bare
+    // — HSI, XIN9 — so the ".XX" suffix is not required). Custom-source codes
+    // are free-form: composite "URL部分@映射部分" report codes, endpoint-
+    // specific ids — non-empty is the only requirement.
+    const codeValid = assetType === "custom" ? tsCode.length > 0 : /^\w+(\.\w+)?$/.test(tsCode);
+    if (!codeValid) {
+      return t("{path} 缺少有效的 tsCode（如 600519.SH、HSI）。", { path });
     }
     ref.tsCode = tsCode;
     ref.assetType = assetType;
@@ -408,6 +452,9 @@ function parseSeriesRef(raw: unknown, path: string): SeriesRef | string {
   if (label) {
     ref.label = label;
   }
+  if (scaleValue !== undefined) {
+    ref.scale = scaleValue;
+  }
 
   return ref;
 }
@@ -437,13 +484,17 @@ function parseViewDate(raw: unknown, key: string): string | undefined | { error:
   return value;
 }
 
-// Overlay-only: quote lines normalize to % change by default (true).
-function parseNormalize(raw: unknown): boolean | { error: string } {
-  if (raw === undefined || raw === null) return true;
-  if (typeof raw !== "boolean") {
-    return { error: t("无效的 normalize：{value}（应为 true 或 false）。", { value: String(raw) }) };
+// Overlay-only: how the card puts its series on a comparable footing
+// (default "percent" — quote lines as % change from the first point).
+const VALID_COMPARE_MODES: OverlayCompareMode[] = ["percent", "zscore", "axis", "none"];
+
+function parseNormalize(raw: unknown): OverlayCompareMode | { error: string } {
+  if (raw === undefined || raw === null) return "percent";
+  const value = String(raw).trim() as OverlayCompareMode;
+  if (!VALID_COMPARE_MODES.includes(value)) {
+    return { error: t("无效的 normalize：{value}（应为 {valid}）。", { value: String(raw), valid: VALID_COMPARE_MODES.join(" | ") }) };
   }
-  return raw;
+  return value;
 }
 
 function parseHeight(raw: unknown): number | undefined | { error: string } {
@@ -500,4 +551,56 @@ function parseBleed(raw: unknown): number | undefined | { error: string } {
     return { error: t("无效的 bleed：{value}（应为 0–{max}，单位 px）。", { value: String(raw), max: MAX_CARD_BLEED }) };
   }
   return Math.round(bleed);
+}
+
+// Opacity overrides are percents, clamped to 0–100.
+function parseOpacity(raw: unknown, key: string): number | undefined | { error: string } {
+  if (raw === undefined || raw === null) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return { error: t("无效的 {key}：{value}（应为 0–100 的数字）。", { key, value: String(raw) }) };
+  }
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+// Per-card display overrides (see DisplayOverrides in types.ts). Every field
+// is optional — absent means the card follows the plugin-wide 显示设置.
+function parseDisplayOverrides(map: Record<string, unknown>): DisplayOverrides | { error: string } {
+  const showLegend = parseAutoFlag(map.showLegend, "showLegend");
+  if (typeof showLegend !== "boolean" && showLegend !== undefined) return showLegend;
+  const legendFrosted = parseAutoFlag(map.legendFrosted, "legendFrosted");
+  if (typeof legendFrosted !== "boolean" && legendFrosted !== undefined) return legendFrosted;
+  const legendOpacity = parseOpacity(map.legendOpacity, "legendOpacity");
+  if (typeof legendOpacity !== "number" && legendOpacity !== undefined) return legendOpacity;
+  const showLatestValue = parseAutoFlag(map.showLatestValue, "showLatestValue");
+  if (typeof showLatestValue !== "boolean" && showLatestValue !== undefined) return showLatestValue;
+  const showPointMarkers = parseAutoFlag(map.showPointMarkers, "showPointMarkers");
+  if (typeof showPointMarkers !== "boolean" && showPointMarkers !== undefined) return showPointMarkers;
+  const showGrid = parseAutoFlag(map.showGrid, "showGrid");
+  if (typeof showGrid !== "boolean" && showGrid !== undefined) return showGrid;
+  const gridOpacity = parseOpacity(map.gridOpacity, "gridOpacity");
+  if (typeof gridOpacity !== "number" && gridOpacity !== undefined) return gridOpacity;
+
+  return {
+    ...(showLegend !== undefined ? { showLegend } : {}),
+    ...(legendFrosted !== undefined ? { legendFrosted } : {}),
+    ...(legendOpacity !== undefined ? { legendOpacity } : {}),
+    ...(showLatestValue !== undefined ? { showLatestValue } : {}),
+    ...(showPointMarkers !== undefined ? { showPointMarkers } : {}),
+    ...(showGrid !== undefined ? { showGrid } : {}),
+    ...(gridOpacity !== undefined ? { gridOpacity } : {}),
+  };
+}
+
+// YAML fragment for the overrides that are set (undefined = follow 全局).
+function displayOverridesYaml(spec: DisplayOverrides): DisplayOverrides {
+  return {
+    ...(spec.showLegend !== undefined ? { showLegend: spec.showLegend } : {}),
+    ...(spec.legendFrosted !== undefined ? { legendFrosted: spec.legendFrosted } : {}),
+    ...(spec.legendOpacity !== undefined ? { legendOpacity: spec.legendOpacity } : {}),
+    ...(spec.showLatestValue !== undefined ? { showLatestValue: spec.showLatestValue } : {}),
+    ...(spec.showPointMarkers !== undefined ? { showPointMarkers: spec.showPointMarkers } : {}),
+    ...(spec.showGrid !== undefined ? { showGrid: spec.showGrid } : {}),
+    ...(spec.gridOpacity !== undefined ? { gridOpacity: spec.gridOpacity } : {}),
+  };
 }

@@ -8,6 +8,8 @@ import {
   parseTencentKline,
   parseTencentSearch,
   pickRowColumn,
+  resolveMapCode,
+  splitCompositeCode,
 } from "./quote-format-parsers";
 import { formatDate } from "../utils/date";
 import { t } from "../i18n";
@@ -99,14 +101,16 @@ export class CustomQuoteClient {
   }
 
   // Generic JSON format: single GET, rows dug out at jsonMap.rowsPath and
-  // mapped by column index (rowKind "array") or field name ("object").
+  // mapped by column index (rowKind "array") or field name ("object"); a
+  // {code} placeholder in the mapping resolves to the requested code first.
   private async fetchJsonKline(code: string, start: string, end: string): Promise<OhlcvRow[]> {
-    const map = this.def.jsonMap;
+    const { urlCode, mapCode } = splitCompositeCode(code);
+    const map = this.def.jsonMap ? resolveMapCode(this.def.jsonMap, mapCode) : undefined;
     if (!map) {
       throw new Error(t("自定义数据源「{name}」缺少 JSON 字段映射配置。", { name: this.def.name }));
     }
     const url = fillTemplate(this.def.klineUrl, {
-      code: encodeURIComponent(code),
+      code: encodeURIComponent(urlCode),
       start,
       end,
       startIso: isoDate(start),
@@ -142,12 +146,14 @@ export class CustomQuoteClient {
 
 // Raw kline probe for the setup wizard: fetches the URL with the sample code
 // and a recent range, returning the payload for format detection / preview.
+// The ~400-day window also covers low-frequency series (quarterly/annual
+// readings), so verification doesn't false-fail on an empty recent window.
 // Throws the request error on failure.
 export async function fetchKlineSample(def: CustomSourceDef, code: string): Promise<{ json: any; text: string }> {
   const end = formatDate(new Date());
-  const start = formatDate(new Date(Date.now() - 120 * 86400000));
+  const start = formatDate(new Date(Date.now() - 400 * 86400000));
   const url = fillTemplate(def.klineUrl, {
-    code: encodeURIComponent(code),
+    code: encodeURIComponent(splitCompositeCode(code).urlCode),
     start,
     end,
     startIso: isoDate(start),

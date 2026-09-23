@@ -1,4 +1,4 @@
-import { MarkdownRenderChild, setIcon, setTooltip } from "obsidian";
+import { MarkdownRenderChild, Notice, setIcon, setTooltip } from "obsidian";
 import {
   createChart,
   CandlestickSeries,
@@ -6,6 +6,7 @@ import {
   LineSeries,
   LineStyle,
   PriceScaleMode,
+  TickMarkType,
   type BusinessDay,
   type IChartApi,
   type IPaneApi,
@@ -16,6 +17,7 @@ import {
   type Time,
 } from "lightweight-charts";
 import type { MarketData, OhlcvRow, ParsedCardSpec, SymbolItem } from "../types";
+import { ChartSizeGuard } from "./chart-size-guard";
 import { resolveEffectiveTheme, onAttached, toLayoutPoint, installZoomEventFix } from "../utils/dom";
 import { parseDateYmd, formatDate } from "../utils/date";
 import { t, getLanguage } from "../i18n";
@@ -32,6 +34,19 @@ interface ChartRendererOptions {
   // 宽度自适应 off (canvas only): freeze the chart width at first layout so
   // the chart stops following canvas node width changes.
   freezeWidth?: boolean;
+  // Daily rows used as the MA basis on W/M charts: MA periods always mean N
+  // trading days, so a weekly/monthly card computes the rolling mean on daily
+  // closes and fits it to each displayed bar. Null/undefined = compute on the
+  // displayed frequency (daily charts, or the fallback when the daily load
+  // failed).
+  maBaseData?: OhlcvRow[] | null;
+  // Global 显示设置 (applied at render time); opacity values are percents
+  // (0-100), gated by their companion toggle at render time.
+  showLegend: boolean;
+  legendFrosted: boolean;
+  legendOpacity: number;
+  showGrid: boolean;
+  gridOpacity: number;
   loadMarketData?: (tradeDate: string) => Promise<MarketData | null>;
   onRefresh?: () => void;
   onSwitchFreq?: (freq: "D" | "W" | "M") => void;
@@ -121,7 +136,7 @@ export class ChartRenderer extends MarkdownRenderChild {
   private options: ChartRendererOptions;
   private chart: IChartApi | null = null;
   private chartContainerEl: HTMLElement | null = null;
-  private resizeObserver: ResizeObserver | null = null;
+  private sizeGuard: ChartSizeGuard | null = null;
   private uninstallZoomFix: (() => void) | null = null;
   private initialVisibleRange: { from: Time; to: Time } | null = null;
 
@@ -131,6 +146,7 @@ export class ChartRenderer extends MarkdownRenderChild {
   private chartStackEl: HTMLElement | null = null;
   private priceSeries: ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null = null;
   private legendRefs: LegendRefs | null = null;
+  private legendEl: HTMLElement | null = null;
   private maSeriesData: MaSeriesData[] = [];
   private dataIndexByTime = new Map<string, number>();
 
@@ -178,7 +194,13 @@ export class ChartRenderer extends MarkdownRenderChild {
       cls: "strataboard-chart-container",
     });
 
-    this.chart = createChart(this.chartContainerEl, buildChartOptions(isDark));
+    this.chart = createChart(this.chartContainerEl, {
+      ...buildChartOptions(isDark, this.options.showGrid, this.options.gridOpacity),
+      // Seed the size from the container's current layout size (0x0 while
+      // still detached — the ChartSizeGuard fixes it on attach).
+      width: this.chartContainerEl.clientWidth,
+      height: this.chartContainerEl.clientHeight,
+    });
     // Zoom-correct mouse coordinates before the library sees them (Obsidian
     // canvas scales node content with a CSS transform).
     this.uninstallZoomFix = installZoomEventFix(this.chartContainerEl);
@@ -196,7 +218,9 @@ export class ChartRenderer extends MarkdownRenderChild {
     }
     this.applyPaneRatios();
     this.addLatestPriceLine(data);
-    this.addLegend(data);
+    if (this.options.showLegend) {
+      this.addLegend(data);
+    }
 
     if (spec.visibleStart && spec.visibleEnd) {
       // Persisted chart-mode zoom/pan range takes precedence over the 可见范围
@@ -213,7 +237,7 @@ export class ChartRenderer extends MarkdownRenderChild {
       this.applyVisibleRangePreset(data);
     }
 
-    this.setupResizeObserver();
+    this.setupSizeGuard();
 
     // Footer (wireframe #screen-card): freq tabs + SVG tool buttons.
     this.addFooter();
@@ -226,8 +250,8 @@ export class ChartRenderer extends MarkdownRenderChild {
   }
 
   private cleanup() {
-    this.resizeObserver?.disconnect();
-    this.resizeObserver = null;
+    this.sizeGuard?.destroy();
+    this.sizeGuard = null;
     this.uninstallZoomFix?.();
     this.uninstallZoomFix = null;
     this.chart?.remove();
@@ -239,6 +263,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     this.chartStackEl = null;
     this.priceSeries = null;
     this.legendRefs = null;
+    this.legendEl = null;
     this.maSeriesData = [];
     this.dataIndexByTime.clear();
   }
@@ -347,6 +372,28 @@ export class ChartRenderer extends MarkdownRenderChild {
     }
   }
 
+  // Header text for PNG exports (name + code + latest quote, rise/fall
+  // colored) — mirrors the DOM header, so the exported image identifies the
+  // card even when the on-screen header is hidden (显示标题栏 off).
+  private buildExportHeader(): ChartPngHeader {
+    const symbol = this.options.symbolInfo;
+    const data = this.options.data;
+    const latest = data[data.length - 1];
+    const prev = data.length > 1 ? data[data.length - 2] : latest;
+    const change = latest.close - prev.close;
+    const changePct = prev.close !== 0 ? (change / prev.close) * 100 : 0;
+    const color = change >= 0 ? this.options.riseColor : this.options.fallColor;
+    return {
+      title: symbol?.name ?? this.options.spec.symbol,
+      subtitle: symbol?.tsCode ?? this.options.spec.symbol,
+      quote: [
+        { text: formatNumber(latest.close, 2), color },
+        { text: `${change >= 0 ? "+" : ""}${formatNumber(change, 2)}`, color },
+        { text: `${change >= 0 ? "+" : ""}${formatPercent(changePct)}`, color },
+      ],
+    };
+  }
+
   private async loadMarketData(tradeDate: string): Promise<MarketData | null> {
     if (!this.options.loadMarketData) return null;
     try {
@@ -390,6 +437,11 @@ export class ChartRenderer extends MarkdownRenderChild {
       return btn;
     };
     addTool("pencil", t("编辑参数"), () => this.options.onEdit?.());
+    addTool("image", t("导出图片"), () => {
+      if (!this.chart) return;
+      const name = this.options.symbolInfo?.name ?? this.options.spec.symbol;
+      void exportChartPng(this.chart, name, this.buildExportHeader(), this.containerEl);
+    });
     addTool("refresh-cw", t("刷新数据"), () => this.options.onRefresh?.());
     // 删除卡片 removes the canvas node (the card file stays in the library),
     // so it only makes sense inside a canvas — decided once attached.
@@ -457,25 +509,59 @@ export class ChartRenderer extends MarkdownRenderChild {
   private addMovingAverages(paneIndex: number, data: OhlcvRow[]) {
     const periods = this.options.spec.maPeriods ?? DEFAULT_MA_PERIODS;
     this.maSeriesData = [];
+    // MA periods always mean N TRADING DAYS: on W/M charts the rolling mean
+    // is computed on the daily close series (maBaseData) and each displayed
+    // bar takes the MA value at the last daily row with
+    // tradeDate <= bar.tradeDate (bar dates are period-end, see
+    // data-adapter.resample). Daily charts (or a missing/failed daily load)
+    // keep the plain on-displayed-data computation.
+    const base =
+      this.options.spec.freq !== "D" && this.options.maBaseData && this.options.maBaseData.length > 0
+        ? this.options.maBaseData
+        : null;
     periods.forEach((period, i) => {
       const color = MA_COLORS[i % MA_COLORS.length];
       const maData: LineData[] = [];
       const values: (number | null)[] = [];
-      let sum = 0;
-      for (let j = 0; j < data.length; j++) {
-        sum += data[j].close;
-        if (j >= period) {
-          sum -= data[j - period].close;
+      if (base) {
+        const dailyMa: (number | null)[] = new Array<number | null>(base.length).fill(null);
+        let sum = 0;
+        for (let j = 0; j < base.length; j++) {
+          sum += base[j].close;
+          if (j >= period) {
+            sum -= base[j - period].close;
+          }
+          if (j >= period - 1) {
+            dailyMa[j] = sum / period;
+          }
         }
-        if (j >= period - 1) {
-          const value = sum / period;
-          maData.push({
-            time: toChartTime(data[j].tradeDate),
-            value,
-          });
+        for (let j = 0; j < data.length; j++) {
+          const idx = floorIndex(base, data[j].tradeDate, (row) => row.tradeDate);
+          const value = idx >= 0 ? dailyMa[idx] : null;
+          // values stay aligned to the displayed bar index so the crosshair
+          // legend logic is unchanged.
           values.push(value);
-        } else {
-          values.push(null);
+          if (value != null) {
+            maData.push({ time: toChartTime(data[j].tradeDate), value });
+          }
+        }
+      } else {
+        let sum = 0;
+        for (let j = 0; j < data.length; j++) {
+          sum += data[j].close;
+          if (j >= period) {
+            sum -= data[j - period].close;
+          }
+          if (j >= period - 1) {
+            const value = sum / period;
+            maData.push({
+              time: toChartTime(data[j].tradeDate),
+              value,
+            });
+            values.push(value);
+          } else {
+            values.push(null);
+          }
         }
       }
       this.maSeriesData.push({ period, color, values });
@@ -557,6 +643,12 @@ export class ChartRenderer extends MarkdownRenderChild {
     const legendEl = this.chartContainerEl!.createEl("div", {
       cls: "strataboard-chart-legend",
     });
+    this.legendEl = legendEl;
+    legendEl.style.setProperty("--fc-legend-opacity", String(this.options.legendOpacity));
+    // 图例半透明背景 off: plain text over the chart, no blurred chip.
+    if (!this.options.legendFrosted) {
+      legendEl.addClass("strataboard-chart-legend-plain");
+    }
     const isCandle = this.options.chartType !== "line";
 
     const dateEl = legendEl.createEl("span", { cls: "strataboard-chart-legend-date" });
@@ -598,6 +690,23 @@ export class ChartRenderer extends MarkdownRenderChild {
       }
       this.updateLegend(index);
     });
+
+    this.updateLegendClearance();
+  }
+
+  // The crosshair legend is an absolute-positioned DOM overlay at the top of
+  // the chart, while the autoscale top margin is only 2% of the pane — the
+  // highest candles/wicks would render underneath the legend and look
+  // clipped. Reserve real headroom for the legend instead. The margin is a
+  // RATIO of the pane height while the legend is fixed pixels (and wraps
+  // with width), so this is recomputed on every chart resize.
+  private updateLegendClearance() {
+    if (!this.chart || !this.legendEl) return;
+    const pane = this.chart.panes()[0];
+    const paneHeight = pane.getHeight();
+    if (paneHeight <= 0) return;
+    const top = Math.min(0.5, Math.max(0.02, (this.legendEl.offsetHeight + 8) / paneHeight));
+    pane.priceScale("right").applyOptions({ scaleMargins: { top, bottom: 0.02 } });
   }
 
   private updateLegend(index: number) {
@@ -743,30 +852,29 @@ export class ChartRenderer extends MarkdownRenderChild {
 
   // ===== Resize / theme =====
 
-  private setupResizeObserver() {
-    if (!this.chartContainerEl) return;
-    this.resizeObserver = new ResizeObserver(() => {
-      window.requestAnimationFrame(() => {
-        if (this.initialVisibleRange) {
-          this.applyTimeRange(this.initialVisibleRange.from, this.initialVisibleRange.to);
-        } else {
-          this.chart?.timeScale().fitContent();
-        }
-        // 宽度自适应 off: pin the stack to the width it first laid out with,
-        // so later canvas node width changes no longer reach the chart
-        // (autoSize tracks the stack, not the node). Canvas-only — in notes
-        // the chart keeps following the container (e.g. window resizes).
-        if (this.options.freezeWidth && this.chartStackEl && findAncestor(this.containerEl, "canvas-node")) {
-          this.chartStackEl.style.width = `${this.chartContainerEl!.clientWidth}px`;
-        }
-        // Re-apply the initial range only once, right after the container
-        // gets its real size. lightweight-charts preserves the visible
-        // logical range across later resizes on its own; re-fitting here
-        // every time would reset the user's zoom/pan.
-        this.resizeObserver?.disconnect();
-      });
-    });
-    this.resizeObserver.observe(this.chartContainerEl);
+  // The guard owns the chart's size (library autoSize is off) and re-applies
+  // the initial visible range once the container gets its real layout size —
+  // the library preserves the visible logical range across later resizes on
+  // its own, so re-fitting here every time would reset the user's zoom/pan.
+  // It also re-applies the range when it detects a stale frame (see
+  // chart-size-guard.ts).
+  private setupSizeGuard() {
+    if (!this.chart || !this.chartContainerEl) return;
+    const containerEl = this.chartContainerEl;
+    this.sizeGuard = new ChartSizeGuard(this.chart, containerEl, () => {
+      if (this.initialVisibleRange) {
+        this.applyTimeRange(this.initialVisibleRange.from, this.initialVisibleRange.to);
+      } else {
+        this.chart?.timeScale().fitContent();
+      }
+      // 宽度自适应 off: pin the stack to the width it first laid out with,
+      // so later canvas node width changes no longer reach the chart.
+      // Canvas-only — in notes the chart keeps following the container
+      // (e.g. window resizes).
+      if (this.options.freezeWidth && this.chartStackEl && findAncestor(this.containerEl, "canvas-node")) {
+        this.chartStackEl.style.width = `${containerEl.clientWidth}px`;
+      }
+    }, () => this.updateLegendClearance());
   }
 }
 
@@ -780,7 +888,9 @@ export const CHART_PALETTE = {
   dark: {
     text: "#d7dbe0",
     muted: "#868e99",
-    grid: "rgba(140, 150, 165, 0.07)",
+    // Grid lines are RGB triplets: the alpha comes from the 网格线透明度
+    // setting (gridOpacity) in buildChartOptions.
+    grid: "140, 150, 165",
     scaleBorder: "#272e38",
     crosshairLine: "rgba(245, 158, 11, 0.45)",
     crosshairLabel: "#f59e0b",
@@ -788,7 +898,7 @@ export const CHART_PALETTE = {
   light: {
     text: "#374151",
     muted: "#6b7280",
-    grid: "rgba(60, 70, 85, 0.08)",
+    grid: "60, 70, 85",
     scaleBorder: "#d1d5db",
     crosshairLine: "rgba(180, 83, 9, 0.4)",
     crosshairLabel: "#d97706",
@@ -796,16 +906,19 @@ export const CHART_PALETTE = {
 };
 
 // Base chart options shared by every lightweight-charts card in the plugin.
-export function buildChartOptions(isDark: boolean) {
+// gridOpacity is the 网格线透明度 percent (0-100); it scales a 0.3 alpha cap,
+// so the default 20 reproduces the old near-invisible grid.
+export function buildChartOptions(isDark: boolean, showGrid: boolean, gridOpacity = 20) {
   const p = isDark ? CHART_PALETTE.dark : CHART_PALETTE.light;
+  const gridColor = `rgba(${p.grid}, ${(gridOpacity / 100) * 0.3})`;
   return {
     layout: {
       background: { color: "transparent" },
       textColor: p.text,
     },
     grid: {
-      vertLines: { color: p.grid, style: LineStyle.Dashed },
-      horzLines: { color: p.grid, style: LineStyle.Dashed },
+      vertLines: { color: gridColor, style: LineStyle.Dashed, visible: showGrid },
+      horzLines: { color: gridColor, style: LineStyle.Dashed, visible: showGrid },
     },
     crosshair: {
       mode: 1,
@@ -816,6 +929,9 @@ export function buildChartOptions(isDark: boolean) {
     rightPriceScale: {
       visible: true,
       borderColor: p.scaleBorder,
+      // No vertical line next to the price axis — cleaner with the fc-hermes
+      // card surface.
+      borderVisible: false,
       autoScale: true,
       scaleMargins: { top: 0.02, bottom: 0.02 },
     },
@@ -832,6 +948,10 @@ export function buildChartOptions(isDark: boolean) {
       borderVisible: true,
       rightOffset: 10,
       minBarSpacing: 4,
+      // Tiered tick labels driven by the library's tick-mark grading
+      // (year/month boundaries get coarser labels), replacing the uniform
+      // yyyy-MM-dd localization format.
+      tickMarkFormatter: formatTickMark,
     },
     localization: {
       locale: "zh-CN",
@@ -840,7 +960,12 @@ export function buildChartOptions(isDark: boolean) {
     handleScale: {
       axisPressedMouseMove: true,
     },
-    autoSize: true,
+    // autoSize is deliberately OFF: ChartSizeGuard drives chart.resize from
+    // the container's layout size (clientWidth/clientHeight). The library's
+    // autoSize measures the initial size via getBoundingClientRect(), which
+    // Obsidian canvas' transform: scale() distorts — charts created while
+    // the canvas is zoomed would freeze at the scaled size.
+    autoSize: false,
   };
 }
 
@@ -876,4 +1001,148 @@ function findAncestor(containerEl: HTMLElement, className: string): HTMLElement 
     el = el.parentElement;
   }
   return el;
+}
+
+// Index of the last item whose key is <= target (-1 when target precedes the
+// first item). Items must be ascending by key; keys are compared
+// lexicographically, which works for both ISO dates and YYYYMMDD. Shared by
+// the MA overlay (daily MA fitted onto W/M bars) and the series chart's
+// crosshair legend.
+export function floorIndex<T>(items: readonly T[], target: string, key: (item: T) => string): number {
+  let lo = 0;
+  let hi = items.length - 1;
+  let ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (key(items[mid]) <= target) {
+      ans = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return ans;
+}
+
+// Time-axis tick labels: year boundary → 2024年, month boundary → 3月,
+// otherwise the day of month (5日).
+function formatTickMark(time: Time, tickMarkType: TickMarkType): string {
+  const ymd = timeToYmd(time);
+  const year = ymd.slice(0, 4);
+  const month = Number(ymd.slice(5, 7));
+  const day = Number(ymd.slice(8, 10));
+  if (tickMarkType === TickMarkType.Year) return `${year}年`;
+  if (tickMarkType === TickMarkType.Month) return `${month}月`;
+  return `${day}日`;
+}
+
+// Text header composited above the chart in PNG exports so the image
+// identifies what it shows (name/code + latest quote, or the overlay/spread
+// title + subtitle).
+export interface ChartPngHeader {
+  title: string;
+  subtitle?: string;
+  quote?: { text: string; color?: string }[];
+}
+
+// Exports the chart canvas as a PNG: prefers copying to the clipboard
+// (Notice on success), falls back to a <a download> file save when the
+// clipboard API rejects (permissions, non-image MIME support). When `header`
+// is given, a text header strip is composited above the chart screenshot;
+// `surfaceEl` (the card container) supplies the background color and font so
+// the export matches the card's theme.
+export async function exportChartPng(chart: IChartApi, name: string, header?: ChartPngHeader, surfaceEl?: HTMLElement) {
+  let canvas = chart.takeScreenshot();
+  if (surfaceEl) {
+    canvas = composePng(chart, canvas, surfaceEl, header);
+  }
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) {
+    new Notice(t("导出图片失败。"));
+    return;
+  }
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    new Notice(t("图表已复制到剪贴板"));
+    return;
+  } catch {
+    // Clipboard unavailable: fall through to a file download.
+  }
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${name}-${formatDate(new Date())}.png`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+  new Notice(t("图表已保存为 PNG 图片"));
+}
+
+// Paints the chart screenshot onto an opaque card-colored canvas with a text
+// header strip on top (title / subtitle / quote segments). The screenshot is
+// a bitmap at CSS-size × devicePixelRatio, so the header is drawn at the same
+// ratio to keep text as crisp as the chart.
+function composePng(chart: IChartApi, shot: HTMLCanvasElement, surfaceEl: HTMLElement, header?: ChartPngHeader): HTMLCanvasElement {
+  const cssWidth = chart.chartElement().clientWidth;
+  const dpr = cssWidth > 0 ? shot.width / cssWidth : window.devicePixelRatio || 1;
+  const isDark = surfaceEl.classList.contains("fc-hermes");
+  const palette = isDark ? CHART_PALETTE.dark : CHART_PALETTE.light;
+  const style = getComputedStyle(surfaceEl);
+  const fontFamily = style.fontFamily || "sans-serif";
+  const hasHeader = !!header && !!header.title;
+
+  const padX = 16;
+  const padTop = 12;
+  const titleSize = 15;
+  const subSize = 11;
+  const quoteSize = 14;
+  const lineGap = 4;
+  const padBottom = 10;
+
+  let headerHeight = 0;
+  if (hasHeader) {
+    headerHeight = padTop + titleSize;
+    if (header!.subtitle) headerHeight += lineGap + subSize;
+    if (header!.quote && header!.quote.length > 0) headerHeight += lineGap + quoteSize;
+    headerHeight += padBottom;
+  }
+
+  const out = document.createElement("canvas");
+  out.width = shot.width;
+  out.height = Math.round(headerHeight * dpr) + shot.height;
+  const ctx = out.getContext("2d");
+  if (!ctx) return shot;
+
+  // The screenshot itself is transparent (buildChartOptions sets a
+  // transparent layout background), so fill the card surface color first.
+  const bg = style.backgroundColor;
+  ctx.fillStyle = bg && bg !== "transparent" && bg !== "rgba(0, 0, 0, 0)" ? bg : isDark ? "#10141a" : "#ffffff";
+  ctx.fillRect(0, 0, out.width, out.height);
+
+  if (hasHeader) {
+    const maxWidth = out.width - 2 * padX * dpr;
+    ctx.textBaseline = "top";
+    let y = padTop * dpr;
+    ctx.font = `600 ${titleSize * dpr}px ${fontFamily}`;
+    ctx.fillStyle = palette.text;
+    ctx.fillText(header!.title, padX * dpr, y, maxWidth);
+    y += (titleSize + lineGap) * dpr;
+    if (header!.subtitle) {
+      ctx.font = `${subSize * dpr}px ${fontFamily}`;
+      ctx.fillStyle = palette.muted;
+      ctx.fillText(header!.subtitle, padX * dpr, y, maxWidth);
+      y += (subSize + lineGap) * dpr;
+    }
+    if (header!.quote && header!.quote.length > 0) {
+      ctx.font = `600 ${quoteSize * dpr}px ${fontFamily}`;
+      let x = padX * dpr;
+      for (const seg of header!.quote) {
+        ctx.fillStyle = seg.color ?? palette.text;
+        ctx.fillText(seg.text, x, y);
+        x += ctx.measureText(seg.text).width + 12 * dpr;
+      }
+    }
+  }
+
+  ctx.drawImage(shot, 0, Math.round(headerHeight * dpr));
+  return out;
 }

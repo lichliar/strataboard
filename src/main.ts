@@ -53,10 +53,14 @@ import { OverlayEditModal } from "./ui/overlay-edit-modal";
 import { SpreadEditModal } from "./ui/spread-edit-modal";
 import { ConfirmModal } from "./ui/confirm-modal";
 import { findMacroSeriesDef, fredTransformIsPercent, fredTransformLabel } from "./types";
-import type { AssetType, CustomSourceDef, FredCardSpec, FredSeriesInfo, MacroCardSpec, MacroSeriesDef, OverlaySpec, ParsedCardSpec, SeriesPeriod, SeriesPoint, SeriesRef, SpreadSpec, SymbolItem, ToolbarSourceId } from "./types";
+import type { AssetType, CustomSourceDef, FredCardSpec, FredSeriesInfo, MacroCardSpec, MacroSeriesDef, OverlayCompareMode, OverlaySpec, ParsedCardSpec, SeriesPeriod, SeriesPoint, SeriesRef, SpreadSpec, SymbolItem, ToolbarSourceId } from "./types";
 import { resolveDateRange, formatIsoDate, parseDateYmd } from "./utils/date";
 import { onAttached } from "./utils/dom";
 import { t, setLanguage } from "./i18n";
+import { AI_CLI_PRESETS, detectCliPath, resolveCustomCli, type ResolvedCli } from "./modules/ai-cli";
+import { resolveApiProvider } from "./modules/ai-api";
+import type { AiToolContext } from "./modules/ai-tools";
+import { AiChatView, AI_CHAT_VIEW_TYPE, type AiChatViewDeps } from "./ui/ai-chat-view";
 
 class TushareCodeBlockRenderer extends MarkdownRenderChild {
   private plugin: StrataBoardPlugin;
@@ -75,6 +79,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
     this.source = source;
     this.sourcePath = sourcePath;
     this.result = parseCardSpec(source, { height: DEFAULT_CARD_HEIGHT });
+    this.containerEl.setAttribute("data-strataboard-block", "tushare");
   }
 
   onload() {
@@ -316,6 +321,13 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
 
     try {
       const data = await this.loadData(spec);
+      // MA 口径：均线周期永远以交易日为单位，W/M 卡需要同一资产的日线
+      // 数据（daily-only 类型本就以日线缓存，等于重取一次缓存）来计算。
+      // 失败降级为 null，ChartRenderer 回退到按显示频率计算。
+      const maBaseData =
+        spec.freq === "D"
+          ? null
+          : await this.loadData({ ...spec, freq: "D" }).catch(() => null);
       const symbolInfo = await this.plugin.symbolIndex.lookup(spec.symbol, spec.assetType, spec.sourceId);
       this.chartRenderer = new ChartRenderer(this.containerEl, {
         spec,
@@ -327,6 +339,12 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
         symbolInfo,
         height: spec.height ?? DEFAULT_CARD_HEIGHT,
         freezeWidth: spec.widthAuto === false,
+        maBaseData,
+        showLegend: spec.showLegend ?? this.plugin.pluginSettings.showChartLegend,
+        legendFrosted: spec.legendFrosted ?? this.plugin.pluginSettings.legendFrostedBackground,
+        legendOpacity: spec.legendOpacity ?? this.plugin.pluginSettings.legendBackgroundOpacity,
+        showGrid: spec.showGrid ?? this.plugin.pluginSettings.showChartGrid,
+        gridOpacity: spec.gridOpacity ?? this.plugin.pluginSettings.gridOpacity,
         loadMarketData: (tradeDate) => this.loadMarketData(spec, tradeDate),
         onRefresh: () => void this.refresh(),
         onSwitchFreq: (freq) => void this.switchFrequency(freq),
@@ -621,13 +639,25 @@ function normalizeToPctChange(points: SeriesPoint[]): SeriesPoint[] {
   return points.map((p) => ({ date: p.date, value: (p.value / base - 1) * 100 }));
 }
 
-function buildOverlayLine(ref: SeriesRef, points: SeriesPoint[], normalize: boolean): OverlayLine {
+// Z-score standardization: (x − mean) / std over the loaded range. Puts every
+// line on an equal-volatility footing — the principled way to compare shape
+// between a high-vol series (stocks) and a low-vol one (FX).
+function toZScore(points: SeriesPoint[]): SeriesPoint[] {
+  if (points.length === 0) return points;
+  const mean = points.reduce((sum, p) => sum + p.value, 0) / points.length;
+  const variance = points.reduce((sum, p) => sum + (p.value - mean) ** 2, 0) / points.length;
+  const std = Math.sqrt(variance);
+  if (std === 0) return points.map((p) => ({ date: p.date, value: 0 }));
+  return points.map((p) => ({ date: p.date, value: (p.value - mean) / std }));
+}
+
+function buildOverlayLine(ref: SeriesRef, points: SeriesPoint[], mode: OverlayCompareMode): OverlayLine {
   let name = ref.label || t(SeriesAdapter.defaultLabel(ref));
 
-  // Quote lines normalize to % change only when the card's 归一化 toggle is
-  // on; only then do they count as percent-ish for the legend suffix.
+  // Quote lines normalize to % change only in percent mode (the default);
+  // only then do they count as percent-ish for the legend suffix.
   if (ref.source === "quote") {
-    if (normalize) {
+    if (mode === "percent") {
       return { line: { name, points: normalizeToPctChange(points) }, percentish: true };
     }
     return { line: { name, points }, percentish: false };
@@ -680,6 +710,7 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     super(plugin, containerEl, source, sourcePath);
     this.fcPlugin = plugin;
     this.result = parseOverlaySpec(source);
+    this.containerEl.setAttribute("data-strataboard-block", "overlay");
   }
 
   protected async renderBody() {
@@ -718,26 +749,47 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
     try {
       const period = spec.period ?? "D";
-      const normalize = spec.normalize !== false;
+      const compareMode = spec.normalize ?? "percent";
       const allPoints = await Promise.all(
         spec.series.map((ref) => this.fcPlugin.seriesAdapter.loadSeries(ref, spec.range, period))
       );
-      const overlayLines = spec.series.map((ref, i) => buildOverlayLine(ref, allPoints[i], normalize));
+      const overlayLines = spec.series.map((ref, i) => {
+        const built = buildOverlayLine(ref, allPoints[i], compareMode);
+        // Per-series 缩放系数: a pure visual multiplier on the plotted values
+        // (e.g. ×10 on a low-vol FX line so its swings stay visible next to a
+        // stock). Applied before the z-score pass, which is scale-invariant.
+        const scale = ref.scale ?? 1;
+        if (scale !== 1) {
+          built.line.points = built.line.points.map((p) => ({ date: p.date, value: p.value * scale }));
+        }
+        return built;
+      });
+      // z-score mode standardizes EVERY line post-hoc (including macro/FRED
+      // legs); the result is dimensionless, so no line is percent-ish.
+      if (compareMode === "zscore") {
+        for (const line of overlayLines) {
+          line.line.points = toZScore(line.line.points);
+          line.percentish = false;
+        }
+      }
       // A "%" legend suffix only makes sense when every displayed line is a
       // percent-ish series.
       const displayed = overlayLines.filter((l) => l.line.points.length > 0);
       const valueSuffix =
         displayed.length > 0 && displayed.every((l) => l.percentish) ? "%" : undefined;
 
-      // Title composes the line names; 归一化 marks normalized cards.
+      // Title composes the line names plus the compare-mode marker.
       const lineNames = spec.series.map((ref) => ref.label || SeriesAdapter.defaultLabel(ref));
       let title = t("资产叠加（{names}）", { names: lineNames.join("+") });
-      if (normalize) title += t("（归一化）");
+      if (compareMode === "percent") title += t("（归一化）");
+      else if (compareMode === "zscore") title += t("（标准化）");
+      else if (compareMode === "axis") title += t("（独立纵轴）");
 
-      // Subtitle: the date each normalized (quote) line is rebased to — its
-      // first point's actual observation date (resampling keeps real dates).
+      // Subtitle explains the mode: percent shows the rebase date of each
+      // (quote) line — its first point's actual observation date (resampling
+      // keeps real dates); zscore/axis carry a short mode description.
       let subtitle: string | undefined;
-      if (normalize) {
+      if (compareMode === "percent") {
         const bases: { name: string; date: string }[] = [];
         spec.series.forEach((ref, i) => {
           if (ref.source === "quote" && allPoints[i].length > 0) {
@@ -749,6 +801,10 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
             ? t("归一基准：{date}", { date: bases[0].date })
             : t("归一基准：{bases}", { bases: bases.map((b) => `${b.name} ${b.date}`).join(" · ") });
         }
+      } else if (compareMode === "zscore") {
+        subtitle = t("标准化：z = (x − 区间均值) ÷ 区间标准差");
+      } else if (compareMode === "axis") {
+        subtitle = t("各系列使用独立纵轴，按各自数值范围缩放");
       }
 
       this.containerEl.empty();
@@ -760,7 +816,16 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
         valueSuffix,
         theme: spec.theme ?? "auto",
         freezeWidth: spec.widthAuto === false,
+        independentScales: compareMode === "axis",
         initialVisibleRange: spec.viewStart && spec.viewEnd ? { from: spec.viewStart, to: spec.viewEnd } : undefined,
+        onEdit: () => this.openEditModal(),
+        showLegend: spec.showLegend ?? this.fcPlugin.pluginSettings.showChartLegend,
+        legendFrosted: spec.legendFrosted ?? this.fcPlugin.pluginSettings.legendFrostedBackground,
+        legendOpacity: spec.legendOpacity ?? this.fcPlugin.pluginSettings.legendBackgroundOpacity,
+        showLatestValue: spec.showLatestValue ?? this.fcPlugin.pluginSettings.showSeriesLatestValue,
+        showPointMarkers: spec.showPointMarkers ?? this.fcPlugin.pluginSettings.showSeriesPointMarkers,
+        showGrid: spec.showGrid ?? this.fcPlugin.pluginSettings.showChartGrid,
+        gridOpacity: spec.gridOpacity ?? this.fcPlugin.pluginSettings.gridOpacity,
       });
       this.addChild(this.chartRenderer);
     } catch (e) {
@@ -780,7 +845,8 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       () => this.fcPlugin.listSpreadCards(),
       (onSelect) => this.fcPlugin.openFredSearch(onSelect),
       undefined,
-      this.fcPlugin.enabledCustomSources()
+      this.fcPlugin.enabledCustomSources(),
+      this.fcPlugin.seriesSourceAvailability()
     ).open();
   }
 
@@ -837,6 +903,7 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     super(plugin, containerEl, source, sourcePath);
     this.fcPlugin = plugin;
     this.result = parseSpreadSpec(source);
+    this.containerEl.setAttribute("data-strataboard-block", "spread");
   }
 
   protected async renderBody() {
@@ -884,6 +951,14 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
         theme: spec.theme ?? "auto",
         freezeWidth: spec.widthAuto === false,
         initialVisibleRange: spec.viewStart && spec.viewEnd ? { from: spec.viewStart, to: spec.viewEnd } : undefined,
+        onEdit: () => this.openEditModal(),
+        showLegend: spec.showLegend ?? this.fcPlugin.pluginSettings.showChartLegend,
+        legendFrosted: spec.legendFrosted ?? this.fcPlugin.pluginSettings.legendFrostedBackground,
+        legendOpacity: spec.legendOpacity ?? this.fcPlugin.pluginSettings.legendBackgroundOpacity,
+        showLatestValue: spec.showLatestValue ?? this.fcPlugin.pluginSettings.showSeriesLatestValue,
+        showPointMarkers: spec.showPointMarkers ?? this.fcPlugin.pluginSettings.showSeriesPointMarkers,
+        showGrid: spec.showGrid ?? this.fcPlugin.pluginSettings.showChartGrid,
+        gridOpacity: spec.gridOpacity ?? this.fcPlugin.pluginSettings.gridOpacity,
       });
       this.addChild(this.chartRenderer);
     } catch (e) {
@@ -902,7 +977,8 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       (onSelect, assetType, sourceId) => this.fcPlugin.openSymbolSearch(onSelect, assetType, sourceId),
       (onSelect) => this.fcPlugin.openFredSearch(onSelect),
       undefined,
-      this.fcPlugin.enabledCustomSources()
+      this.fcPlugin.enabledCustomSources(),
+      this.fcPlugin.seriesSourceAvailability()
     ).open();
   }
 
@@ -955,6 +1031,7 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     super(plugin, containerEl, source, sourcePath);
     this.fcPlugin = plugin;
     this.result = parseFredCardSpec(source);
+    this.containerEl.setAttribute("data-strataboard-block", "fred");
   }
 
   protected async renderBody(forceRefresh = false) {
@@ -1010,7 +1087,11 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
         .join(" · "),
     });
     const actions = topRow.createEl("div", { cls: "strataboard-header-actions" });
-    const refreshBtn = actions.createEl("button", { cls: "strataboard-header-refresh" });
+    const editBtn = actions.createEl("button", { cls: "strataboard-header-btn" });
+    setIcon(editBtn, "pencil");
+    setTooltip(editBtn, t("编辑参数"));
+    editBtn.addEventListener("click", () => this.openEditModal());
+    const refreshBtn = actions.createEl("button", { cls: "strataboard-header-btn" });
     setIcon(refreshBtn, "refresh-cw");
     setTooltip(refreshBtn, t("刷新数据"));
     refreshBtn.addEventListener("click", () => void this.renderBody(true));
@@ -1056,6 +1137,13 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       height: spec.height ?? DEFAULT_CARD_HEIGHT,
       valueSuffix,
       initialVisibleRange: spec.viewStart && spec.viewEnd ? { from: spec.viewStart, to: spec.viewEnd } : undefined,
+      showLegend: spec.showLegend ?? this.fcPlugin.pluginSettings.showChartLegend,
+      legendFrosted: spec.legendFrosted ?? this.fcPlugin.pluginSettings.legendFrostedBackground,
+      legendOpacity: spec.legendOpacity ?? this.fcPlugin.pluginSettings.legendBackgroundOpacity,
+      showLatestValue: spec.showLatestValue ?? this.fcPlugin.pluginSettings.showSeriesLatestValue,
+      showPointMarkers: spec.showPointMarkers ?? this.fcPlugin.pluginSettings.showSeriesPointMarkers,
+      showGrid: spec.showGrid ?? this.fcPlugin.pluginSettings.showChartGrid,
+      gridOpacity: spec.gridOpacity ?? this.fcPlugin.pluginSettings.gridOpacity,
     });
     this.addChild(this.chartRenderer);
   }
@@ -1133,6 +1221,7 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     super(plugin, containerEl, source, sourcePath);
     this.fcPlugin = plugin;
     this.result = parseMacroCardSpec(source);
+    this.containerEl.setAttribute("data-strataboard-block", "macro");
   }
 
   protected async renderBody(forceRefresh = false) {
@@ -1200,7 +1289,11 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       text: `${t(def.group)} · ${def.freq === "Q" ? t("季度") : def.freq === "D" ? t("日度") : t("月度")}`,
     });
     const actions = topRow.createEl("div", { cls: "strataboard-header-actions" });
-    const refreshBtn = actions.createEl("button", { cls: "strataboard-header-refresh" });
+    const editBtn = actions.createEl("button", { cls: "strataboard-header-btn" });
+    setIcon(editBtn, "pencil");
+    setTooltip(editBtn, t("编辑参数"));
+    editBtn.addEventListener("click", () => this.openEditModal());
+    const refreshBtn = actions.createEl("button", { cls: "strataboard-header-btn" });
     setIcon(refreshBtn, "refresh-cw");
     setTooltip(refreshBtn, t("刷新数据"));
     refreshBtn.addEventListener("click", () => void this.renderBody(true));
@@ -1246,6 +1339,13 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       height: spec.height ?? DEFAULT_CARD_HEIGHT,
       valueSuffix,
       initialVisibleRange: spec.viewStart && spec.viewEnd ? { from: spec.viewStart, to: spec.viewEnd } : undefined,
+      showLegend: spec.showLegend ?? this.fcPlugin.pluginSettings.showChartLegend,
+      legendFrosted: spec.legendFrosted ?? this.fcPlugin.pluginSettings.legendFrostedBackground,
+      legendOpacity: spec.legendOpacity ?? this.fcPlugin.pluginSettings.legendBackgroundOpacity,
+      showLatestValue: spec.showLatestValue ?? this.fcPlugin.pluginSettings.showSeriesLatestValue,
+      showPointMarkers: spec.showPointMarkers ?? this.fcPlugin.pluginSettings.showSeriesPointMarkers,
+      showGrid: spec.showGrid ?? this.fcPlugin.pluginSettings.showChartGrid,
+      gridOpacity: spec.gridOpacity ?? this.fcPlugin.pluginSettings.gridOpacity,
     });
     this.addChild(this.chartRenderer);
   }
@@ -1318,6 +1418,11 @@ export default class StrataBoardPlugin extends Plugin {
   symbolIndex!: SymbolIndex;
   cardService!: CardService;
   toolbar!: CanvasToolbar;
+  // AI 助手: resolved CLI paths (command → absolute path | null), filled
+  // lazily by listAiClis(); cleared on settings save so path overrides and
+  // 「重新检测」 take effect.
+  private aiCliPathCache = new Map<string, string | null>();
+  private settingTab?: StrataBoardSettingTab;
 
   async onload() {
     await this.loadSettings();
@@ -1368,7 +1473,22 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.toolbar = new CanvasToolbar(this);
 
-    this.addSettingTab(new StrataBoardSettingTab(this.app, this));
+    // AI 助手 sidebar: the view resolves its CLI list lazily on open, so no
+    // detection cost is paid at plugin load.
+    this.registerView(
+      AI_CHAT_VIEW_TYPE,
+      (leaf) => new AiChatView(leaf, this.buildAiChatDeps())
+    );
+    this.addRibbonIcon("bot", t("打开 AI 助手"), () => void this.openAiChat());
+
+    this.settingTab = new StrataBoardSettingTab(this.app, this);
+    this.addSettingTab(this.settingTab);
+
+    this.addCommand({
+      id: "open-ai-chat",
+      name: t("打开 AI 助手"),
+      callback: () => void this.openAiChat(),
+    });
 
     this.addCommand({
       id: "open-settings",
@@ -1541,11 +1661,39 @@ export default class StrataBoardPlugin extends Plugin {
       })
     );
 
+    // Canvas node context menu: 「编辑…卡」opens the same edit modal the
+    // double-click flow uses. The item must be added SYNCHRONOUSLY (Obsidian's
+    // Menu.addItem is a no-op once the menu is shown), so the card type is
+    // read from the rendered node's data-strataboard-block attribute instead
+    // of an async file read; the click handler then parses the file.
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file, source) => {
+        if (source !== "canvas-menu") return;
+        if (!(file instanceof TFile) || file.extension !== "md") return;
+        const type = this.detectCanvasCardType(file);
+        if (!type) return;
+        const titles: Record<string, string> = {
+          tushare: t("编辑数据卡"),
+          fred: t("编辑数据卡"),
+          macro: t("编辑数据卡"),
+          overlay: t("编辑资产叠加卡"),
+          spread: t("编辑数据计算卡"),
+        };
+        menu.addItem((item) => {
+          item
+            .setTitle(titles[type])
+            .setIcon("pencil")
+            .onClick(() => void this.openCardEditorFromMenu(file, type));
+        });
+      })
+    );
+
     this.attachToolbarToCanvas(this.app.workspace.activeLeaf);
   }
 
   onunload() {
     this.toolbar.detach();
+    this.app.workspace.detachLeavesOfType(AI_CHAT_VIEW_TYPE);
     this.sqliteCache?.save().then(() => this.sqliteCache?.close()).catch((e) => {
       console.error("StrataBoard: failed to save SQLite cache on unload", e);
       this.sqliteCache?.close();
@@ -1602,11 +1750,115 @@ export default class StrataBoardPlugin extends Plugin {
       componentCardPath: this.pluginSettings.componentCardPath,
     });
     this.toolbar?.reload();
+    this.aiCliPathCache.clear();
+  }
+
+  // ==================== AI 助手（在线 API + 本地 CLI） ====================
+
+  // Online API providers + detected CLI presets (manual path overrides
+  // applied) + user-defined custom CLIs. Detection shells out once per
+  // command and caches the result.
+  async listAiClis(): Promise<ResolvedCli[]> {
+    const out: ResolvedCli[] = this.pluginSettings.aiApiProviders.map(resolveApiProvider);
+    for (const preset of AI_CLI_PRESETS) {
+      const override = this.pluginSettings.aiCliPaths[preset.command]?.trim();
+      let command: string | null;
+      if (override) {
+        command = override;
+      } else {
+        if (!this.aiCliPathCache.has(preset.command)) {
+          this.aiCliPathCache.set(preset.command, await detectCliPath(preset.command));
+        }
+        command = this.aiCliPathCache.get(preset.command) ?? null;
+      }
+      if (command) {
+        out.push({
+          id: preset.id,
+          label: preset.label,
+          command,
+          buildArgs: preset.buildArgs,
+          parseOutput: preset.parseOutput,
+        });
+      }
+    }
+    for (const def of this.pluginSettings.aiCustomClis) {
+      out.push(resolveCustomCli(def));
+    }
+    return out;
+  }
+
+  // Clears the detection cache so the next listAiClis() re-probes PATH
+  // (设置页「重新检测」按钮).
+  async redetectAiClis(): Promise<void> {
+    this.aiCliPathCache.clear();
+  }
+
+  private buildAiChatDeps(): AiChatViewDeps {
+    return {
+      app: this.app,
+      listClis: () => this.listAiClis(),
+      getSelectedCliId: () => this.pluginSettings.aiCliId,
+      setSelectedCliId: async (id) => {
+        this.pluginSettings.aiCliId = id;
+        await this.saveSettings();
+      },
+      getConfirmWrites: () => this.pluginSettings.aiConfirmWrites,
+      getMaxRounds: () => this.pluginSettings.aiMaxRounds,
+      toolContext: () => this.buildAiToolContext(),
+      openAiSettings: () => {
+        (this.app as any).setting.open();
+        (this.app as any).setting.openTabById(this.manifest.id);
+        this.settingTab?.navigateTo("ai");
+      },
+    };
+  }
+
+  buildAiToolContext(): AiToolContext {
+    return {
+      app: this.app,
+      dataAdapter: this.dataAdapter,
+      seriesAdapter: this.seriesAdapter,
+      symbolIndex: this.symbolIndex,
+      cardService: this.cardService,
+      toolbar: this.toolbar,
+      getCustomSources: () => this.pluginSettings.customSources,
+      // Upsert through the settings channel — never let the AI edit data.json
+      // directly (a later settings save would clobber external edits).
+      saveCustomSource: async (def) => {
+        const sources = this.pluginSettings.customSources;
+        const index = sources.findIndex((s) => s.id === def.id);
+        if (index >= 0) sources[index] = def;
+        else sources.push(def);
+        await this.saveSettings();
+      },
+    };
+  }
+
+  // Opens (or reveals) the AI chat sidebar.
+  async openAiChat(): Promise<void> {
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType(AI_CHAT_VIEW_TYPE)[0];
+    if (!leaf) {
+      const rightLeaf = workspace.getRightLeaf(false);
+      if (!rightLeaf) return;
+      await rightLeaf.setViewState({ type: AI_CHAT_VIEW_TYPE, active: true });
+      leaf = rightLeaf;
+    }
+    workspace.revealLeaf(leaf);
   }
 
   // Enabled custom sources, for the pickers and edit modals.
   enabledCustomSources(): CustomSourceDef[] {
     return this.pluginSettings.customSources.filter((s) => s.enabled);
+  }
+
+  // Data-source availability for the series row editor's first column —
+  // computed the same way as the unified 插入数据 search modal's chips.
+  seriesSourceAvailability(): { hasTushare: boolean; hasFred: boolean } {
+    return {
+      hasTushare: this.pluginSettings.tushareToken.trim().length > 0,
+      hasFred: this.pluginSettings.fredApiKey.trim().length > 0,
+    };
   }
 
   // Unified 「插入数据」 entry (canvas toolbar): one search modal fanning out
@@ -1625,7 +1877,13 @@ export default class StrataBoardPlugin extends Plugin {
       onFred: (info) => void this.createFredCard(info),
       onMacro: (def) => void this.createMacroCard(def),
       onManual: (sourceId, sourceName) =>
-        new ManualSymbolModal(this.app, sourceId, sourceName, (item) => this.insertSymbolCard(item)).open(),
+        new ManualSymbolModal(
+          this.app,
+          sourceId,
+          sourceName,
+          (item) => this.insertSymbolCard(item),
+          this.pluginSettings.customSources.find((s) => s.id === sourceId)?.symbols
+        ).open(),
     }).open();
   }
 
@@ -1661,7 +1919,7 @@ export default class StrataBoardPlugin extends Plugin {
           onPick
         ).open();
       } else {
-        new ManualSymbolModal(this.app, def.id, def.name, onPick).open();
+        new ManualSymbolModal(this.app, def.id, def.name, onPick, def.symbols).open();
       }
       return;
     }
@@ -1910,7 +2168,8 @@ export default class StrataBoardPlugin extends Plugin {
       () => this.listSpreadCards(),
       (onSelect) => this.openFredSearch(onSelect),
       t("新建资产叠加卡"),
-      this.enabledCustomSources()
+      this.enabledCustomSources(),
+      this.seriesSourceAvailability()
     ).open();
   }
 
@@ -1927,7 +2186,8 @@ export default class StrataBoardPlugin extends Plugin {
       (onSelect, assetType, sourceId) => this.openSymbolSearch(onSelect, assetType, sourceId),
       (onSelect) => this.openFredSearch(onSelect),
       t("新建数据计算卡"),
-      this.enabledCustomSources()
+      this.enabledCustomSources(),
+      this.seriesSourceAvailability()
     ).open();
   }
 
@@ -2208,6 +2468,151 @@ export default class StrataBoardPlugin extends Plugin {
     }
 
     return null;
+  }
+
+  // Canvas context-menu support: which StrataBoard card type (if any) the
+  // node for this file renders. Read from the data-strataboard-block
+  // attribute each chart-card renderer stamps on its container — synchronous,
+  // because Menu.addItem is a no-op once the menu is shown.
+  private detectCanvasCardType(file: TFile): string | null {
+    const view = this.app.workspace.getActiveViewOfType(ItemView) as any;
+    if (!view?.canvas?.nodes) return null;
+    for (const node of view.canvas.nodes.values()) {
+      if (node.filePath !== file.path) continue;
+      const el = node.nodeEl ?? node.el;
+      return el?.querySelector?.("[data-strataboard-block]")?.getAttribute("data-strataboard-block") ?? null;
+    }
+    return null;
+  }
+
+  // 「编辑…卡」menu action: parse the card file and open the same edit modal
+  // the double-click flow uses. Saves go through the regular update/convert
+  // paths, so the canvas preview re-renders on the modify event.
+  private async openCardEditorFromMenu(file: TFile, type: string) {
+    const content = await this.app.vault.cachedRead(file);
+    const blockRe = new RegExp("```" + type + "\\n([\\s\\S]*?)\\n```");
+    const match = blockRe.exec(content);
+    if (!match) {
+      new Notice(t("无法解析卡片配置。"));
+      return;
+    }
+    const body = match[1];
+    const path = file.path;
+
+    if (type === "tushare") {
+      const result = parseCardSpec(body, { height: DEFAULT_CARD_HEIGHT });
+      if (!result.ok) {
+        new Notice(t("无法解析卡片配置。"));
+        return;
+      }
+      const spec = result.spec;
+      // Same default resolution as TushareCodeBlockRenderer.openEditModal.
+      const resolved: ParsedCardSpec = {
+        ...spec,
+        chartType: spec.chartType ?? "candlestick",
+        theme: spec.theme ?? "auto",
+        riseColor: spec.riseColor ?? "#ef4444",
+        fallColor: spec.fallColor ?? "#22c55e",
+        height: spec.height ?? DEFAULT_CARD_HEIGHT,
+      };
+      new UnifiedCardEditModal(this.app, {
+        source: "tushare",
+        tushareSpec: resolved,
+        tushareAvailable: this.pluginSettings.tushareToken.trim().length > 0,
+        fredAvailable: this.pluginSettings.fredApiKey.trim().length > 0,
+        openFredPicker: (onSelect) => this.openFredSearch(onSelect),
+        openMacroPicker: (onSelect) => this.openMacroSearch(onSelect),
+        openSymbolPicker: (onSelect, assetType, sourceId) => this.openSymbolSearch(onSelect, assetType, sourceId),
+        customSources: this.enabledCustomSources(),
+        onSubmit: (source, newSpec) => {
+          if (source === "tushare") {
+            void this.cardService.updateCardSpec(path, newSpec as ParsedCardSpec);
+          } else if (source === "fred") {
+            void this.convertCardToFred(path, newSpec as FredCardSpec);
+          } else {
+            void this.convertCardToMacro(path, newSpec as MacroCardSpec);
+          }
+        },
+      }).open();
+      return;
+    }
+
+    if (type === "fred" || type === "macro") {
+      const result = type === "fred" ? parseFredCardSpec(body) : parseMacroCardSpec(body);
+      if (!result.spec) {
+        new Notice(t("无法解析卡片配置。"));
+        return;
+      }
+      new UnifiedCardEditModal(this.app, {
+        source: type,
+        fredSpec: type === "fred" ? result.spec as FredCardSpec : undefined,
+        macroSpec: type === "macro" ? result.spec as MacroCardSpec : undefined,
+        tushareAvailable: this.pluginSettings.tushareToken.trim().length > 0,
+        fredAvailable: this.pluginSettings.fredApiKey.trim().length > 0,
+        openFredPicker: (onSelect) => this.openFredSearch(onSelect),
+        openMacroPicker: (onSelect) => this.openMacroSearch(onSelect),
+        openSymbolPicker: (onSelect, assetType, sourceId) => this.openSymbolSearch(onSelect, assetType, sourceId),
+        customSources: this.enabledCustomSources(),
+        onSubmit: (source, newSpec) => {
+          if (type === "fred") {
+            if (source === "fred") {
+              void this.updateFredCard(path, newSpec as FredCardSpec);
+            } else if (source === "macro") {
+              void this.convertFredCardToMacro(path, newSpec as MacroCardSpec);
+            } else {
+              void this.convertFredCardToTushare(path, newSpec as ParsedCardSpec);
+            }
+          } else {
+            if (source === "macro") {
+              void this.updateMacroCard(path, newSpec as MacroCardSpec);
+            } else if (source === "fred") {
+              void this.convertMacroCardToFred(path, newSpec as FredCardSpec);
+            } else {
+              void this.convertMacroCardToTushare(path, newSpec as ParsedCardSpec);
+            }
+          }
+        },
+      }).open();
+      return;
+    }
+
+    if (type === "overlay") {
+      const result = parseOverlaySpec(body);
+      if (!result.spec) {
+        new Notice(t("无法解析卡片配置。"));
+        return;
+      }
+      new OverlayEditModal(
+        this.app,
+        result.spec,
+        (newSpec) => void this.updateOverlayCard(path, newSpec),
+        (onSelect, assetType, sourceId) => this.openSymbolSearch(onSelect, assetType, sourceId),
+        () => this.listSpreadCards(),
+        (onSelect) => this.openFredSearch(onSelect),
+        undefined,
+        this.enabledCustomSources(),
+      this.seriesSourceAvailability()
+      ).open();
+      return;
+    }
+
+    if (type === "spread") {
+      const result = parseSpreadSpec(body);
+      if (!result.spec) {
+        new Notice(t("无法解析卡片配置。"));
+        return;
+      }
+      new SpreadEditModal(
+        this.app,
+        result.spec,
+        (newSpec) => void this.updateSpreadCard(path, newSpec),
+        (onSelect, assetType, sourceId) => this.openSymbolSearch(onSelect, assetType, sourceId),
+        (onSelect) => this.openFredSearch(onSelect),
+        undefined,
+        this.enabledCustomSources(),
+      this.seriesSourceAvailability()
+      ).open();
+    }
   }
 
   private attachToolbarToCanvas(leaf: WorkspaceLeaf | null) {

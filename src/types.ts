@@ -78,6 +78,13 @@ export interface CustomSourceDef {
   klineUrl: string;                 // template, {code} {start} {end} (YYYYMMDD) / {endIso} (YYYY-MM-DD) placeholders
   testCode?: string;                // symbol code used by the 检测 connectivity test (kline probe)
   jsonMap?: JsonSourceMap;          // format "json" only
+  symbols?: SymbolListEntry[];      // static code table: named picks at card time without a searchUrl
+}
+
+// One row of a custom source's static code table (code + display name).
+export interface SymbolListEntry {
+  code: string;
+  name: string;
 }
 
 // Field mapping for format "json": where the row list lives and how each
@@ -98,6 +105,29 @@ export function cacheAssetKey(assetType: string, sourceId?: string): string {
   return assetType === "custom" && sourceId ? `custom:${sourceId}` : assetType;
 }
 
+// ==================== AI 助手 (local CLIs + online API models) ====================
+
+// A user-defined AI CLI entry (设置页 → AI 助手 → 自定义 AI 命令): any local
+// command that takes one prompt and prints the answer to stdout. argsTemplate
+// carries a `{prompt}` placeholder, e.g. ["-p", "{prompt}"] or ["exec", "{prompt}"].
+export interface CustomCliDef {
+  id: string;        // stable slug, never changes once created
+  name: string;      // user label: CLI picker / settings list
+  command: string;   // executable name or absolute path
+  argsTemplate: string[];
+}
+
+// A user-configured online LLM (设置页 → AI 助手 → 在线 API 模型): any
+// OpenAI-compatible chat-completions endpoint (DeepSeek, GPT, Kimi, ...).
+// The plugin ships no keys; baseUrl/apiKey/model are all user-supplied.
+export interface ApiProviderDef {
+  id: string;        // stable slug, never changes once created
+  name: string;      // user label: model picker / settings list
+  baseUrl: string;   // e.g. https://api.deepseek.com/v1
+  apiKey: string;
+  model: string;     // e.g. deepseek-chat
+}
+
 export type Freq = "D" | "W" | "M";
 export type RangePreset = "1y" | "3y" | "5y" | "10y" | "20y" | "ytd" | "max";
 export type ChartTheme = "auto" | "dark" | "light";
@@ -112,9 +142,9 @@ export type ToolbarStyle = "icon" | "text";
 // TradingView remains a per-source toggle.
 export type ToolbarSourceId = "tradingview";
 // Reorderable top-level toolbar entries: 「插入数据」, 「数据处理」(overlay +
-// spread menu), TradingView, and 「组件」. 全部刷新/设置 follow the list, not
-// reorderable.
-export type ToolbarEntryId = "insert-data" | "data-tools" | "tradingview" | "components";
+// spread menu), TradingView, 「组件」, and 「AI 助手」. 全部刷新/设置 follow the
+// list, not reorderable.
+export type ToolbarEntryId = "insert-data" | "data-tools" | "tradingview" | "components" | "ai-chat";
 export type VisibleRangePreset = "1m" | "3m" | "6m" | "1y" | "ytd" | "max";
 export type WidgetType = "iframe" | "html";
 export type CardContentType = "tushare" | "widget" | "calendar";
@@ -152,6 +182,17 @@ export interface MarketData {
   amount?: number; // 成交额（千元）
 }
 
+// Per-card display overrides; undefined = follow the plugin-wide 显示设置.
+export interface DisplayOverrides {
+  showLegend?: boolean;
+  legendFrosted?: boolean;
+  legendOpacity?: number;
+  showLatestValue?: boolean;
+  showPointMarkers?: boolean;
+  showGrid?: boolean;
+  gridOpacity?: number;
+}
+
 export interface ParsedCardSpec {
   contentType?: CardContentType;
   symbol: string;
@@ -177,6 +218,13 @@ export interface ParsedCardSpec {
   widthAuto?: boolean;  // canvas only: card width follows the node (default true; false freezes the first-layout width)
   heightAuto?: boolean; // canvas only: card height follows the node (default true; false = fixed 高度)
   bleed?: number;       // canvas only: px gap between card content and node edge (default DEFAULT_CARD_BLEED)
+  // Per-card display overrides (undefined = follow the plugin-wide 显示设置).
+  // The tushare K-line renderer has no latest-value/point-marker options.
+  showLegend?: boolean;
+  legendFrosted?: boolean;
+  legendOpacity?: number; // percent 0-100
+  showGrid?: boolean;
+  gridOpacity?: number;   // percent 0-100
   widgetType?: WidgetType;
   iframeUrl?: string;
   widgetHtml?: string;
@@ -226,6 +274,7 @@ export interface SeriesRef {
   label?: string;         // optional display name override
   units?: string;         // fred only: FRED "units" metadata (e.g. "Percent"), used to tell percent series apart
   transform?: FredTransform; // fred only: server-side units transformation; absent = 原始值 (lin)
+  scale?: number;         // overlay cards only: visual multiplier applied to the plotted values (default 1)
 }
 
 // FRED server-side units transformations (the `units` param of
@@ -275,11 +324,18 @@ export interface SeriesPoint {
   value: number;
 }
 
-export interface OverlaySpec {
+// How the overlay card puts its series on a comparable footing:
+//   percent — quote lines plotted as % change from the first point (default)
+//   zscore  — every line standardized to (x − mean) / std over the range
+//   axis    — raw values, each line on its own (hidden) price scale
+//   none    — raw values on one shared axis
+export type OverlayCompareMode = "percent" | "zscore" | "axis" | "none";
+
+export interface OverlaySpec extends DisplayOverrides {
   series: SeriesRef[];
   range: string;   // RangePreset
   period?: SeriesPeriod;  // default "D"
-  normalize?: boolean;    // default true: quote lines plotted as % change from the first point
+  normalize?: OverlayCompareMode;  // default "percent"
   height?: number;
   theme?: ChartTheme;     // default "auto" (follow Obsidian)
   widthAuto?: boolean;    // canvas only, default true
@@ -293,7 +349,7 @@ export interface OverlaySpec {
 // series — series[0] is A, series[1] is B, … (e.g. "A-B", "(A+B)/2").
 // Legacy two-leg cards (`a:`/`b:` in YAML) migrate to series + "A-B" at
 // parse time (see series-spec.ts).
-export interface SpreadSpec {
+export interface SpreadSpec extends DisplayOverrides {
   series: SeriesRef[];
   expression: string;
   range: string;
@@ -312,7 +368,7 @@ export interface SpreadSpec {
 // Standalone FRED card (```fred block): a single FRED series with a
 // tushare-asset-card-like presentation. label/units/frequency come from the
 // search result; viewStart/viewEnd are the persisted wheel-zoom range.
-export interface FredCardSpec {
+export interface FredCardSpec extends DisplayOverrides {
   seriesId: string;      // e.g. "DGS10"
   label?: string;        // display name (English FRED title)
   units?: string;        // FRED units metadata, e.g. "Percent"
@@ -330,7 +386,7 @@ export interface FredCardSpec {
 // presentation as the FRED card. Display name/unit come from the catalog,
 // so the spec only carries the id; viewStart/viewEnd are the persisted
 // wheel-zoom range.
-export interface MacroCardSpec {
+export interface MacroCardSpec extends DisplayOverrides {
   seriesId: string;      // a MACRO_SERIES_OPTIONS id, e.g. "cpi_yoy"
   range: string;         // RangePreset or YYYY-MM-DD~YYYY-MM-DD
   period?: SeriesPeriod; // default "D"

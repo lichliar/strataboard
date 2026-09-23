@@ -1,13 +1,15 @@
 import { App, Notice, PluginSettingTab, Setting, TFile } from "obsidian";
 import type StrataBoardPlugin from "./main";
-import type { CustomSourceDef, MacroSeriesDef, ToolbarEntryId, ToolbarPosition, ToolbarSourceId, ToolbarStyle } from "./types";
-import { MACRO_SERIES_OPTIONS } from "./types";
+import type { ApiProviderDef, CustomCliDef, CustomSourceDef, ToolbarEntryId, ToolbarPosition, ToolbarSourceId, ToolbarStyle } from "./types";
 import { t, setLanguage, type Language } from "./i18n";
 import { FolderPathSelect } from "./ui/folder-suggester";
 import { CleanupConfirmModal } from "./ui/cleanup-modal";
 import { ConfirmModal } from "./ui/confirm-modal";
 import { CUSTOM_FORMAT_LABELS, CustomSourceImportModal, CustomSourceModal } from "./ui/custom-source-modal";
 import { MIN_REQUEST_INTERVAL_MS } from "./modules/http";
+import { AI_CLI_PRESETS, detectCliPath } from "./modules/ai-cli";
+import { AiCliEditModal } from "./ui/ai-cli-modal";
+import { AiApiEditModal } from "./ui/ai-api-modal";
 import {
   collectUsedCacheKeys,
   deleteStaleCacheEntry,
@@ -52,6 +54,32 @@ export interface StrataBoardSettings {
   calendarDayFontSize: number;
   calendarExcerptLineHeight: number;
   calendarExcerptMaxLines: number;
+  // 显示设置 (卡片与组件 tab): chart-wide display settings applied at render
+  // time — a change takes effect the next time a card renders.
+  showChartLegend: boolean;
+  legendFrostedBackground: boolean;
+  // Legend chip opacity (percent 0-100); only applies when
+  // legendFrostedBackground is on.
+  legendBackgroundOpacity: number;
+  showSeriesLatestValue: boolean;
+  // Vertex dots on every line-chart data point; off by default (noisy on
+  // long series).
+  showSeriesPointMarkers: boolean;
+  showChartGrid: boolean;
+  // Grid line opacity (percent 0-100); only applies when showChartGrid is on.
+  gridOpacity: number;
+  // AI 助手: which model the chat view uses ("" = first available), manual
+  // path overrides per preset CLI command, user-defined CLI entries, and
+  // user-configured online API models (OpenAI-compatible endpoints).
+  aiCliId: string;
+  aiCliPaths: Record<string, string>;
+  aiCustomClis: CustomCliDef[];
+  aiApiProviders: ApiProviderDef[];
+  // Write-capable AI tools (create card / upsert custom source / place on
+  // canvas) ask in the chat before running; off = run immediately.
+  aiConfirmWrites: boolean;
+  // Max tool-call rounds per user message before the loop forces an answer.
+  aiMaxRounds: number;
 }
 
 export const DEFAULT_SETTINGS: StrataBoardSettings = {
@@ -61,7 +89,7 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   language: "zh",
   toolbarSources: { tradingview: true },
   toolbarStyle: "icon",
-  toolbarOrder: ["insert-data", "data-tools", "tradingview", "components"],
+  toolbarOrder: ["insert-data", "data-tools", "tradingview", "components", "ai-chat"],
   toolbarIconSize: 16,
   toolbarWidth: 44,
   cardLibraryPath: "金融卡片",
@@ -84,6 +112,19 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   calendarDayFontSize: 20,
   calendarExcerptLineHeight: 2,
   calendarExcerptMaxLines: 4,
+  showChartLegend: true,
+  legendFrostedBackground: true,
+  legendBackgroundOpacity: 72,
+  showSeriesLatestValue: true,
+  showSeriesPointMarkers: false,
+  showChartGrid: true,
+  gridOpacity: 20,
+  aiCliId: "",
+  aiCliPaths: {},
+  aiCustomClis: [],
+  aiApiProviders: [],
+  aiConfirmWrites: true,
+  aiMaxRounds: 8,
 };
 
 // Static source labels for the 工具栏显示 toggles (Chinese keys, translated
@@ -97,13 +138,15 @@ const TOOLBAR_ENTRY_LABELS: Record<ToolbarEntryId, string> = {
   "data-tools": "数据处理",
   tradingview: "TradingView Widget",
   components: "组件",
+  "ai-chat": "AI 助手",
 };
 
-type SettingsTabId = "general" | "data-source" | "paths" | "cards" | "toolbar";
+type SettingsTabId = "general" | "data-source" | "ai" | "paths" | "cards" | "toolbar";
 
 const SETTINGS_TABS: { id: SettingsTabId; label: string }[] = [
   { id: "general", label: "通用设置" },
   { id: "data-source", label: "数据源设置" },
+  { id: "ai", label: "AI 助手" },
   { id: "paths", label: "路径设置" },
   { id: "cards", label: "卡片与组件" },
   { id: "toolbar", label: "工具栏设置" },
@@ -116,6 +159,12 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   constructor(app: App, plugin: StrataBoardPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+  }
+
+  // Deep-link entry (AI 助手面板 → 设置按钮): switch to a tab programmatically.
+  navigateTo(tab: SettingsTabId): void {
+    this.activeTab = tab;
+    this.display();
   }
 
   display(): void {
@@ -142,6 +191,9 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         break;
       case "data-source":
         this.renderDataSourceSettings(contentEl);
+        break;
+      case "ai":
+        this.renderAiSettings(contentEl);
         break;
       case "paths":
         this.renderPathSettings(contentEl);
@@ -217,8 +269,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       text.inputEl.addClass("fc-mono");
     });
 
-    this.renderTusharePointsInfo(tushareDetails);
-
     const fredDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
     fredDetails.setAttr("open", "");
     fredDetails.createEl("summary", { text: t("FRED 设置") });
@@ -281,17 +331,210 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     });
   }
 
+  // AI 助手 settings: online API models, local AI CLI detection, default
+  // picker, custom CLI entries, and agent-loop behavior. CLI detection
+  // probes run async after the tab renders.
+  private renderAiSettings(containerEl: HTMLElement): void {
+    containerEl.createDiv({
+      cls: "fc-field-hint",
+      text: t("AI 助手可以使用在线 API 模型（DeepSeek、GPT 等 OpenAI 兼容接口）或你本机已安装的 AI 命令行工具（CLI）运行，插件不内置任何 AI 服务或密钥。在侧边栏「AI 助手」面板对话，AI 可调用插件能力查询数据、创建卡片、协助配置数据源。"),
+    });
+
+    const apiDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    apiDetails.setAttr("open", "");
+    apiDetails.createEl("summary", { text: t("在线 API 模型") });
+    apiDetails.createDiv({
+      cls: "fc-field-hint",
+      text: t("接入任何兼容 OpenAI Chat Completions 接口的在线模型（DeepSeek、GPT、Kimi、通义千问等）；API Key 由你自行申请，仅保存在本库设置中。"),
+    });
+    for (const def of this.plugin.pluginSettings.aiApiProviders) {
+      const setting = new Setting(apiDetails).setName(def.name).setDesc(`${def.model} · ${def.baseUrl}`);
+      setting.addButton((btn) =>
+        btn.setButtonText(t("编辑")).onClick(() => {
+          new AiApiEditModal(this.app, def, (result) => {
+            const list = this.plugin.pluginSettings.aiApiProviders;
+            const index = list.findIndex((p) => p.id === result.id);
+            if (index >= 0) list[index] = result;
+            void this.plugin.saveSettings().then(() => this.display());
+          }).open();
+        })
+      );
+      setting.addButton((btn) =>
+        btn
+          .setButtonText(t("删除"))
+          .setWarning()
+          .onClick(() => {
+            new ConfirmModal(this.app, t("删除 API 模型「{name}」？", { name: def.name }), () => {
+              this.plugin.pluginSettings.aiApiProviders = this.plugin.pluginSettings.aiApiProviders.filter(
+                (p) => p.id !== def.id
+              );
+              void this.plugin.saveSettings().then(() => this.display());
+            }).open();
+          })
+      );
+    }
+    new Setting(apiDetails).addButton((btn) =>
+      btn
+        .setButtonText(t("添加 API 模型"))
+        .setCta()
+        .onClick(() => {
+          new AiApiEditModal(this.app, undefined, (result) => {
+            this.plugin.pluginSettings.aiApiProviders.push(result);
+            void this.plugin.saveSettings().then(() => this.display());
+          }).open();
+        })
+    );
+
+    const detectedDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    detectedDetails.setAttr("open", "");
+    detectedDetails.createEl("summary", { text: t("本机 AI 命令行工具") });
+    const detectedEl = detectedDetails.createDiv();
+    new Setting(detectedDetails)
+      .addButton((btn) =>
+        btn.setButtonText(t("重新检测")).onClick(async () => {
+          await this.plugin.redetectAiClis();
+          this.display();
+        })
+      );
+
+    void (async () => {
+      detectedEl.createDiv({ cls: "fc-field-hint", text: t("正在检测…") });
+      const rows = await Promise.all(
+        AI_CLI_PRESETS.map(async (preset) => {
+          const override = this.plugin.pluginSettings.aiCliPaths[preset.command]?.trim() ?? "";
+          const path = override || (await detectCliPath(preset.command));
+          return { preset, override, path };
+        })
+      );
+      detectedEl.empty();
+      for (const { preset, override, path } of rows) {
+        const setting = new Setting(detectedEl).setName(preset.label).setDesc(
+          path
+            ? override
+              ? t("手动路径：{path}", { path })
+              : t("已检测到：{path}", { path })
+            : t("未检测到（可手动指定可执行文件路径）")
+        );
+        setting.addText((text) => {
+          text
+            .setPlaceholder(t("路径覆盖（可选）"))
+            .setValue(override)
+            .onChange(async (value) => {
+              const trimmed = value.trim();
+              if (trimmed) {
+                this.plugin.pluginSettings.aiCliPaths[preset.command] = trimmed;
+              } else {
+                delete this.plugin.pluginSettings.aiCliPaths[preset.command];
+              }
+              await this.plugin.saveSettings();
+            });
+          text.inputEl.addClass("fc-mono");
+        });
+      }
+    })();
+
+    const defaultSetting = new Setting(containerEl)
+      .setName(t("默认 AI"))
+      .setDesc(t("侧边栏 AI 助手默认使用的模型，面板顶栏可随时切换。"));
+    void this.plugin.listAiClis().then((clis) => {
+      defaultSetting.addDropdown((dropdown) => {
+        if (clis.length === 0) {
+          dropdown.addOption("", t("（未配置可用模型）"));
+        }
+        for (const cli of clis) {
+          dropdown.addOption(cli.id, cli.label);
+        }
+        const current = this.plugin.pluginSettings.aiCliId;
+        dropdown.setValue(clis.some((c) => c.id === current) ? current : "");
+        dropdown.onChange(async (value) => {
+          this.plugin.pluginSettings.aiCliId = value;
+          await this.plugin.saveSettings();
+        });
+      });
+    });
+
+    const customDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    customDetails.createEl("summary", { text: t("自定义 AI 命令") });
+    customDetails.createDiv({
+      cls: "fc-field-hint",
+      text: t("任何「接收一条提示词、把回答打印到标准输出」的命令行工具都可接入；参数模板中用 {prompt} 表示提示词位置。"),
+    });
+    for (const def of this.plugin.pluginSettings.aiCustomClis) {
+      const setting = new Setting(customDetails)
+        .setName(def.name)
+        .setDesc(`${def.command} ${def.argsTemplate.join(" ")}`);
+      setting.addButton((btn) =>
+        btn.setButtonText(t("编辑")).onClick(() => {
+          new AiCliEditModal(this.app, def, (result) => {
+            const list = this.plugin.pluginSettings.aiCustomClis;
+            const index = list.findIndex((c) => c.id === result.id);
+            if (index >= 0) list[index] = result;
+            void this.plugin.saveSettings().then(() => this.display());
+          }).open();
+        })
+      );
+      setting.addButton((btn) =>
+        btn
+          .setButtonText(t("删除"))
+          .setWarning()
+          .onClick(() => {
+            new ConfirmModal(this.app, t("删除自定义 AI 命令「{name}」？", { name: def.name }), () => {
+              this.plugin.pluginSettings.aiCustomClis = this.plugin.pluginSettings.aiCustomClis.filter(
+                (c) => c.id !== def.id
+              );
+              void this.plugin.saveSettings().then(() => this.display());
+            }).open();
+          })
+      );
+    }
+    new Setting(customDetails).addButton((btn) =>
+      btn
+        .setButtonText(t("添加 AI 命令"))
+        .setCta()
+        .onClick(() => {
+          new AiCliEditModal(this.app, undefined, (result) => {
+            this.plugin.pluginSettings.aiCustomClis.push(result);
+            void this.plugin.saveSettings().then(() => this.display());
+          }).open();
+        })
+    );
+
+    new Setting(containerEl)
+      .setName(t("AI 写操作需确认"))
+      .setDesc(t("开启后，AI 创建卡片、放上画布、修改数据源等写操作会先在对话中请求你的允许。"))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.pluginSettings.aiConfirmWrites).onChange(async (value) => {
+          this.plugin.pluginSettings.aiConfirmWrites = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName(t("单轮最大工具调用轮数"))
+      .setDesc(t("AI 为回答一条消息最多连续调用工具的次数，防止失控循环。"))
+      .addSlider((slider) =>
+        slider
+          .setLimits(3, 20, 1)
+          .setValue(this.plugin.pluginSettings.aiMaxRounds)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.aiMaxRounds = value;
+            await this.plugin.saveSettings();
+          })
+      );
+  }
+
   // 自定义数据源 management: the plugin ships no URLs — each entry is a
-  // user-configured REST endpoint template (see CustomSourceModal). Toggling
-  // 启用 gates pickers/toolbar entries; deleting a source breaks cards that
-  // reference it (they render the missing-source error).
+  // user-configured REST/JSON endpoint template (see CustomSourceModal).
+  // Toggling 启用 gates pickers/toolbar entries; deleting a source breaks
+  // cards that reference it (they render the missing-source error).
   private renderCustomSourceSettings(containerEl: HTMLElement): void {
     const details = containerEl.createEl("details", { cls: "fc-settings-sub" });
     details.setAttr("open", "");
     details.createEl("summary", { text: t("自定义数据源") });
     details.createDiv({
       cls: "fc-field-hint",
-      text: t("自行配置任意 RESTful 行情接口：粘贴完整 URL 即可自动生成模板（支持 {code} {start} {end} {startIso} {endIso} 占位符），响应格式自动识别。"),
+      text: t("自行配置任意 RESTful / JSON 数据接口：粘贴完整 URL 即可自动生成模板（支持 {code} {start} {end} {startIso} {endIso} 占位符），K 线行情、单值序列、固定报表均可接入，响应格式自动识别。"),
     });
 
     for (const def of this.plugin.pluginSettings.customSources) {
@@ -354,63 +597,25 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   }
 
   private openCustomSourceModal(def?: CustomSourceDef): void {
-    new CustomSourceModal(this.app, def, (result) => {
-      const sources = this.plugin.pluginSettings.customSources;
-      const index = sources.findIndex((s) => s.id === result.id);
-      if (index >= 0) {
-        sources[index] = result;
-      } else {
-        sources.push(result);
-      }
-      void this.plugin.saveSettings().then(() => this.display());
-    }).open();
-  }
-
-  // Static reference of the Tushare points each used API requires (per
-  // tushare.pro 关于权限 doc). Quote APIs are listed literally; macro APIs
-  // are aggregated from MACRO_SERIES_OPTIONS (one row per api). Rendered as a
-  // collapsed <details> inside Tushare 设置.
-  private renderTusharePointsInfo(containerEl: HTMLElement): void {
-    const details = containerEl.createEl("details", { cls: "fc-settings-sub fc-settings-sub-nested" });
-    details.createEl("summary", { text: t("Tushare 接口积分要求") });
-
-    const block = details.createDiv("fc-points-table");
-    const quoteApis: { label: string; points: string }[] = [
-      { label: "股票日线 daily", points: "积分≥120 起" },
-      { label: "股票周/月K weekly · monthly", points: "积分≥2000" },
-      { label: "基金 fund_basic · fund_daily", points: "积分≥2000" },
-      { label: "指数 index_basic · index_daily/weekly/monthly", points: "积分≥2000 起" },
-      { label: "南华期货指数 fut_index_daily", points: "积分≥2000" },
-      { label: "港股 hk_basic · hk_daily", points: "积分≥2000（hk_daily 需单独开通权限）" },
-      { label: "国际指数 index_global", points: "积分≥6000" },
-      { label: "可转债 cb_basic · cb_daily", points: "积分≥2000" },
-      { label: "期货 fut_basic · fut_daily", points: "积分≥2000" },
-      { label: "外汇 fx_obasic · fx_daily", points: "积分≥2000" },
-      { label: "申万行业指数 index_classify · sw_daily", points: "积分≥2000" },
-      { label: "每日指标 daily_basic（市场数据行）", points: "积分≥2000 起" },
-      { label: "美股 us_daily", points: "单独付费权限，未接入（可通过自定义数据源接入）" },
-    ];
-    for (const row of quoteApis) {
-      block.createDiv({ cls: "fc-field-hint", text: `${t(row.label)} —— ${t(row.points)}` });
-    }
-
-    const macroApis = new Map<string, MacroSeriesDef>();
-    for (const def of MACRO_SERIES_OPTIONS) {
-      if (!macroApis.has(def.api)) macroApis.set(def.api, def);
-    }
-    for (const [api, def] of macroApis) {
-      const points =
-        def.points === "special" ? t("需单独权限（联系 Tushare 管理员开通）") : t("积分≥{n}", { n: def.points });
-      block.createDiv({ cls: "fc-field-hint", text: `${t(def.group)} ${api} —— ${points}` });
-    }
-
-    const linkLine = block.createDiv({ cls: "fc-field-hint" });
-    linkLine.appendText(t("积分只是调取门槛，不会消耗；获取办法见 "));
-    linkLine.createEl("a", {
-      text: t("Tushare 积分说明"),
-      href: "https://tushare.pro/document/1?doc_id=13",
+    // The wizard embeds the source-assist chat when a local AI CLI is
+    // configured; otherwise it falls back to copyable prompts.
+    void this.plugin.listAiClis().then((clis) => {
+      new CustomSourceModal(this.app, def, (result) => {
+        const sources = this.plugin.pluginSettings.customSources;
+        const index = sources.findIndex((s) => s.id === result.id);
+        if (index >= 0) {
+          sources[index] = result;
+        } else {
+          sources.push(result);
+        }
+        void this.plugin.saveSettings().then(() => this.display());
+      }, {
+        clis,
+        cliId: this.plugin.pluginSettings.aiCliId,
+        maxRounds: this.plugin.pluginSettings.aiMaxRounds,
+        openAiSettings: () => this.navigateTo("ai"),
+      }).open();
     });
-    linkLine.appendText("。");
   }
 
   private renderPathSettings(containerEl: HTMLElement): void {
@@ -689,6 +894,102 @@ export class StrataBoardSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    const chartDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    chartDetails.createEl("summary", { text: t("显示设置") });
+    chartDetails.createDiv({
+      cls: "fc-settings-note",
+      text: t("以下为全局默认显示设置，各卡片可在编辑弹窗的「显示设置」中单独覆盖。"),
+    });
+
+    new Setting(chartDetails)
+      .setName(t("显示图表图例"))
+      .setDesc(t("K 线卡的十字光标图例（开/高/低/收/涨跌/量/均线）和系列图的图例。"))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.pluginSettings.showChartLegend).onChange(async (value) => {
+          this.plugin.pluginSettings.showChartLegend = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    // The opacity slider is only meaningful while 图例半透明背景 is on; the
+    // toggle flips its disabled state (the Setting is created just below,
+    // hence the closure variable).
+    let legendOpacitySetting: Setting | null = null;
+    new Setting(chartDetails)
+      .setName(t("图例半透明背景"))
+      .setDesc(t("关闭后图例退回无背景、无模糊的纯文字样式。"))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.pluginSettings.legendFrostedBackground).onChange(async (value) => {
+          this.plugin.pluginSettings.legendFrostedBackground = value;
+          await this.plugin.saveSettings();
+          legendOpacitySetting?.setDisabled(!value);
+        })
+      );
+
+    legendOpacitySetting = new Setting(chartDetails)
+      .setName(t("图例背景透明度"))
+      .setDesc(t("图例背景的不透明程度，仅在选择半透明背景时生效。"))
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 100, 1)
+          .setValue(this.plugin.pluginSettings.legendBackgroundOpacity)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.legendBackgroundOpacity = value;
+            await this.plugin.saveSettings();
+          })
+      );
+    legendOpacitySetting.setDisabled(!this.plugin.pluginSettings.legendFrostedBackground);
+
+    new Setting(chartDetails)
+      .setName(t("系列图最新值标记"))
+      .setDesc(t("系列图在右轴显示最新值标签，单线卡叠加最新值虚线。"))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.pluginSettings.showSeriesLatestValue).onChange(async (value) => {
+          this.plugin.pluginSettings.showSeriesLatestValue = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(chartDetails)
+      .setName(t("折线图数据点标记"))
+      .setDesc(t("在折线的每个数据点上绘制圆点；数据点较多时会显得密集。"))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.pluginSettings.showSeriesPointMarkers).onChange(async (value) => {
+          this.plugin.pluginSettings.showSeriesPointMarkers = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    // Same linkage as the legend slider: 网格线透明度 only applies while
+    // 显示网格线 is on.
+    let gridOpacitySetting: Setting | null = null;
+    new Setting(chartDetails)
+      .setName(t("显示网格线"))
+      .setDesc(t("图表背景的水平/垂直网格虚线。"))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.pluginSettings.showChartGrid).onChange(async (value) => {
+          this.plugin.pluginSettings.showChartGrid = value;
+          await this.plugin.saveSettings();
+          gridOpacitySetting?.setDisabled(!value);
+        })
+      );
+
+    gridOpacitySetting = new Setting(chartDetails)
+      .setName(t("网格线透明度"))
+      .setDesc(t("网格线的明显程度。"))
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 100, 1)
+          .setValue(this.plugin.pluginSettings.gridOpacity)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.gridOpacity = value;
+            await this.plugin.saveSettings();
+          })
+      );
+    gridOpacitySetting.setDisabled(!this.plugin.pluginSettings.showChartGrid);
 
     const note = containerEl.createDiv("fc-settings-note");
     note.appendText(t("卡片级配置（周期 / 时间范围 / 图表类型 / 主题 / 涨跌色 / 图表高度）由各卡片的"));

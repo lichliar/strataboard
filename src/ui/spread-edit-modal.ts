@@ -1,9 +1,10 @@
 import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
-import type { ChartTheme, CustomSourceDef, SeriesPeriod, SeriesRef, SpreadSpec } from "../types";
-import { SeriesRefEditor, type OpenFredPicker, type OpenSymbolPicker } from "./series-ref-editor";
+import type { ChartTheme, CustomSourceDef, DisplayOverrides, SeriesPeriod, SeriesRef, SpreadSpec } from "../types";
+import { SeriesRefEditor, type OpenFredPicker, type OpenSymbolPicker, type SeriesSourceAvailability } from "./series-ref-editor";
 import { parseExpression } from "../modules/expression";
 import { appendSvg } from "../utils/dom";
 import { addStepper } from "./stepper";
+import { renderDisplayOverrideSettings } from "./display-overrides";
 import { DEFAULT_CARD_BLEED, MAX_CARD_BLEED } from "../modules/card-spec";
 import { t } from "../i18n";
 
@@ -75,6 +76,8 @@ export class SpreadEditModal extends Modal {
   private widthAuto: boolean;
   private heightAuto: boolean;
   private bleed: number;
+  // Per-card 图表显示 overrides (undefined = follow the plugin-wide 显示设置).
+  private displayOverrides: DisplayOverrides;
 
   private editors: SeriesRefEditor[] = [];
   private activeSubPage: SubPage = "basic";
@@ -89,8 +92,9 @@ export class SpreadEditModal extends Modal {
   private openSymbolPicker: OpenSymbolPicker;
   private openFredPicker?: OpenFredPicker;
   private customSources: CustomSourceDef[];
+  private sourceAvailability: SeriesSourceAvailability;
 
-  constructor(app: App, spec: SpreadSpec, onSubmit: (spec: SpreadSpec) => void, openSymbolPicker: OpenSymbolPicker, openFredPicker?: OpenFredPicker, title?: string, customSources?: CustomSourceDef[]) {
+  constructor(app: App, spec: SpreadSpec, onSubmit: (spec: SpreadSpec) => void, openSymbolPicker: OpenSymbolPicker, openFredPicker?: OpenFredPicker, title?: string, customSources?: CustomSourceDef[], sourceAvailability?: SeriesSourceAvailability) {
     super(app);
     this.expression = spec.expression;
     this.refs = spec.series.map((ref) => ({ ...ref }));
@@ -103,10 +107,20 @@ export class SpreadEditModal extends Modal {
     this.widthAuto = spec.widthAuto ?? true;
     this.heightAuto = spec.heightAuto ?? true;
     this.bleed = spec.bleed ?? DEFAULT_CARD_BLEED;
+    this.displayOverrides = {
+      showLegend: spec.showLegend,
+      legendFrosted: spec.legendFrosted,
+      legendOpacity: spec.legendOpacity,
+      showLatestValue: spec.showLatestValue,
+      showPointMarkers: spec.showPointMarkers,
+      showGrid: spec.showGrid,
+      gridOpacity: spec.gridOpacity,
+    };
     this.onSubmit = onSubmit;
     this.openSymbolPicker = openSymbolPicker;
     this.openFredPicker = openFredPicker;
     this.customSources = customSources ?? [];
+    this.sourceAvailability = sourceAvailability ?? { hasTushare: true, hasFred: true };
     this.setTitle(title ?? t("编辑数据计算卡"));
   }
 
@@ -266,7 +280,8 @@ export class SpreadEditModal extends Modal {
         this.openSymbolPicker,
         undefined,
         this.openFredPicker,
-        this.customSources
+        this.customSources,
+        this.sourceAvailability
       );
       this.editors.push(editor);
     });
@@ -339,6 +354,9 @@ export class SpreadEditModal extends Modal {
         this.lineColor = value;
       })
     );
+
+    // Per-card overrides of the plugin-wide 显示设置.
+    renderDisplayOverrideSettings(pageEl, this.displayOverrides, { series: true });
   }
 
   // ==================== Canvas 逻辑 ====================
@@ -423,6 +441,8 @@ export class SpreadEditModal extends Modal {
       ...(this.widthAuto ? {} : { widthAuto: false }),
       ...(this.heightAuto ? {} : { heightAuto: false }),
       ...(this.bleed === DEFAULT_CARD_BLEED ? {} : { bleed: this.bleed }),
+      // 图表显示 overrides: undefined fields are dropped by the serializer.
+      ...this.displayOverrides,
     });
   }
 }
