@@ -17,7 +17,8 @@ import { t } from "../i18n";
 // HTTP client for one user-configured custom data source (设置页 → 自定义数据
 // 源). The plugin ships no endpoint URLs; both URLs come from the user's
 // templates with {query} / {code} / {start} / {end} (YYYYMMDD) / {startIso} /
-// {endIso} (YYYY-MM-DD) placeholders filled per request. `def.format` picks
+// {endIso} (YYYY-MM-DD) / {apiKey} placeholders filled per request;
+// apiKeyHeader adds an auth header on top. `def.format` picks
 // the response parser preset; "json" maps arbitrary payloads via def.jsonMap.
 
 // Tencent-format kline pages top out at ~640 bars; paging goes back at most
@@ -32,8 +33,8 @@ export class CustomQuoteClient {
   // search — the UI opens the manual-entry modal instead of calling this.
   async searchQuotes(query: string): Promise<SymbolItem[]> {
     if (!this.def.searchUrl) return [];
-    const url = fillTemplate(this.def.searchUrl, { query: encodeURIComponent(query) });
-    const response = await httpRequest({ url, method: "GET" });
+    const url = fillTemplate(this.def.searchUrl, templateValues(this.def, { query: encodeURIComponent(query) }));
+    const response = await authedGet(this.def, url);
     const items =
       this.def.format === "tencent"
         ? parseTencentSearch(response.text)
@@ -45,6 +46,9 @@ export class CustomQuoteClient {
 
   // Daily bars for [start, end] (YYYYMMDD), oldest first.
   async fetchKline(code: string, start: string, end: string): Promise<OhlcvRow[]> {
+    if (!this.def.klineUrl) {
+      throw new Error(t("自定义数据源「{name}」缺少 K线 URL 配置。", { name: this.def.name }));
+    }
     if (this.def.format === "tencent") return this.fetchTencentKline(code, start, end);
     if (this.def.format === "eastmoney") return this.fetchEastmoneyKline(code, start, end);
     return this.fetchJsonKline(code, start, end);
@@ -56,14 +60,14 @@ export class CustomQuoteClient {
     const all = new Map<string, OhlcvRow>();
     let pageEnd = end;
     for (let page = 0; page < MAX_PAGES; page++) {
-      const url = fillTemplate(this.def.klineUrl, {
+      const url = fillTemplate(this.def.klineUrl!, templateValues(this.def, {
         code: encodeURIComponent(code),
         start,
         end: pageEnd,
         startIso: isoDate(start),
         endIso: isoDate(pageEnd),
-      });
-      const response = await httpRequest({ url, method: "GET" });
+      }));
+      const response = await authedGet(this.def, url);
       const rows = parseTencentKline(response.json, code);
       if (rows.length === 0) break;
       for (const row of rows) {
@@ -81,17 +85,17 @@ export class CustomQuoteClient {
   // Eastmoney format: a ranged query returns the whole window in one call;
   // retry the same URL once for the occasional dropped connection.
   private async fetchEastmoneyKline(code: string, start: string, end: string): Promise<OhlcvRow[]> {
-    const url = fillTemplate(this.def.klineUrl, {
+    const url = fillTemplate(this.def.klineUrl!, templateValues(this.def, {
       code: encodeURIComponent(code),
       start,
       end,
       startIso: isoDate(start),
       endIso: isoDate(end),
-    });
+    }));
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const response = await httpRequest({ url, method: "GET" });
+        const response = await authedGet(this.def, url);
         return parseEastmoneyKline(response.json);
       } catch (e) {
         lastError = e instanceof Error ? e : new Error(String(e));
@@ -109,14 +113,14 @@ export class CustomQuoteClient {
     if (!map) {
       throw new Error(t("自定义数据源「{name}」缺少 JSON 字段映射配置。", { name: this.def.name }));
     }
-    const url = fillTemplate(this.def.klineUrl, {
+    const url = fillTemplate(this.def.klineUrl!, templateValues(this.def, {
       code: encodeURIComponent(urlCode),
       start,
       end,
       startIso: isoDate(start),
       endIso: isoDate(end),
-    });
-    const response = await httpRequest({ url, method: "GET" });
+    }));
+    const response = await authedGet(this.def, url);
     // The endpoint may ignore the range params; enforce the window locally.
     return parseMappedKline(response.json, map)
       .filter((row) => row.tradeDate >= start && row.tradeDate <= end);
@@ -152,14 +156,14 @@ export class CustomQuoteClient {
 export async function fetchKlineSample(def: CustomSourceDef, code: string): Promise<{ json: any; text: string }> {
   const end = formatDate(new Date());
   const start = formatDate(new Date(Date.now() - 400 * 86400000));
-  const url = fillTemplate(def.klineUrl, {
+  const url = fillTemplate(def.klineUrl ?? "", templateValues(def, {
     code: encodeURIComponent(splitCompositeCode(code).urlCode),
     start,
     end,
     startIso: isoDate(start),
     endIso: isoDate(end),
-  });
-  const response = await httpRequest({ url, method: "GET" });
+  }));
+  const response = await authedGet(def, url);
   return { json: response.json, text: response.text };
 }
 
@@ -167,8 +171,8 @@ export async function fetchKlineSample(def: CustomSourceDef, code: string): Prom
 // search URL; "json" sources keep their manual mapping.
 export async function autoDetectSearchFormat(def: CustomSourceDef): Promise<CustomSourceDef["format"]> {
   if (!def.searchUrl) return def.format;
-  const url = fillTemplate(def.searchUrl, { query: encodeURIComponent("000001") });
-  const response = await httpRequest({ url, method: "GET" });
+  const url = fillTemplate(def.searchUrl, templateValues(def, { query: encodeURIComponent("000001") }));
+  const response = await authedGet(def, url);
   if (parseTencentSearch(response.text).length > 0) return "tencent";
   if (parseEastmoneySearch(response.json).length > 0) return "eastmoney";
   return "json";
@@ -178,6 +182,35 @@ export async function autoDetectSearchFormat(def: CustomSourceDef): Promise<Cust
 // the user didn't mean to template stays intact.
 function fillTemplate(template: string, values: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (match, key: string) => values[key] ?? match);
+}
+
+// Template values shared by every request of a source: the {apiKey}
+// placeholder (query-param auth) is filled URL-encoded; header-mode auth
+// never goes into the URL.
+function templateValues(def: CustomSourceDef, extra: Record<string, string>): Record<string, string> {
+  return { apiKey: encodeURIComponent(def.apiKey ?? ""), ...extra };
+}
+
+// Builds the auth header set for a source, or undefined when no key/header
+// is configured. apiKeyHeader syntax: "Name" (header value = the raw key) or
+// "Name: value-template" (split on the first colon; the template may contain
+// {apiKey}, e.g. "Authorization: Bearer {apiKey}"). Header values are not
+// URL-encoded.
+export function buildAuthHeaders(def: Pick<CustomSourceDef, "apiKey" | "apiKeyHeader">): Record<string, string> | undefined {
+  const key = def.apiKey?.trim();
+  const spec = def.apiKeyHeader?.trim();
+  if (!key || !spec) return undefined;
+  const colon = spec.indexOf(":");
+  if (colon < 0) return { [spec]: key };
+  const name = spec.slice(0, colon).trim();
+  if (!name) return undefined;
+  return { [name]: fillTemplate(spec.slice(colon + 1).trim(), { apiKey: key }) };
+}
+
+// GET through the global throttle with the source's auth headers attached.
+function authedGet(def: CustomSourceDef, url: string) {
+  const headers = buildAuthHeaders(def);
+  return headers ? httpRequest({ url, method: "GET", headers }) : httpRequest({ url, method: "GET" });
 }
 
 function isoDate(ymd: string): string {

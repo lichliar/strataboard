@@ -14,7 +14,7 @@ import { pluginDir } from "./deploy-target.mjs";
  * exactly match manifest.json's version) → push the tag → `gh release
  * create` with the built plugin files from the deploy target (main.js /
  * manifest.json / styles.css / sql-wasm.wasm — the wasm is required by the
- * SQLite cache).
+ * SQLite cache — plus cli.js / mcp-server.js, the AI-facing entry points).
  *
  * Requires the GitHub CLI (`gh`) to be authenticated.
  */
@@ -40,7 +40,7 @@ run(`git push origin ${branch}`);
 run(`git tag ${tag}`);
 run(`git push origin ${tag}`);
 
-const files = ["main.js", "manifest.json", "styles.css", "sql-wasm.wasm"].map((f) =>
+const files = ["main.js", "manifest.json", "styles.css", "sql-wasm.wasm", "cli.js", "mcp-server.js"].map((f) =>
   JSON.stringify(join(pluginDir, f))
 );
 console.log(`→ Creating GitHub release ${tag} from ${pluginDir}`);

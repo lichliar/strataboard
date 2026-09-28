@@ -21,10 +21,11 @@ import { CalendarRenderer } from "./modules/calendar-renderer";
 import { WidgetRenderer } from "./modules/widget-renderer";
 import { parseWidgetInput } from "./modules/widget-parser";
 import { CanvasToolbar } from "./modules/toolbar";
-import { ChartCardCodeBlockRenderer, applyCanvasDisplayOptions } from "./modules/chart-card-base";
+import { ChartCardCodeBlockRenderer, applyCanvasDisplayOptions, type ChartCardRefreshHandle } from "./modules/chart-card-base";
 import { SeriesAdapter } from "./modules/series-adapter";
 import { formatExpressionTitle } from "./modules/expression";
 import { setRequestInterval } from "./modules/http";
+import { ensureBundledAssets } from "./modules/bundled-assets";
 import { SeriesChartRenderer, type SeriesChartLine } from "./modules/series-chart-renderer";
 import {
   DEFAULT_OVERLAY_SPEC,
@@ -52,15 +53,14 @@ import { CalendarEditModal } from "./ui/calendar-edit-modal";
 import { OverlayEditModal } from "./ui/overlay-edit-modal";
 import { SpreadEditModal } from "./ui/spread-edit-modal";
 import { ConfirmModal } from "./ui/confirm-modal";
-import { findMacroSeriesDef, fredTransformIsPercent, fredTransformLabel } from "./types";
-import type { AssetType, CustomSourceDef, FredCardSpec, FredSeriesInfo, MacroCardSpec, MacroSeriesDef, OverlayCompareMode, OverlaySpec, ParsedCardSpec, SeriesPeriod, SeriesPoint, SeriesRef, SpreadSpec, SymbolItem, ToolbarSourceId } from "./types";
+import { findMacroSeriesDef, fredTransformIsPercent, fredTransformLabel, ASSET_TYPE_LABELS, cacheAssetKey } from "./types";
+import type { AssetType, CustomSourceDef, FredCardSpec, FredSeriesInfo, MacroCardSpec, MacroSeriesDef, OverlayCompareMode, OverlaySpec, ParsedCardSpec, ReferenceableCard, ReferenceableCardKind, SeriesPeriod, SeriesPoint, SeriesRef, SpreadSpec, SymbolItem, ToolbarSourceId } from "./types";
 import { resolveDateRange, formatIsoDate, parseDateYmd } from "./utils/date";
+import { normalizePath } from "./utils/slug";
 import { onAttached } from "./utils/dom";
 import { t, setLanguage } from "./i18n";
-import { AI_CLI_PRESETS, detectCliPath, resolveCustomCli, type ResolvedCli } from "./modules/ai-cli";
-import { resolveApiProvider } from "./modules/ai-api";
-import type { AiToolContext } from "./modules/ai-tools";
-import { AiChatView, AI_CHAT_VIEW_TYPE, type AiChatViewDeps } from "./ui/ai-chat-view";
+import { syncScriptSources } from "./modules/script-sources";
+import { ScriptManagerModal } from "./ui/script-manager-modal";
 
 class TushareCodeBlockRenderer extends MarkdownRenderChild {
   private plugin: StrataBoardPlugin;
@@ -83,6 +83,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
   }
 
   onload() {
+    this.plugin.chartRenderers.add(this);
     void this.render();
 
     // Canvas interaction model (three tiers):
@@ -197,8 +198,16 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
   }
 
   onunload() {
+    this.plugin.chartRenderers.delete(this);
     // Not user-initiated: never persist during unload.
     this.setChartActive(false);
+  }
+
+  // Public re-render entry for the plugin-level registry (script-output
+  // invalidation refreshes every chart card): same path as the header
+  // refresh button.
+  refreshCard(): void {
+    void this.render();
   }
 
   private setChartActive(active: boolean, userInitiated = false) {
@@ -323,9 +332,11 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
       const data = await this.loadData(spec);
       // MA 口径：均线周期永远以交易日为单位，W/M 卡需要同一资产的日线
       // 数据（daily-only 类型本就以日线缓存，等于重取一次缓存）来计算。
-      // 失败降级为 null，ChartRenderer 回退到按显示频率计算。
+      // 失败降级为 null，ChartRenderer 回退到按显示频率计算。均线关闭时
+      // 跳过重取（无谓的缓存读）。
+      const showMA = spec.showMA ?? this.plugin.pluginSettings.showChartMA;
       const maBaseData =
-        spec.freq === "D"
+        spec.freq === "D" || !showMA
           ? null
           : await this.loadData({ ...spec, freq: "D" }).catch(() => null);
       const symbolInfo = await this.plugin.symbolIndex.lookup(spec.symbol, spec.assetType, spec.sourceId);
@@ -343,6 +354,7 @@ class TushareCodeBlockRenderer extends MarkdownRenderChild {
         showLegend: spec.showLegend ?? this.plugin.pluginSettings.showChartLegend,
         legendFrosted: spec.legendFrosted ?? this.plugin.pluginSettings.legendFrostedBackground,
         legendOpacity: spec.legendOpacity ?? this.plugin.pluginSettings.legendBackgroundOpacity,
+        showMA,
         showGrid: spec.showGrid ?? this.plugin.pluginSettings.showChartGrid,
         gridOpacity: spec.gridOpacity ?? this.plugin.pluginSettings.gridOpacity,
         loadMarketData: (tradeDate) => this.loadMarketData(spec, tradeDate),
@@ -683,13 +695,14 @@ function buildOverlayLine(ref: SeriesRef, points: SeriesPoint[], mode: OverlayCo
     return { line: { name, points }, percentish };
   }
 
-  // Macro money series (m0/m1/m2 余额, GDP, 社融) are shown in 万亿元;
-  // percent series (同比/环比, LPR) plot raw and count as percent-ish; PMI
-  // 指数 plot raw without the percent legend suffix.
+  // Macro money series (m0/m1/m2 余额, GDP, 社融, 沪深港通资金流向) are shown
+  // in the def's display unit (default 万亿元); percent series (同比/环比,
+  // LPR) plot raw and count as percent-ish; PMI 指数 plot raw without the
+  // percent legend suffix.
   const def = ref.seriesId ? findMacroSeriesDef(ref.seriesId) : undefined;
   if (def?.kind === "money") {
     const divisor = def.divisor ?? 10000;
-    name += t("（万亿元）");
+    name += t("（{unit}）", { unit: t(def.unit ?? "万亿元") });
     return {
       line: { name, points: points.map((p) => ({ date: p.date, value: p.value / divisor })) },
       percentish: false,
@@ -842,7 +855,7 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
         void this.fcPlugin.updateOverlayCard(this.sourcePath, newSpec);
       },
       (onSelect, assetType, sourceId) => this.fcPlugin.openSymbolSearch(onSelect, assetType, sourceId),
-      () => this.fcPlugin.listSpreadCards(),
+      () => this.fcPlugin.listReferenceableCards(),
       (onSelect) => this.fcPlugin.openFredSearch(onSelect),
       undefined,
       this.fcPlugin.enabledCustomSources(),
@@ -1210,7 +1223,8 @@ class FredCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
 // Standalone macro card (```macro block): one Tushare China-macro series with
 // the same presentation as the FRED card. Display name, unit handling and
-// money scaling (万亿元) come from the MACRO_SERIES_OPTIONS catalog entry.
+// money scaling (to the def's display unit, default 万亿元) come from the
+// MACRO_SERIES_OPTIONS catalog entry.
 class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
   private fcPlugin: StrataBoardPlugin;
   private result: SeriesSpecParseResult<MacroCardSpec>;
@@ -1252,7 +1266,7 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     const valueSuffix = def.kind === "percent" ? "%" : undefined;
     let name = t(def.label);
     if (def.kind === "money") {
-      name += t("（万亿元）");
+      name += t("（{unit}）", { unit: t(def.unit ?? "万亿元") });
     }
 
     this.containerEl.createEl("div", {
@@ -1268,8 +1282,8 @@ class MacroCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       this.renderLoadError(e);
       return;
     }
-    // Money series are stored raw (亿元 / 万亿元 depending on the field);
-    // scale to 万亿元 for display, same as the overlay legend.
+    // Money series are stored raw (亿元 / 万亿元 / 百万元 depending on the
+    // field); scale to the def's display unit, same as the overlay legend.
     if (def.kind === "money") {
       const divisor = def.divisor ?? 10000;
       points = points.map((p) => ({ date: p.date, value: p.value / divisor }));
@@ -1418,11 +1432,12 @@ export default class StrataBoardPlugin extends Plugin {
   symbolIndex!: SymbolIndex;
   cardService!: CardService;
   toolbar!: CanvasToolbar;
-  // AI 助手: resolved CLI paths (command → absolute path | null), filled
-  // lazily by listAiClis(); cleared on settings save so path overrides and
-  // 「重新检测」 take effect.
-  private aiCliPathCache = new Map<string, string | null>();
-  private settingTab?: StrataBoardSettingTab;
+  // Live chart card renderers; the script-output invalidation re-renders all
+  // of them (renderers register/unregister themselves in onload/onunload).
+  readonly chartRenderers = new Set<ChartCardRefreshHandle>();
+  // Per-path debounce timers for the script-output watcher (scripts may
+  // write their CSV in several IO bursts).
+  private scriptOutputTimers = new Map<string, number>();
 
   async onload() {
     await this.loadSettings();
@@ -1430,6 +1445,10 @@ export default class StrataBoardPlugin extends Plugin {
     const pluginDir = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
     const dataCachePath = this.pluginSettings.dataCachePath;
     const symbolCachePath = this.pluginSettings.symbolCachePath;
+
+    // Store installs lack the release extras; fetch them before the SQLite
+    // cache init needs sql-wasm.wasm.
+    await ensureBundledAssets(this.app, pluginDir, this.manifest.version);
 
     this.sqliteCache = new SqliteCache({ vault: this.app.vault, pluginDir });
     await this.sqliteCache.init({
@@ -1448,6 +1467,13 @@ export default class StrataBoardPlugin extends Plugin {
       cache: this.sqliteCache,
       token: this.pluginSettings.tushareToken,
       customSources: this.pluginSettings.customSources,
+      readVaultFile: async (path) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) {
+          throw new Error(t("文件不存在：{path}", { path }));
+        }
+        return this.app.vault.cachedRead(file);
+      },
     });
 
     this.seriesAdapter = new SeriesAdapter({
@@ -1473,22 +1499,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.toolbar = new CanvasToolbar(this);
 
-    // AI 助手 sidebar: the view resolves its CLI list lazily on open, so no
-    // detection cost is paid at plugin load.
-    this.registerView(
-      AI_CHAT_VIEW_TYPE,
-      (leaf) => new AiChatView(leaf, this.buildAiChatDeps())
-    );
-    this.addRibbonIcon("bot", t("打开 AI 助手"), () => void this.openAiChat());
-
-    this.settingTab = new StrataBoardSettingTab(this.app, this);
-    this.addSettingTab(this.settingTab);
-
-    this.addCommand({
-      id: "open-ai-chat",
-      name: t("打开 AI 助手"),
-      callback: () => void this.openAiChat(),
-    });
+    this.addSettingTab(new StrataBoardSettingTab(this.app, this));
 
     this.addCommand({
       id: "open-settings",
@@ -1604,6 +1615,12 @@ export default class StrataBoardPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "open-script-manager",
+      name: t("打开脚本管理"),
+      callback: () => this.openScriptManager(),
+    });
+
     this.registerMarkdownCodeBlockProcessor("tushare", (source, el, ctx) => {
       const renderer = new TushareCodeBlockRenderer(this, el, source, ctx.sourcePath);
       ctx.addChild(renderer);
@@ -1688,12 +1705,39 @@ export default class StrataBoardPlugin extends Plugin {
       })
     );
 
+    // Script-output watcher (脚本处理): a script rewriting its CSV is
+    // invisible to the incremental cache (the cached extent already covers
+    // the rewritten history), so a modify clears the matching source's cache
+    // keys and re-renders every chart card; a create registers the new file
+    // as a source. Deletes are left to manual source management (settings
+    // 自定义数据源 list). Debounced per file — scripts may write in bursts.
+    this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        if (this.isScriptOutputFile(file)) {
+          this.debounceScriptOutput(file.path, () => void syncScriptSources(this));
+        }
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (this.isScriptOutputFile(file)) {
+          this.debounceScriptOutput(file.path, () => void this.invalidateScriptOutput(file.path));
+        }
+      })
+    );
+
+    // Register script outputs that already exist (first run / plugin reload).
+    void syncScriptSources(this);
+
+    // Legacy cleanup: the AI card-authoring guide used to be written into
+    // the card library on every load; it now lives in 设置 → 外部 AI 接入.
+    void this.removeLegacyAiGuide();
+
     this.attachToolbarToCanvas(this.app.workspace.activeLeaf);
   }
 
   onunload() {
     this.toolbar.detach();
-    this.app.workspace.detachLeavesOfType(AI_CHAT_VIEW_TYPE);
     this.sqliteCache?.save().then(() => this.sqliteCache?.close()).catch((e) => {
       console.error("StrataBoard: failed to save SQLite cache on unload", e);
       this.sqliteCache?.close();
@@ -1750,106 +1794,71 @@ export default class StrataBoardPlugin extends Plugin {
       componentCardPath: this.pluginSettings.componentCardPath,
     });
     this.toolbar?.reload();
-    this.aiCliPathCache.clear();
-  }
-
-  // ==================== AI 助手（在线 API + 本地 CLI） ====================
-
-  // Online API providers + detected CLI presets (manual path overrides
-  // applied) + user-defined custom CLIs. Detection shells out once per
-  // command and caches the result.
-  async listAiClis(): Promise<ResolvedCli[]> {
-    const out: ResolvedCli[] = this.pluginSettings.aiApiProviders.map(resolveApiProvider);
-    for (const preset of AI_CLI_PRESETS) {
-      const override = this.pluginSettings.aiCliPaths[preset.command]?.trim();
-      let command: string | null;
-      if (override) {
-        command = override;
-      } else {
-        if (!this.aiCliPathCache.has(preset.command)) {
-          this.aiCliPathCache.set(preset.command, await detectCliPath(preset.command));
-        }
-        command = this.aiCliPathCache.get(preset.command) ?? null;
-      }
-      if (command) {
-        out.push({
-          id: preset.id,
-          label: preset.label,
-          command,
-          buildArgs: preset.buildArgs,
-          parseOutput: preset.parseOutput,
-        });
-      }
-    }
-    for (const def of this.pluginSettings.aiCustomClis) {
-      out.push(resolveCustomCli(def));
-    }
-    return out;
-  }
-
-  // Clears the detection cache so the next listAiClis() re-probes PATH
-  // (设置页「重新检测」按钮).
-  async redetectAiClis(): Promise<void> {
-    this.aiCliPathCache.clear();
-  }
-
-  private buildAiChatDeps(): AiChatViewDeps {
-    return {
-      app: this.app,
-      listClis: () => this.listAiClis(),
-      getSelectedCliId: () => this.pluginSettings.aiCliId,
-      setSelectedCliId: async (id) => {
-        this.pluginSettings.aiCliId = id;
-        await this.saveSettings();
-      },
-      getConfirmWrites: () => this.pluginSettings.aiConfirmWrites,
-      getMaxRounds: () => this.pluginSettings.aiMaxRounds,
-      toolContext: () => this.buildAiToolContext(),
-      openAiSettings: () => {
-        (this.app as any).setting.open();
-        (this.app as any).setting.openTabById(this.manifest.id);
-        this.settingTab?.navigateTo("ai");
-      },
-    };
-  }
-
-  buildAiToolContext(): AiToolContext {
-    return {
-      app: this.app,
-      dataAdapter: this.dataAdapter,
-      seriesAdapter: this.seriesAdapter,
-      symbolIndex: this.symbolIndex,
-      cardService: this.cardService,
-      toolbar: this.toolbar,
-      getCustomSources: () => this.pluginSettings.customSources,
-      // Upsert through the settings channel — never let the AI edit data.json
-      // directly (a later settings save would clobber external edits).
-      saveCustomSource: async (def) => {
-        const sources = this.pluginSettings.customSources;
-        const index = sources.findIndex((s) => s.id === def.id);
-        if (index >= 0) sources[index] = def;
-        else sources.push(def);
-        await this.saveSettings();
-      },
-    };
-  }
-
-  // Opens (or reveals) the AI chat sidebar.
-  async openAiChat(): Promise<void> {
-    const { workspace } = this.app;
-    let leaf = workspace.getLeavesOfType(AI_CHAT_VIEW_TYPE)[0];
-    if (!leaf) {
-      const rightLeaf = workspace.getRightLeaf(false);
-      if (!rightLeaf) return;
-      await rightLeaf.setViewState({ type: AI_CHAT_VIEW_TYPE, active: true });
-      leaf = rightLeaf;
-    }
-    workspace.revealLeaf(leaf);
   }
 
   // Enabled custom sources, for the pickers and edit modals.
   enabledCustomSources(): CustomSourceDef[] {
     return this.pluginSettings.customSources.filter((s) => s.enabled);
+  }
+
+  // Trashes the pre-refactor copy of the AI guide in the card library (the
+  // guide moved into 设置 → 外部 AI 接入). No-op once the file is gone.
+  private async removeLegacyAiGuide() {
+    try {
+      const file = this.app.vault.getAbstractFileByPath(
+        `${normalizePath(this.pluginSettings.cardLibraryPath)}/StrataBoard卡片编写指南.md`
+      );
+      if (file instanceof TFile) await this.app.fileManager.trashFile(file);
+    } catch (e) {
+      console.error("StrataBoard: failed to remove legacy AI guide", e);
+    }
+  }
+
+  // ==================== 脚本处理 (user Python scripts → CSV sources) ====================
+
+  // Opens the script manager modal (toolbar 数据处理 menu + command).
+  openScriptManager() {
+    new ScriptManagerModal(this.app, this).open();
+  }
+
+  private isScriptOutputFile(file: unknown): file is TFile {
+    if (!(file instanceof TFile) || file.extension !== "csv") return false;
+    const outputDir = `${normalizePath(this.pluginSettings.scriptFolderPath)}/output`;
+    return file.parent?.path === outputDir;
+  }
+
+  private debounceScriptOutput(path: string, fn: () => void) {
+    const existing = this.scriptOutputTimers.get(path);
+    if (existing !== undefined) window.clearTimeout(existing);
+    this.scriptOutputTimers.set(
+      path,
+      window.setTimeout(() => {
+        this.scriptOutputTimers.delete(path);
+        fn();
+      }, 2000)
+    );
+  }
+
+  // Clears every cache key of the custom source fed by a script-output CSV
+  // (registering the file first when it is new), then re-renders ALL chart
+  // cards — no precise reference tracking: local CSV reads are cheap and the
+  // cache merge is idempotent. Called by the vault watcher (debounced) and
+  // directly by 立即运行 in the script manager.
+  async invalidateScriptOutput(path: string) {
+    let source = this.pluginSettings.customSources.find((s) => s.format === "csv" && s.filePath === path);
+    if (!source) {
+      await syncScriptSources(this);
+      source = this.pluginSettings.customSources.find((s) => s.format === "csv" && s.filePath === path);
+    }
+    if (source) {
+      const assetKey = cacheAssetKey("custom", source.id) as AssetType;
+      for (const key of await this.sqliteCache.listOhlcvKeys()) {
+        if (key.assetType === assetKey) {
+          await this.sqliteCache.deleteOhlcv(key.symbol, key.assetType);
+        }
+      }
+    }
+    for (const renderer of this.chartRenderers) renderer.refreshCard();
   }
 
   // Data-source availability for the series row editor's first column —
@@ -1949,12 +1958,12 @@ export default class StrataBoardPlugin extends Plugin {
         ? [
             {
               name: "Tushare 资产",
-              desc: "股票/基金/指数/南华指数/港股/全球指数/可转债/期货/外汇/申万行业 · 日K/周K/月K",
+              desc: "股票/基金/场外基金/指数/南华指数/港股/全球指数/可转债/期货/外汇/申万行业 · 日K/周K/月K",
               onPick: () => this.openSymbolSearch((item) => void this.insertCard(item)),
             },
             {
               name: "Tushare 宏观",
-              desc: "货币供应/CPI/PMI/社融/LPR/国债收益率",
+              desc: "货币供应/CPI/PMI/社融/LPR/Shibor/北向资金/国债收益率/指数估值",
               onPick: () => void this.insertMacroCard(),
             },
           ]
@@ -1994,12 +2003,12 @@ export default class StrataBoardPlugin extends Plugin {
         ? [
             {
               name: "Tushare 资产",
-              desc: "股票/基金/指数/南华指数/港股/全球指数/可转债/期货/外汇/申万行业 · 日K/周K/月K",
+              desc: "股票/基金/场外基金/指数/南华指数/港股/全球指数/可转债/期货/外汇/申万行业 · 日K/周K/月K",
               onPick: () => this.openSymbolSearch((item) => void this.insertCard(item, editor)),
             },
             {
               name: "Tushare 宏观",
-              desc: "货币供应/CPI/PMI/社融/LPR/国债收益率",
+              desc: "货币供应/CPI/PMI/社融/LPR/Shibor/北向资金/国债收益率/指数估值",
               onPick: () => void this.insertMacroCard(editor),
             },
             {
@@ -2062,6 +2071,8 @@ export default class StrataBoardPlugin extends Plugin {
       range: this.resolveDefaultRange(),
       version: 1,
       height: DEFAULT_CARD_HEIGHT,
+      // 场外基金净值没有 OHLC — 折线才有意义。
+      ...(item.assetType === "ofund" ? { chartType: "line" as const } : {}),
     };
 
     if (editor) {
@@ -2165,7 +2176,7 @@ export default class StrataBoardPlugin extends Plugin {
       DEFAULT_OVERLAY_SPEC,
       (spec) => void this.createOverlayCard(spec, editor),
       (onSelect, assetType, sourceId) => this.openSymbolSearch(onSelect, assetType, sourceId),
-      () => this.listSpreadCards(),
+      () => this.listReferenceableCards(),
       (onSelect) => this.openFredSearch(onSelect),
       t("新建资产叠加卡"),
       this.enabledCustomSources(),
@@ -2292,20 +2303,23 @@ export default class StrataBoardPlugin extends Plugin {
     }
   }
 
-  // Lists existing spread cards (md files under the card library whose
-  // content has a ```spread block) for the 已有卡片 dropdown in the overlay
-  // editor. Display name is the file basename, sorted by name.
-  async listSpreadCards(): Promise<{ path: string; name: string }[]> {
+  // Lists existing card files an overlay series can reference (md files under
+  // the card library with a ```tushare / ```fred / ```macro / ```spread
+  // block). Overlay cards are not referenceable (which of the normalized
+  // lines would it resolve to?). Display name is the file basename, sorted
+  // by name; `kind` is the block type, used for dropdown grouping.
+  async listReferenceableCards(): Promise<ReferenceableCard[]> {
     const libraryPath = this.pluginSettings.cardLibraryPath;
     const files = this.app.vault
       .getMarkdownFiles()
       .filter((f) => f.path.startsWith(libraryPath + "/"));
 
-    const cards: { path: string; name: string }[] = [];
+    const cards: ReferenceableCard[] = [];
     for (const file of files) {
       const content = await this.app.vault.cachedRead(file);
-      if (!/```spread\n[\s\S]*?\n```/.test(content)) continue;
-      cards.push({ path: file.path, name: file.basename });
+      const match = content.match(/```(tushare|fred|macro|spread)\n[\s\S]*?\n```/);
+      if (!match) continue;
+      cards.push({ path: file.path, name: file.basename, kind: match[1] as ReferenceableCardKind });
     }
     return cards.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   }
@@ -2587,11 +2601,11 @@ export default class StrataBoardPlugin extends Plugin {
         result.spec,
         (newSpec) => void this.updateOverlayCard(path, newSpec),
         (onSelect, assetType, sourceId) => this.openSymbolSearch(onSelect, assetType, sourceId),
-        () => this.listSpreadCards(),
+        () => this.listReferenceableCards(),
         (onSelect) => this.openFredSearch(onSelect),
         undefined,
         this.enabledCustomSources(),
-      this.seriesSourceAvailability()
+        this.seriesSourceAvailability()
       ).open();
       return;
     }
@@ -2610,7 +2624,7 @@ export default class StrataBoardPlugin extends Plugin {
         (onSelect) => this.openFredSearch(onSelect),
         undefined,
         this.enabledCustomSources(),
-      this.seriesSourceAvailability()
+        this.seriesSourceAvailability()
       ).open();
     }
   }

@@ -1,6 +1,7 @@
 export type AssetType =
   | "stock"
   | "fund"
+  | "ofund"
   | "index"
   | "nhindex"
   | "hk"
@@ -17,6 +18,7 @@ export type AssetType =
 export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
   stock: "股票",
   fund: "基金",
+  ofund: "场外基金",
   index: "指数",
   nhindex: "南华指数",
   hk: "港股",
@@ -37,6 +39,7 @@ export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
 export const ASSET_TYPE_MIN_POINTS: Record<AssetType, string> = {
   stock: "120起",
   fund: "2000",
+  ofund: "2000",
   index: "2000起",
   nhindex: "2000",
   hk: "2000",
@@ -52,6 +55,7 @@ export const ASSET_TYPE_MIN_POINTS: Record<AssetType, string> = {
 export const ASSET_TYPES: AssetType[] = [
   "stock",
   "fund",
+  "ofund",
   "index",
   "nhindex",
   "hk",
@@ -65,20 +69,25 @@ export const ASSET_TYPES: AssetType[] = [
 
 // ==================== Custom data sources (user-configured REST) ====================
 
-// A user-defined REST quote source (设置页 → 自定义数据源). The plugin ships
-// no URLs — users paste their own endpoint templates. `format` selects the
-// response parser preset (quote-format-parsers.ts); "json" maps arbitrary
-// payloads via jsonMap.
+// A user-defined quote source (设置页 → 自定义数据源). The plugin ships no
+// URLs — users paste their own endpoint templates, or point format "csv" at a
+// vault-local CSV file. `format` selects the parser preset
+// (quote-format-parsers.ts for the HTTP formats, csv-quote-client.ts for
+// "csv"); "json"/"csv" map columns via jsonMap (cols.close "{code}" = wide
+// table, the code picks the column).
 export interface CustomSourceDef {
   id: string;                       // stable slug, never changes once created
   name: string;                     // user label: pickers / toolbar / card file names
   enabled: boolean;
-  format: "tencent" | "eastmoney" | "json";
+  format: "tencent" | "eastmoney" | "json" | "csv";
   searchUrl?: string;               // template, {query} placeholder; empty = no server-side search (manual entry)
-  klineUrl: string;                 // template, {code} {start} {end} (YYYYMMDD) / {endIso} (YYYY-MM-DD) placeholders
+  klineUrl?: string;                // HTTP formats only: template, {code} {start} {end} (YYYYMMDD) / {endIso} (YYYY-MM-DD) placeholders
+  filePath?: string;                // format "csv" only: vault-relative path of the CSV file
   testCode?: string;                // symbol code used by the 检测 connectivity test (kline probe)
-  jsonMap?: JsonSourceMap;          // format "json" only
+  jsonMap?: JsonSourceMap;          // formats "json"/"csv": column mapping (csv rows are objects keyed by header)
   symbols?: SymbolListEntry[];      // static code table: named picks at card time without a searchUrl
+  apiKey?: string;                  // secret, stored plaintext in data.json like tushareToken; never sent to AI context; stripped on export
+  apiKeyHeader?: string;            // optional auth header spec: "Name" or "Name: value-template" where the template may contain {apiKey} (e.g. "Authorization: Bearer {apiKey}")
 }
 
 // One row of a custom source's static code table (code + display name).
@@ -105,29 +114,6 @@ export function cacheAssetKey(assetType: string, sourceId?: string): string {
   return assetType === "custom" && sourceId ? `custom:${sourceId}` : assetType;
 }
 
-// ==================== AI 助手 (local CLIs + online API models) ====================
-
-// A user-defined AI CLI entry (设置页 → AI 助手 → 自定义 AI 命令): any local
-// command that takes one prompt and prints the answer to stdout. argsTemplate
-// carries a `{prompt}` placeholder, e.g. ["-p", "{prompt}"] or ["exec", "{prompt}"].
-export interface CustomCliDef {
-  id: string;        // stable slug, never changes once created
-  name: string;      // user label: CLI picker / settings list
-  command: string;   // executable name or absolute path
-  argsTemplate: string[];
-}
-
-// A user-configured online LLM (设置页 → AI 助手 → 在线 API 模型): any
-// OpenAI-compatible chat-completions endpoint (DeepSeek, GPT, Kimi, ...).
-// The plugin ships no keys; baseUrl/apiKey/model are all user-supplied.
-export interface ApiProviderDef {
-  id: string;        // stable slug, never changes once created
-  name: string;      // user label: model picker / settings list
-  baseUrl: string;   // e.g. https://api.deepseek.com/v1
-  apiKey: string;
-  model: string;     // e.g. deepseek-chat
-}
-
 export type Freq = "D" | "W" | "M";
 export type RangePreset = "1y" | "3y" | "5y" | "10y" | "20y" | "ytd" | "max";
 export type ChartTheme = "auto" | "dark" | "light";
@@ -142,9 +128,9 @@ export type ToolbarStyle = "icon" | "text";
 // TradingView remains a per-source toggle.
 export type ToolbarSourceId = "tradingview";
 // Reorderable top-level toolbar entries: 「插入数据」, 「数据处理」(overlay +
-// spread menu), TradingView, 「组件」, and 「AI 助手」. 全部刷新/设置 follow the
-// list, not reorderable.
-export type ToolbarEntryId = "insert-data" | "data-tools" | "tradingview" | "components" | "ai-chat";
+// spread menu), TradingView, 「组件」. 全部刷新/设置 follow the list, not
+// reorderable.
+export type ToolbarEntryId = "insert-data" | "data-tools" | "tradingview" | "components";
 export type VisibleRangePreset = "1m" | "3m" | "6m" | "1y" | "ytd" | "max";
 export type WidgetType = "iframe" | "html";
 export type CardContentType = "tushare" | "widget" | "calendar";
@@ -189,6 +175,8 @@ export interface DisplayOverrides {
   legendOpacity?: number;
   showLatestValue?: boolean;
   showPointMarkers?: boolean;
+  // K-line cards only: moving-average lines (系列图 cards have no MA).
+  showMA?: boolean;
   showGrid?: boolean;
   gridOpacity?: number;
 }
@@ -223,6 +211,7 @@ export interface ParsedCardSpec {
   showLegend?: boolean;
   legendFrosted?: boolean;
   legendOpacity?: number; // percent 0-100
+  showMA?: boolean;       // 显示均线 override (undefined = follow 全局 showChartMA)
   showGrid?: boolean;
   gridOpacity?: number;   // percent 0-100
   widgetType?: WidgetType;
@@ -270,7 +259,7 @@ export interface SeriesRef {
   assetType?: AssetType;  // quote only
   sourceId?: string;      // quote only, assetType "custom": which CustomSourceDef feeds it
   seriesId?: string;      // macro: a MACRO_SERIES_OPTIONS id like "m1_yoy" / "cpi_yoy"; fred: e.g. "DGS10"
-  cardPath?: string;      // card only: vault-relative path of the referenced spread card .md
+  cardPath?: string;      // card only: vault-relative path of the referenced card .md (tushare/fred/macro/spread block)
   label?: string;         // optional display name override
   units?: string;         // fred only: FRED "units" metadata (e.g. "Percent"), used to tell percent series apart
   transform?: FredTransform; // fred only: server-side units transformation; absent = 原始值 (lin)
@@ -322,6 +311,17 @@ export interface FredSeriesInfo {
 export interface SeriesPoint {
   date: string;  // YYYY-MM-DD
   value: number;
+}
+
+// A card file an overlay series can reference (source: "card"), identified by
+// its fenced block type. Overlay cards are deliberately not referenceable
+// (which of the normalized lines would it resolve to?).
+export type ReferenceableCardKind = "tushare" | "fred" | "macro" | "spread";
+
+export interface ReferenceableCard {
+  path: string;  // vault-relative .md path
+  name: string;  // file basename (display name)
+  kind: ReferenceableCardKind;
 }
 
 // How the overlay card puts its series on a comparable footing:
@@ -409,9 +409,13 @@ export interface MacroSeriesDef {
   // Minimum Tushare points needed to call the API; "special" = a separately
   // granted permission (yc_cb, contact Tushare admins), not a points tier.
   points: number | "special";
-  // money only: raw-value → 万亿元 divisor (10000 for 亿元-denominated
-  // fields; 1 for sf_month's already-万亿元 stk_endval).
+  // money only: raw-value → display-unit divisor (10000 for 亿元-denominated
+  // fields shown as 万亿元; 1 for sf_month's already-万亿元 stk_endval; 100
+  // for moneyflow_hsgt's 百万元 → 亿元).
   divisor?: number;
+  // money only: the display unit appended to the series name, e.g. "亿元";
+  // defaults to "万亿元".
+  unit?: string;
   // Extra request params for APIs whose rows are keyed by more than a date
   // (yc_cb: ts_code/curve_type/curve_term select one curve tenor).
   params?: Record<string, string>;
@@ -461,12 +465,45 @@ export const MACRO_SERIES_OPTIONS: MacroSeriesDef[] = [
   // 利率 (shibor_lpr, 月度, 120积分)
   { id: "lpr_1y", label: "LPR 1年期", api: "shibor_lpr", field: "1y", freq: "M", group: "利率", kind: "percent", points: 120 },
   { id: "lpr_5y", label: "LPR 5年期以上", api: "shibor_lpr", field: "5y", freq: "M", group: "利率", kind: "percent", points: 120 },
+  // Shibor (shibor, 日度, 120积分)
+  { id: "shibor_on", label: "Shibor 隔夜", api: "shibor", field: "on", freq: "D", group: "利率", kind: "percent", points: 120 },
+  { id: "shibor_1w", label: "Shibor 1周", api: "shibor", field: "1w", freq: "D", group: "利率", kind: "percent", points: 120 },
+  { id: "shibor_1m", label: "Shibor 1个月", api: "shibor", field: "1m", freq: "D", group: "利率", kind: "percent", points: 120 },
+  { id: "shibor_3m", label: "Shibor 3个月", api: "shibor", field: "3m", freq: "D", group: "利率", kind: "percent", points: 120 },
+  { id: "shibor_1y", label: "Shibor 1年", api: "shibor", field: "1y", freq: "D", group: "利率", kind: "percent", points: 120 },
+  // 沪深港通资金流向 (moneyflow_hsgt, 日度, 2000积分; 原始单位百万元 → 亿元)
+  { id: "hsgt_north", label: "北向资金", api: "moneyflow_hsgt", field: "north_money", freq: "D", group: "资金流向", kind: "money", points: 2000, divisor: 100, unit: "亿元" },
+  { id: "hsgt_south", label: "南向资金", api: "moneyflow_hsgt", field: "south_money", freq: "D", group: "资金流向", kind: "money", points: 2000, divisor: 100, unit: "亿元" },
+  { id: "hsgt_hgt", label: "沪股通", api: "moneyflow_hsgt", field: "hgt", freq: "D", group: "资金流向", kind: "money", points: 2000, divisor: 100, unit: "亿元" },
+  { id: "hsgt_sgt", label: "深股通", api: "moneyflow_hsgt", field: "sgt", freq: "D", group: "资金流向", kind: "money", points: 2000, divisor: 100, unit: "亿元" },
   // 国债收益率 (yc_cb, 日频, 单独权限 — 需联系 Tushare 管理员开通;
   // 中债国债到期收益率曲线, curve_term 单位: 年)
   { id: "cgb_1y", label: "中债国债到期收益率 1年", api: "yc_cb", field: "yield", freq: "D", group: "国债收益率", kind: "percent", points: "special", params: { ts_code: "1001.CB", curve_type: "0", curve_term: "1" } },
   { id: "cgb_2y", label: "中债国债到期收益率 2年", api: "yc_cb", field: "yield", freq: "D", group: "国债收益率", kind: "percent", points: "special", params: { ts_code: "1001.CB", curve_type: "0", curve_term: "2" } },
   { id: "cgb_10y", label: "中债国债到期收益率 10年", api: "yc_cb", field: "yield", freq: "D", group: "国债收益率", kind: "percent", points: "special", params: { ts_code: "1001.CB", curve_type: "0", curve_term: "10" } },
   { id: "cgb_30y", label: "中债国债到期收益率 30年", api: "yc_cb", field: "yield", freq: "D", group: "国债收益率", kind: "percent", points: "special", params: { ts_code: "1001.CB", curve_type: "0", curve_term: "30" } },
+  // 指数估值 (index_dailybasic, 日度, 2000积分; 按 ts_code 分组拉取)
+  { id: "sse_pe_ttm", label: "上证综指 PE-TTM", api: "index_dailybasic", field: "pe_ttm", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000001.SH" } },
+  { id: "sse_pb", label: "上证综指 PB", api: "index_dailybasic", field: "pb", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000001.SH" } },
+  { id: "sse_turnover", label: "上证综指 换手率", api: "index_dailybasic", field: "turnover_rate", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000001.SH" } },
+  { id: "csi300_pe_ttm", label: "沪深300 PE-TTM", api: "index_dailybasic", field: "pe_ttm", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000300.SH" } },
+  { id: "csi300_pb", label: "沪深300 PB", api: "index_dailybasic", field: "pb", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000300.SH" } },
+  { id: "csi300_turnover", label: "沪深300 换手率", api: "index_dailybasic", field: "turnover_rate", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000300.SH" } },
+  { id: "sse50_pe_ttm", label: "上证50 PE-TTM", api: "index_dailybasic", field: "pe_ttm", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000016.SH" } },
+  { id: "sse50_pb", label: "上证50 PB", api: "index_dailybasic", field: "pb", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000016.SH" } },
+  { id: "sse50_turnover", label: "上证50 换手率", api: "index_dailybasic", field: "turnover_rate", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000016.SH" } },
+  { id: "csi500_pe_ttm", label: "中证500 PE-TTM", api: "index_dailybasic", field: "pe_ttm", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000905.SH" } },
+  { id: "csi500_pb", label: "中证500 PB", api: "index_dailybasic", field: "pb", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000905.SH" } },
+  { id: "csi500_turnover", label: "中证500 换手率", api: "index_dailybasic", field: "turnover_rate", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "000905.SH" } },
+  { id: "szse_pe_ttm", label: "深证成指 PE-TTM", api: "index_dailybasic", field: "pe_ttm", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "399001.SZ" } },
+  { id: "szse_pb", label: "深证成指 PB", api: "index_dailybasic", field: "pb", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "399001.SZ" } },
+  { id: "szse_turnover", label: "深证成指 换手率", api: "index_dailybasic", field: "turnover_rate", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "399001.SZ" } },
+  { id: "chinext_pe_ttm", label: "创业板指 PE-TTM", api: "index_dailybasic", field: "pe_ttm", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "399006.SZ" } },
+  { id: "chinext_pb", label: "创业板指 PB", api: "index_dailybasic", field: "pb", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "399006.SZ" } },
+  { id: "chinext_turnover", label: "创业板指 换手率", api: "index_dailybasic", field: "turnover_rate", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "399006.SZ" } },
+  { id: "smcap_pe_ttm", label: "中小板指 PE-TTM", api: "index_dailybasic", field: "pe_ttm", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "399005.SZ" } },
+  { id: "smcap_pb", label: "中小板指 PB", api: "index_dailybasic", field: "pb", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "399005.SZ" } },
+  { id: "smcap_turnover", label: "中小板指 换手率", api: "index_dailybasic", field: "turnover_rate", freq: "D", group: "指数估值", kind: "percent", points: 2000, params: { ts_code: "399005.SZ" } },
 ];
 
 export function findMacroSeriesDef(id: string): MacroSeriesDef | undefined {

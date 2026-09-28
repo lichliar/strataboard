@@ -5,6 +5,15 @@ import { onAttached } from "../utils/dom";
 // of the main.ts import cycle. The full plugin satisfies it structurally.
 export interface ChartCardPluginHost {
   app: App;
+  // Live chart card renderers; the script-output invalidation re-renders all
+  // of them (registered/unregistered in onload/onunload below).
+  chartRenderers: Set<ChartCardRefreshHandle>;
+}
+
+// Public re-render surface of a chart card renderer (the plugin-level
+// registry stores these; main.ts' tushare renderer satisfies it too).
+export interface ChartCardRefreshHandle {
+  refreshCard(): void;
 }
 
 /** The card spec's Canvas 显示逻辑 fields, resolved against defaults. */
@@ -75,6 +84,7 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
   }
 
   onload() {
+    this.plugin.chartRenderers.add(this);
     // Obsidian's canvas file node enters its embedded edit mode when a click
     // lands on node content — UNLESS the target is inside an element marked
     // .interactive-child (the escape hatch its own bases embed uses; verified
@@ -188,12 +198,20 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
   }
 
   onunload() {
+    this.plugin.chartRenderers.delete(this);
     // No onChartModeExit hook here: writing files during unload is unsafe.
     this.setChartActive(false);
   }
 
   // Subclass renders the chart (or the error + retry state) into containerEl.
   protected abstract renderBody(): void | Promise<void>;
+
+  // Public re-render entry for the plugin-level registry (script-output
+  // invalidation refreshes every chart card): same render path as the header
+  // refresh button.
+  refreshCard(): void {
+    void this.renderBody();
+  }
 
   // Subclass opens its spec edit modal.
   protected abstract openEditModal(): void;

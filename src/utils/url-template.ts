@@ -6,12 +6,20 @@
 // pasted full search URL into a {query} template.
 const SEARCH_QUERY_PARAMS = ["q", "query", "keyword", "keywords", "wd", "word", "input", "search", "key"];
 
+// Query-param names commonly carrying an API key/credential (compared
+// lowercased); their values become {apiKey} placeholders in the template and
+// are offered for auto-filling the key field.
+const API_KEY_PARAMS = ["apikey", "api_key", "key", "token", "access_key", "api_token", "apitoken", "appkey", "app_key"];
+
 // Turns a full working URL into a template: the sample code becomes {code},
 // the first/last ISO dates become {startIso}/{endIso}, the first/last
-// YYYYMMDD dates become {start}/{end}. URLs that are already templates pass
-// through untouched.
+// YYYYMMDD dates become {start}/{end}, and a well-known credential param
+// becomes {apiKey}. URLs that are already templates pass through untouched.
 export function autoTemplateUrl(url: string, sampleCode: string): string {
   let out = url.trim();
+  out = out.replace(/([?&])([\w.-]+)=([^&]*)/g, (match, sep: string, key: string, value: string) =>
+    value && API_KEY_PARAMS.includes(key.toLowerCase()) ? `${sep}${key}={apiKey}` : match,
+  );
   const code = sampleCode.trim();
   if (code) {
     out = out.split(code).join("{code}");
@@ -45,6 +53,22 @@ function replaceDateTokens(url: string, pattern: RegExp, startToken: string, end
     cursor = index + match[0].length;
   }
   return out + url.slice(cursor);
+}
+
+// Returns the (decoded) API key carried by a full URL's well-known
+// credential param, or null when none is present. Used to auto-fill the key
+// field in the setup wizard from the pasted URL.
+export function extractApiKey(url: string): string | null {
+  for (const match of url.matchAll(/[?&]([\w.-]+)=([^&]*)/g)) {
+    if (match[2] && API_KEY_PARAMS.includes(match[1].toLowerCase())) {
+      try {
+        return decodeURIComponent(match[2]);
+      } catch {
+        return match[2];
+      }
+    }
+  }
+  return null;
 }
 
 // Turns a full search URL into a {query} template by rewriting the value of

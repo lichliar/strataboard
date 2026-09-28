@@ -8,14 +8,14 @@ import { t } from "../i18n";
 export function renderDisplayOverrideSettings(
   containerEl: HTMLElement,
   state: DisplayOverrides,
-  opts: { series: boolean }
+  opts: { series: boolean; ma?: boolean }
 ): void {
   const group = containerEl.createDiv("fc-canvas-logic-group");
   group.createDiv({ cls: "fc-canvas-logic-title", text: t("图表显示（覆盖全局）") });
 
   const addBoolOverride = (
     name: string,
-    field: "showLegend" | "legendFrosted" | "showLatestValue" | "showPointMarkers" | "showGrid"
+    field: "showLegend" | "legendFrosted" | "showLatestValue" | "showPointMarkers" | "showMA" | "showGrid"
   ) => {
     new Setting(group).setName(t(name)).addDropdown((dropdown) => {
       dropdown
@@ -42,12 +42,11 @@ export function renderDisplayOverrideSettings(
         .onChange((value) => {
           if (value === "custom") {
             state[field] ??= placeholder;
-            slider?.setValue(state[field]!);
-            if (slider) slider.sliderEl.style.display = "";
+            slider?.setValue(state[field]);
           } else {
             state[field] = undefined;
-            if (slider) slider.sliderEl.style.display = "none";
           }
+          slider?.sliderEl.toggle(value === "custom");
         });
     });
     setting.addSlider((s) => {
@@ -57,7 +56,7 @@ export function renderDisplayOverrideSettings(
         .onChange((value) => {
           state[field] = value;
         });
-      if (state[field] === undefined) s.sliderEl.style.display = "none";
+      s.sliderEl.toggle(state[field] !== undefined);
       slider = s;
     });
   };
@@ -68,6 +67,10 @@ export function renderDisplayOverrideSettings(
   if (opts.series) {
     addBoolOverride("系列图最新值标记", "showLatestValue");
     addBoolOverride("折线图数据点标记", "showPointMarkers");
+  }
+  // K-line cards only (unified edit modal's tushare source passes ma: true).
+  if (opts.ma) {
+    addBoolOverride("显示均线", "showMA");
   }
   addBoolOverride("显示网格线", "showGrid");
   addOpacityOverride("网格线透明度", "gridOpacity", 20);

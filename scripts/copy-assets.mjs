@@ -29,3 +29,9 @@ if (fs.existsSync(wasmSrc)) {
 } else {
   console.warn(`Missing ${wasmSrc}, skipping`);
 }
+
+// Marker consumed by ensureBundledAssets (src/modules/bundled-assets.ts):
+// records which version the extras in this plugin dir belong to, so runtime
+// re-download only triggers on store installs/updates, never over dev builds.
+const { version } = JSON.parse(fs.readFileSync(path.join(projectDir, "manifest.json"), "utf8"));
+fs.writeFileSync(path.join(pluginDir, ".bundled-assets-version"), version);

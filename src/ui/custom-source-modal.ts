@@ -14,15 +14,8 @@ import {
 } from "../modules/quote-format-parsers";
 import type { JsonRowCandidate } from "../modules/quote-format-parsers";
 import { autoDetectSearchFormat, fetchKlineSample } from "../modules/custom-quote-client";
-import { autoTemplateSearchUrl, autoTemplateUrl } from "../utils/url-template";
+import { autoTemplateSearchUrl, autoTemplateUrl, extractApiKey } from "../utils/url-template";
 import { parseSymbolList, stringifySymbolList } from "../utils/symbol-list";
-import type { ResolvedCli } from "../modules/ai-cli";
-import {
-  buildSourceAssistSystemPrompt,
-  buildSourceAssistTools,
-  type SourceAssistContext,
-} from "../modules/ai-source-assist";
-import { SourceAssistChat } from "./source-assist-chat";
 import { t } from "../i18n";
 
 // Setup dialog for one user-defined custom data source (设置页 → 自定义数据源).
@@ -34,12 +27,11 @@ import { t } from "../i18n";
 //      代码 / 搜索 URL / 代码表) live under 高级选项, the manual field mapping
 //      under 字段映射（可选）(auto-opens when a generic-JSON source parses
 //      nothing).
-//   2. AI 辅助设置 — with an AI model configured (online API or local CLI),
-//      an embedded chat (SourceAssistChat) lets the user describe the data
-//      they want; the AI finds/verifies/fixes the endpoint itself and writes
-//      the config into the form via the apply_source_config tool (nothing
-//      persists until the user clicks 保存). Without a model it falls back
-//      to copyable prompts.
+//   2. AI 辅助设置 — MCP/CLI-first: step 1 points the user at the 外部 AI
+//      接入 settings tab; step 2 is a copyable guided prompt the user sends
+//      to their own AI (the plugin has no built-in assistant) that walks
+//      them through the whole setup. A separate debug prompt fixes failed
+//      probes (its mapping JSON reply can be pasted back and applied).
 // Placeholders: klineUrl {code} {start} {end} {startIso} {endIso}, searchUrl
 // {query}.
 
@@ -47,29 +39,36 @@ export const CUSTOM_FORMAT_LABELS: Record<CustomSourceDef["format"], string> = {
   tencent: "腾讯格式",
   eastmoney: "东方财富格式",
   json: "通用 JSON",
+  csv: "CSV 文件",
 };
 
-// Copyable prompts for the no-CLI fallback in「2. AI 辅助设置」, one per
-// scenario: a per-code OHLCV quote endpoint vs. a generic-JSON series
-// (single-value readings / fixed wide-table reports). Both deliberately name
-// no concrete endpoints — the user's own AI picks one, keeping the plugin a
-// pure data-access framework. The EN translations live in i18n.ts under
-// these exact strings as keys; keep the two in sync.
-const AI_FIND_KLINE_PROMPT = `请帮我找一个无需登录、可以免费访问的日 K 线行情 REST 接口（股票/指数均可），我要在一个 Obsidian 插件里把它配置为自定义数据源。请直接给我：
-1. 一个完整的、可以在浏览器地址栏直接打开并返回 JSON 数据的 URL 示例，URL 中必须包含真实的证券代码（建议用上证指数）和起止日期；
-2. 这个 URL 中实际使用的证券代码（我会把它填入「示例代码」一栏）；
-3. 返回 JSON 中各字段的含义（日期、开盘价、收盘价、最高价、最低价、成交量、成交额）；
-4. 如果接口需要申请 token 或有频率限制，请说明申请方式。
-如果还有按代码或名称搜索证券的接口，也请附上一个带搜索词的完整 URL 示例。`;
+// Guided prompt for「2. AI 辅助设置」: assumes the user's AI is already wired
+// to the plugin through the MCP server or CLI (list_sources / probe_data /
+// ...), so instead of just "find me an endpoint" it walks the user through
+// the whole setup — including telling them plainly when the plugin has no
+// matching adapter and pointing them at the 脚本处理 CSV route instead. It
+// deliberately names no concrete endpoints — the user's own AI picks one,
+// keeping the plugin a pure data-access framework. The EN translation lives
+// in i18n.ts under this exact string as key; keep the two in sync.
+const AI_GUIDED_SETUP_PROMPT = `你将帮我为 Obsidian 插件 StrataBoard 配置一个「自定义数据源」。你已通过 MCP server 或 CLI 接入该插件（可用工具：list_sources / search_symbols / list_macro_series / probe_data / validate_cards）。请按以下流程一步步引导我，每步先跟我确认再往下走：
 
-const AI_FIND_JSON_PROMPT = `请帮我找一个无需登录、可以免费访问的 JSON 数据接口，返回一个时间序列（如国债收益率、宏观指标、商品价格等单值序列，不是股票 K 线），我要在一个 Obsidian 插件里把它配置为自定义数据源。请直接给我：
-1. 一个完整的、可以在浏览器地址栏直接打开并返回 JSON 数据的 URL 示例；
-2. 返回 JSON 中数据列表的位置，以及每行里日期字段和数值字段的名称（有日期和一个数值列就够了，不需要开高低收、成交量）；
-3. 如果是「一个 URL 返回整张报表、每列是一个序列」的宽表（如收益率曲线的不同期限），请列出列名与序列的对应关系，我会把列名当作代码填入「代码表」；
-4. 请说明日期字段的实际格式（ISO 日期/时间、YYYYMMDD 或时间戳都可以）；
-5. 如果接口需要申请 token 或有频率限制，请说明申请方式。`;
+1. 先问清楚我想要什么数据：标的/指标、频率、需要的字段（开高低收还是单值序列）。
+2. 先查插件内置能力是否已覆盖：用 list_macro_series 查中国宏观序列，用 search_symbols 查内置行情代码，用 list_sources 查我已配置的自定义源。如果已覆盖，直接告诉我用哪种内置卡片即可，不要新建数据源。
+3. 确需新源时，帮我找一个无需登录、可直接用 GET 访问的 JSON REST 接口，并实际请求验证它能返回数据。优先官方或有公开文档的 API；不要使用未公开文档的抓取端点。若接口需要 token，告诉我申请方式（token 由我自己保管，不要写进任何会分享出去的配置）。
+4. 核对该接口是否落在插件的适配范围内。插件只支持：
+   - GET 请求，所有参数在 URL query 中（可选一个鉴权 Header，值用 {apiKey} 占位）；
+   - 响应为 JSON；常见的按代码返回 K 线的行情格式会被自动识别，其它 JSON 必须能指出「数据行数组的路径 + 每行的日期列与数值列」（日期支持 ISO 日期时间、YYYYMMDD、时间戳）；
+   - URL 模板占位符：{code} 证券代码、{start}/{end} 为 YYYYMMDD 起止日期、{startIso}/{endIso} 为 YYYY-MM-DD 起止日期；
+   - 固定报表宽表（一个 URL 返回整张表、每列一个序列）也支持：把列名当作代码，字段映射中用 {code} 选列。
+5. 如果接口不符合以上任一形态（需要 POST、登录 Cookie、返回 HTML/XML、需要多页拼装等），插件的自定义数据源无法适配——请明确告诉我「该接口插件不支持」，并建议改用「脚本处理」：写一个 Python 脚本把数据输出为 CSV，插件会自动注册为 CSV 数据源（脚本编写提示词在 插件设置 → 外部 AI 接入 → 脚本处理）。
+6. 适配可行时，给我最终配置，二选一：
+   a. 简单情况：给一个完整、可直接访问的 URL（含真实证券代码和起止日期）+ URL 中实际使用的代码。我会把 URL 粘贴到插件「添加数据源」弹窗，插件自动生成模板并检测格式；
+   b. 复杂情况（宽表或需手工字段映射）：直接给一段可导入的配置 JSON（一个数组），字段：name（名称）、format（"tencent"|"eastmoney"|"json"）、klineUrl（URL 模板）、testCode（示例代码）、jsonMap（{"rowsPath":"数据行数组的点号路径，顶层即数组则空串","rowKind":"object|array","cols":{"date":"必填","close":"必填","open/high/low/vol":"没有则空串"}}）、symbols（可选，代码表 [{"code","name"}]）。我会粘贴到 插件设置 → 数据源设置 → 自定义数据源 → 导入。
+7. 我保存或导入后，用 list_sources 找到新源的 id，再用 probe_data（assetType="custom", sourceId=<id>, code=<示例代码>）做端到端验证，把结果告诉我；若 rows=0，按返回的 hint 分析原因并修正配置后让我重新导入。
 
-// Debug prompt for the no-CLI "让 AI 帮你修" fallback: head carries the URL
+全程用中文交流，发现插件能力边界时直接说清楚，不要绕弯子。`;
+
+// Debug prompt for the「让 AI 帮你修」block: head carries the URL
 // template and sample code via t() vars, then the truncated raw response is
 // concatenated, then the tail specifies the exact mapping JSON shape the
 // dialog can apply. The {code}/{start}/... placeholders inside the head are
@@ -101,21 +100,10 @@ date 和 close 必填；单值序列（收益率、宏观指标等）把数值�
 // How long after the last edit the inline auto-detection fires.
 const DETECT_DEBOUNCE_MS = 800;
 
-// AI channel for「2. AI 辅助设置」: with at least one available model (API
-// provider or CLI) the dialog embeds the source-assist chat; an empty `clis`
-// list means the copy-prompt fallback.
-export interface CustomSourceAiDeps {
-  clis: ResolvedCli[];
-  cliId: string;
-  maxRounds: number;
-  openAiSettings: () => void;
-}
-
 export class CustomSourceModal extends Modal {
   private def: CustomSourceDef;
   private isNew: boolean;
   private onSubmit: (def: CustomSourceDef) => void;
-  private aiDeps?: CustomSourceAiDeps;
   // Raw inputs (what the user pasted; def carries the templated form).
   private rawKlineUrl: string;
   private rawSearchUrl: string;
@@ -136,24 +124,19 @@ export class CustomSourceModal extends Modal {
   // inputs changed since the probe ran (or none ran yet).
   private probedKey = "";
   private detectTimer: number | undefined;
-  // Skip re-guessing jsonMap on the next probe (the AI just applied an
-  // explicit mapping, or an existing json source is being re-probed on open).
+  // Skip re-guessing jsonMap on the next probe (an existing json source being
+  // re-probed on open keeps its stored mapping).
   private keepJsonMapOnNextProbe = false;
   // 字段映射（可选）details state; auto-opens when a json source parses nothing.
   private mappingOpen = false;
   private scrollToMapping = false;
-  // Which find-prompt the no-CLI fallback shows: per-code OHLCV endpoint vs.
-  // generic-JSON series. Survives re-renders within one modal session.
-  private aiScenario: "kline" | "json" = "kline";
-  // The embedded chat is created once and survives render() passes (the host
-  // detaches rootEl before emptying and re-appends it after rebuilding).
-  private chat?: SourceAssistChat;
 
   constructor(
     app: App,
     def: CustomSourceDef | undefined,
     onSubmit: (def: CustomSourceDef) => void,
-    aiDeps?: CustomSourceAiDeps
+    // Opens the settings window on the 外部 AI 接入 tab (AI section step 1).
+    private onOpenAiSettings: () => void
   ) {
     super(app);
     this.isNew = !def;
@@ -166,7 +149,7 @@ export class CustomSourceModal extends Modal {
           format: "tencent",
           klineUrl: "",
         };
-    this.rawKlineUrl = this.def.klineUrl;
+    this.rawKlineUrl = this.def.klineUrl ?? "";
     this.rawSearchUrl = this.def.searchUrl ?? "";
     // New sources default the sample code to the SSE Composite Index — the
     // most likely code a user's AI will put in the URL it suggests.
@@ -177,7 +160,6 @@ export class CustomSourceModal extends Modal {
     // mapping instead of re-guessing it.
     this.keepJsonMapOnNextProbe = !this.isNew && this.def.format === "json" && !!this.def.jsonMap;
     this.onSubmit = onSubmit;
-    this.aiDeps = aiDeps;
     this.setTitle(this.isNew ? t("添加自定义数据源") : t("编辑自定义数据源"));
   }
 
@@ -190,16 +172,11 @@ export class CustomSourceModal extends Modal {
 
   onClose() {
     if (this.detectTimer !== undefined) window.clearTimeout(this.detectTimer);
-    this.chat?.destroy();
     this.contentEl.empty();
   }
 
   private render() {
     const { contentEl } = this;
-    // Keep the chat alive across re-renders: detach its root before emptying
-    // and re-append it inside the rebuilt AI section.
-    const chatEl = this.chat?.rootEl ?? null;
-    chatEl?.remove();
     contentEl.empty();
 
     const configSection = contentEl.createEl("details", { cls: "fc-settings-sub" });
@@ -264,17 +241,19 @@ export class CustomSourceModal extends Modal {
     const def = this.def;
 
     let nameText: TextComponent | null = null;
-    new Setting(container).setName(t("名称")).setDesc(t("显示在选择器、工具栏和卡片文件名中。")).addText((text) => {
+    const nameSetting = new Setting(container).setName(t("名称")).setDesc(t("显示在选择器、工具栏和卡片文件名中。")).addText((text) => {
       nameText = text;
       text.setPlaceholder(t("如：我的行情源")).setValue(def.name).onChange((value) => {
         this.nameTouched = true;
         def.name = value.trim();
       });
     });
+    nameSetting.settingEl.addClass("fc-setting-stacked");
 
     const klinePreview = container.createDiv({ cls: "fc-field-hint fc-mono fc-template-preview fc-hidden" });
     let sampleCodeText: TextComponent | null = null;
-    new Setting(container)
+    let apiKeyText: TextComponent | null = null;
+    const klineSetting = new Setting(container)
       .setName(t("K线接口地址"))
       .setDesc(t("粘贴一个能直接访问的完整 URL（带真实代码与日期），插件会自动识别代码与日期并生成模板、自动检测数据格式。"))
       .addTextArea((text) => {
@@ -298,18 +277,41 @@ export class CustomSourceModal extends Modal {
               sampleCodeText?.setValue(guessed);
             }
           }
+          if (!def.apiKey) {
+            // A pasted URL carrying its credential inline seeds the key
+            // field; the template keeps only the {apiKey} placeholder.
+            const extracted = extractApiKey(this.rawKlineUrl);
+            if (extracted) {
+              def.apiKey = extracted;
+              apiKeyText?.setValue(extracted);
+            }
+          }
           def.klineUrl = autoTemplateUrl(this.rawKlineUrl, splitCompositeCode(this.sampleCode).urlCode);
           updateKlinePreview();
           this.scheduleDetection();
         });
         text.inputEl.addClass("fc-mono");
       });
+    klineSetting.settingEl.addClass("fc-setting-stacked");
     const updateKlinePreview = () => {
       const show = def.klineUrl && def.klineUrl !== this.rawKlineUrl;
       klinePreview.toggleClass("fc-hidden", !show);
       if (show) klinePreview.setText(`${t("自动生成的模板")}: ${def.klineUrl}`);
     };
     updateKlinePreview();
+
+    const apiKeySetting = new Setting(container)
+      .setName(t("API Key（可选）"))
+      .setDesc(t("接口要求密钥时填写，URL 模板中用 {apiKey} 占位引用。密钥只存在本地设置里，导出配置时不会包含。"))
+      .addText((text) => {
+        apiKeyText = text;
+        text.setPlaceholder(t("粘贴 URL 时自动抽取，也可手动填写")).setValue(def.apiKey ?? "").onChange((value) => {
+          def.apiKey = value.trim() || undefined;
+        });
+        text.inputEl.type = "password";
+        text.inputEl.addClass("fc-mono");
+      });
+    apiKeySetting.settingEl.addClass("fc-setting-stacked");
 
     // Inline probe status: detecting / error / parsed-row preview.
     this.renderDetectStatus(container.createDiv("fc-hint-mt"));
@@ -324,7 +326,7 @@ export class CustomSourceModal extends Modal {
       text: t("一般无需改动：示例代码会自动从 URL 猜测；搜索接口与静态代码表按需配置。"),
     });
 
-    new Setting(advanced)
+    const sampleSetting = new Setting(advanced)
       .setName(t("示例代码"))
       .setDesc(t("URL 中实际使用的代码，用于识别 {code} 位置并作为接口检测代码；URL 不含代码的固定报表类接口可留空。支持复合代码「URL部分@映射列名」（如 REPORT_NAME@COL_NAME）：URL 中的 {code} 用前半部分填充，字段映射中的 {code} 用后半部分选列。"))
       .addText((text) => {
@@ -339,9 +341,21 @@ export class CustomSourceModal extends Modal {
         });
         text.inputEl.addClass("fc-mono");
       });
+    sampleSetting.settingEl.addClass("fc-setting-stacked");
+
+    const headerSetting = new Setting(advanced)
+      .setName(t("鉴权 Header（可选）"))
+      .setDesc(t("接口要求密钥放在请求头时填写：只写「Header名」表示值为 API Key 本身；「Header名: 值模板」中可用 {apiKey} 占位。"))
+      .addText((text) => {
+        text.setPlaceholder("X-Finnhub-Token 或 Authorization: Bearer {apiKey}").setValue(def.apiKeyHeader ?? "").onChange((value) => {
+          def.apiKeyHeader = value.trim() || undefined;
+        });
+        text.inputEl.addClass("fc-mono");
+      });
+    headerSetting.settingEl.addClass("fc-setting-stacked");
 
     const searchPreview = advanced.createDiv({ cls: "fc-field-hint fc-mono fc-template-preview fc-hidden" });
-    new Setting(advanced)
+    const searchSetting = new Setting(advanced)
       .setName(t("搜索 URL（可选）"))
       .setDesc(t("粘贴一个带搜索词的完整搜索 URL，插件会自动将搜索词替换为 {query}；留空则该源使用手工录入代码。"))
       .addTextArea((text) => {
@@ -352,6 +366,7 @@ export class CustomSourceModal extends Modal {
         });
         text.inputEl.addClass("fc-mono");
       });
+    searchSetting.settingEl.addClass("fc-setting-stacked");
     const updateSearchPreview = () => {
       if (!def.searchUrl) {
         searchPreview.addClass("fc-hidden");
@@ -387,72 +402,36 @@ export class CustomSourceModal extends Modal {
   }
 
   // ===== 2. AI 辅助设置 =====
+  // The plugin has no built-in assistant: step 1 wires the user's own AI to
+  // the plugin through the MCP server / CLI (settings → 外部 AI 接入), step 2
+  // is a copyable guided prompt — with tools attached, the AI can walk the
+  // user through the whole setup and verify the result itself.
   private renderAiSection(container: HTMLElement) {
-    const clis = this.aiDeps?.clis ?? [];
-    if (clis.length > 0) {
-      container.createDiv({
-        cls: "fc-field-hint",
-        text: t("用自然语言描述你想要的数据，AI 会自己寻找并验证可用接口，把配置直接写入上方「配置」表单；也可以让它修复检测失败的接口。"),
-      });
-      const slot = container.createDiv();
-      if (this.chat) {
-        slot.appendChild(this.chat.rootEl);
-      } else {
-        this.chat = new SourceAssistChat(slot, {
-          app: this.app,
-          clis,
-          cliId: this.aiDeps!.cliId,
-          maxRounds: this.aiDeps!.maxRounds,
-          getSystemPrompt: () => buildSourceAssistSystemPrompt(this.buildSourceAssistContext()),
-          tools: buildSourceAssistTools({ applyConfig: (def) => this.applyAiSourceConfig(def) }),
-          findPrefill: t("我想要"),
-          fixRequest: t("当前数据源的接口自动检测失败或结果不对，请根据表单里的当前配置和最近的检测信息帮我修复它。"),
-        });
-      }
-      return;
-    }
-
-    // No AI model configured: point to the AI settings, then offer the
-    // copy-paste prompts as the fallback channel.
     container.createDiv({
       cls: "fc-field-hint",
-      text: t("还没有配置可用的 AI 模型。在「设置 → AI 助手」中添加一个在线 API 模型或本机 CLI 后，可以直接在这里用对话完成配置；也可以先复制下方提示词，发给你自己的 AI（如 ChatGPT / Kimi / DeepSeek）使用。"),
+      text: t("推荐流程：先为你的 AI 配置本插件的 MCP server 或 CLI，再把引导提示词发给它——AI 会一步步引导你完成配置、自己验证接口，并在插件不支持时明确告诉你。"),
     });
-    if (this.aiDeps) {
-      const btn = container.createEl("button", { text: t("打开 AI 设置") });
-      btn.addEventListener("click", () => {
-        this.aiDeps?.openAiSettings();
-        this.close();
-      });
-    }
-    this.renderCopyFallbacks(container);
-  }
 
-  // No-model fallback: copyable find/debug prompts (the plugin names no
-  // endpoints — the user's own AI picks one).
-  private renderCopyFallbacks(container: HTMLElement) {
-    const aiHelp = container.createEl("details", { cls: "fc-settings-sub fc-ai-help" });
-    aiHelp.createEl("summary", { text: t("没有现成的接口？让 AI 帮你找") });
-    aiHelp.createDiv({
+    const step1 = container.createEl("details", { cls: "fc-settings-sub fc-ai-help" });
+    step1.setAttr("open", "");
+    step1.createEl("summary", { text: t("第 1 步：为你的 AI 配置 MCP / CLI") });
+    step1.createDiv({
       cls: "fc-field-hint",
-      text: t("按接口形态选一段提示词，复制发给你的 AI，把它返回的 URL 粘贴到「配置」分区的接口地址栏；URL 中用到的代码填入高级选项里的「示例代码」（固定报表类接口无需代码）。"),
+      text: t("配置片段在 设置 → 外部 AI 接入（推荐 MCP server，也有命令行 CLI）。配置好后，你的 AI 就能直接调用插件的查询与验证工具（list_sources / probe_data 等）。"),
     });
-    const promptArea = aiHelp.createEl("textarea", { cls: "fc-mono fc-prompt-area", attr: { readonly: "true" } });
-    const applyScenario = () => {
-      promptArea.value = t(this.aiScenario === "kline" ? AI_FIND_KLINE_PROMPT : AI_FIND_JSON_PROMPT);
-    };
-    new Setting(aiHelp).setName(t("接口形态")).addDropdown((dropdown) =>
-      dropdown
-        .addOption("kline", t("K 线行情接口（按代码+日期查询开高低收）"))
-        .addOption("json", t("通用 JSON 序列（单值指标 / 固定报表宽表）"))
-        .setValue(this.aiScenario)
-        .onChange((value) => {
-          this.aiScenario = value === "json" ? "json" : "kline";
-          applyScenario();
-        })
-    );
-    applyScenario();
-    const copyBtn = aiHelp.createEl("button", { text: t("复制提示词") });
+    const openBtn = step1.createEl("button", { text: t("打开「外部 AI 接入」设置") });
+    openBtn.addEventListener("click", () => this.onOpenAiSettings());
+
+    const step2 = container.createEl("details", { cls: "fc-settings-sub fc-ai-help" });
+    step2.setAttr("open", "");
+    step2.createEl("summary", { text: t("第 2 步：复制引导提示词发给你的 AI") });
+    step2.createDiv({
+      cls: "fc-field-hint",
+      text: t("AI 会按提示词引导你：先确认需求并检查内置数据源是否已覆盖，再找接口、核对插件适配范围，最后产出可直接粘贴的 URL 或可导入的配置 JSON，并自行验证。插件不支持的接口形态它会明确告知，并建议改用脚本处理。"),
+    });
+    const promptArea = step2.createEl("textarea", { cls: "fc-mono fc-prompt-area", attr: { readonly: "true" } });
+    promptArea.value = t(AI_GUIDED_SETUP_PROMPT);
+    const copyBtn = step2.createEl("button", { text: t("复制提示词") });
     copyBtn.addEventListener("click", () => {
       void navigator.clipboard.writeText(promptArea.value).then(
         () => new Notice(t("提示词已复制到剪贴板，去发给你的 AI 吧。")),
@@ -464,64 +443,12 @@ export class CustomSourceModal extends Modal {
     if (this.sampleText) this.renderAiFixBlock(container);
   }
 
-  // Snapshot of the wizard state for the chat's system prompt (rebuilt on
-  // every send, so the AI sees its own apply_source_config results).
-  private buildSourceAssistContext(): SourceAssistContext {
-    return {
-      currentDefJson: this.def.klineUrl || this.def.name ? JSON.stringify(this.def, null, 2) : "",
-      probeSummary: this.describeProbe(),
-      sampleText: this.sampleText.slice(0, 1500),
-    };
-  }
-
-  // Plain-text probe outcome for the AI context (not user-facing, so no t()).
-  private describeProbe(): string {
-    if (!this.def.klineUrl || this.probeKey() !== this.probedKey) return "";
-    if (this.detecting) return "正在检测接口…";
-    const label = CUSTOM_FORMAT_LABELS[this.def.format];
-    if (this.detectError) return `检测失败：${this.detectError}`;
-    if (this.detectedRows.length === 0) return `已识别为${label}，但未解析出数据。`;
-    const first = this.detectedRows[0];
-    const last = this.detectedRows[this.detectedRows.length - 1];
-    return `识别为${label}，共 ${this.detectedRows.length} 条数据（${first.tradeDate} ~ ${last.tradeDate}）。`;
-  }
-
-  // apply_source_config tool hook: writes the AI-proposed def into the form
-  // (the id always stays the form's own), re-probes, and returns the outcome
-  // so the agent can iterate. Nothing persists until the user clicks 保存.
-  private async applyAiSourceConfig(proposed: Omit<CustomSourceDef, "id">): Promise<string> {
-    this.def = {
-      id: this.def.id,
-      name: proposed.name,
-      enabled: this.def.enabled,
-      format: proposed.format,
-      klineUrl: proposed.klineUrl,
-      searchUrl: proposed.searchUrl,
-      testCode: proposed.testCode,
-      jsonMap: proposed.jsonMap
-        ? { ...proposed.jsonMap, cols: { ...proposed.jsonMap.cols }, searchCols: proposed.jsonMap.searchCols ? { ...proposed.jsonMap.searchCols } : undefined }
-        : undefined,
-      symbols: proposed.symbols,
-    };
-    this.rawKlineUrl = this.def.klineUrl;
-    this.rawSearchUrl = this.def.searchUrl ?? "";
-    this.sampleCode = this.def.testCode ?? "";
-    this.sampleCodeTouched = true;
-    this.nameTouched = true;
-    this.mappingOpen = this.def.format === "json";
-    // The AI's explicit jsonMap must survive the probe's format guessing.
-    this.keepJsonMapOnNextProbe = this.def.format === "json" && !!this.def.jsonMap;
-    this.probedKey = "";
-    this.render();
-    await this.runDetection();
-    const label = CUSTOM_FORMAT_LABELS[this.def.format];
-    if (this.detectError) return `配置已写入表单，但接口请求失败：${this.detectError}`;
-    if (this.detectedRows.length === 0) {
-      return `配置已写入表单。检测识别为「${label}」，但未解析出数据；请用 fetch_url 重新查看响应、修正配置后重试。`;
-    }
-    const first = this.detectedRows[0];
-    const last = this.detectedRows[this.detectedRows.length - 1];
-    return `配置已写入表单并检测成功：识别为「${label}」，解析出 ${this.detectedRows.length} 条数据（${first.tradeDate} ~ ${last.tradeDate}，最新收盘 ${last.close}）。请提醒用户核对表单后点击「保存」。`;
+  // The API key must never leave the dialog: replace every occurrence (raw
+  // or URL-encoded) in text the user might paste to an external AI.
+  private maskApiKey(text: string): string {
+    const key = this.def.apiKey;
+    if (!key) return text;
+    return text.split(key).join("***").split(encodeURIComponent(key)).join("***");
   }
 
   // Probe status block inside「1. 配置」: detecting / error / preview.
@@ -616,8 +543,9 @@ export class CustomSourceModal extends Modal {
         this.detectedRows = builtin === "tencent" ? parseTencentKline(sample.json, this.sampleCode) : parseEastmoneyKline(sample.json);
         this.candidates = [];
       } else {
-        // An explicit jsonMap (AI-applied or stored on an existing source)
-        // wins over the guessing heuristic for this probe.
+        // An explicit jsonMap (stored on an existing source, or pasted back
+        // from the debug prompt) wins over the guessing heuristic for this
+        // probe.
         const keepMap = this.keepJsonMapOnNextProbe ? this.def.jsonMap : undefined;
         this.keepJsonMapOnNextProbe = false;
         const map = keepMap ?? detectJsonMapping(sample.json);
@@ -665,35 +593,18 @@ export class CustomSourceModal extends Modal {
     if (this.detecting && this.detectionPromise) await this.detectionPromise;
     if (this.probeKey() !== this.probedKey) await this.runDetection();
     if (this.detectError) {
-      this.routeFailureToAi(t("检测失败：{msg}", { msg: this.detectError }), false);
+      new Notice(t("检测失败：{msg}", { msg: this.detectError }));
       return;
     }
     if (this.def.format === "json" && this.detectedRows.length === 0) {
-      this.routeFailureToAi(t("已识别为通用 JSON，但未解析出数据，请先调整字段映射。"), true);
+      new Notice(t("已识别为通用 JSON，但未解析出数据，请先调整字段映射。"));
+      this.openMappingSection();
       return;
     }
     this.save();
   }
 
-  // Save-time verification failed: with the AI chat available, hand the
-  // failure straight back to the AI (it re-reads the latest probe state from
-  // its system prompt) instead of leaving the user with an error notice;
-  // otherwise keep the manual fallbacks.
-  private routeFailureToAi(fallbackNotice: string, openMapping: boolean) {
-    if (this.chat) {
-      new Notice(
-        this.chat.requestFix()
-          ? t("检测未通过，已让 AI 继续修复，完成后请再次保存。")
-          : t("AI 正在修复中，请稍候再保存。"),
-      );
-      this.contentEl.querySelector(".fc-source-chat")?.scrollIntoView({ block: "nearest" });
-      return;
-    }
-    new Notice(fallbackNotice);
-    if (openMapping) this.openMappingSection();
-  }
-
-  // ===== No-CLI AI debug fallback =====
+  // ===== AI debug prompt =====
   // The user copies a prompt that carries the URL template plus a truncated
   // real response; their AI returns a mapping JSON which is pasted back and
   // applied here. The prompt names no endpoints — it only describes the
@@ -701,8 +612,8 @@ export class CustomSourceModal extends Modal {
 
   private buildDebugPrompt(): string {
     return (
-      t(AI_DEBUG_PROMPT_HEAD, { url: this.def.klineUrl, sample: this.sampleCode || t("（无代码）") }) +
-      this.sampleText.slice(0, 1500) +
+      t(AI_DEBUG_PROMPT_HEAD, { url: this.def.klineUrl ?? "", sample: this.sampleCode || t("（无代码）") }) +
+      this.maskApiKey(this.sampleText.slice(0, 1500)) +
       t(AI_DEBUG_PROMPT_TAIL)
     );
   }
@@ -793,7 +704,7 @@ export class CustomSourceModal extends Modal {
       this.mappingOpen ||
       (!this.detecting &&
         !this.detectError &&
-        this.def.klineUrl.length > 0 &&
+        (this.def.klineUrl?.length ?? 0) > 0 &&
         this.probeKey() === this.probedKey &&
         this.detectedRows.length === 0);
     details.createEl("summary", { text: t("字段映射（可选）") });
@@ -1039,17 +950,26 @@ export function parseImportedSources(text: string): CustomSourceDef[] {
     if (!entry || typeof entry !== "object") throw new Error("invalid entry");
     const e = entry as Partial<CustomSourceDef>;
     if (typeof e.name !== "string" || !e.name.trim()) throw new Error("missing name");
-    if (typeof e.klineUrl !== "string" || !e.klineUrl.trim()) throw new Error("missing klineUrl");
-    if (e.format !== "tencent" && e.format !== "eastmoney" && e.format !== "json") throw new Error("invalid format");
+    if (e.format !== "tencent" && e.format !== "eastmoney" && e.format !== "json" && e.format !== "csv") throw new Error("invalid format");
+    if (e.format === "csv") {
+      if (typeof e.filePath !== "string" || !e.filePath.trim()) throw new Error("missing filePath");
+    } else if (typeof e.klineUrl !== "string" || !e.klineUrl.trim()) {
+      throw new Error("missing klineUrl");
+    }
     defs.push({
       id: `src-${Date.now().toString(36)}-${defs.length}`,
       name: e.name.trim(),
       enabled: e.enabled !== false,
       format: e.format,
-      klineUrl: e.klineUrl.trim(),
+      klineUrl: e.format === "csv" ? undefined : e.klineUrl!.trim(),
+      filePath: e.format === "csv" ? e.filePath!.trim() : undefined,
       searchUrl: typeof e.searchUrl === "string" && e.searchUrl.trim() ? e.searchUrl.trim() : undefined,
       testCode: typeof e.testCode === "string" && e.testCode.trim() ? e.testCode.trim() : undefined,
-      jsonMap: e.format === "json" && e.jsonMap ? e.jsonMap : undefined,
+      apiKey: typeof e.apiKey === "string" && e.apiKey.trim() ? e.apiKey.trim() : undefined,
+      apiKeyHeader: typeof e.apiKeyHeader === "string" && e.apiKeyHeader.trim() ? e.apiKeyHeader.trim() : undefined,
+      jsonMap: (e.format === "json" || e.format === "csv") && e.jsonMap ? e.jsonMap : undefined,
+      // Wide-table CSV sources are useless without their column code table.
+      symbols: e.format === "csv" && Array.isArray(e.symbols) ? e.symbols : undefined,
     });
   }
   return defs;

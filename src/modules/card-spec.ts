@@ -107,6 +107,7 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
   const showLegend = extractBoolean(map, "显示图例");
   const legendFrosted = extractBoolean(map, "图例半透明");
   const legendOpacity = extractOpacity(map, "图例透明度");
+  const showMA = extractBoolean(map, "显示均线");
   const showGrid = extractBoolean(map, "显示网格");
   const gridOpacity = extractOpacity(map, "网格透明度");
 
@@ -139,6 +140,7 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
       showLegend,
       legendFrosted,
       legendOpacity,
+      showMA,
       showGrid,
       gridOpacity,
     },
@@ -324,6 +326,9 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
   }
   if (spec.legendOpacity != null) {
     obj.图例透明度 = spec.legendOpacity;
+  }
+  if (spec.showMA != null) {
+    obj.显示均线 = spec.showMA;
   }
   if (spec.showGrid != null) {
     obj.显示网格 = spec.showGrid;

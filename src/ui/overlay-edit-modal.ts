@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
 import type { ChartTheme, CustomSourceDef, DisplayOverrides, OverlayCompareMode, OverlaySpec, SeriesPeriod, SeriesRef } from "../types";
-import { SeriesRefEditor, type ListSpreadCards, type OpenFredPicker, type OpenSymbolPicker, type SeriesSourceAvailability } from "./series-ref-editor";
+import { SeriesRefEditor, type ListReferenceableCards, type OpenFredPicker, type OpenSymbolPicker, type SeriesSourceAvailability } from "./series-ref-editor";
 import { SeriesAdapter } from "../modules/series-adapter";
 import { addStepper } from "./stepper";
 import { renderDisplayOverrideSettings } from "./display-overrides";
@@ -75,7 +75,7 @@ export class OverlayEditModal extends Modal {
   private activeSubPage: SubPage = "series";
   private onSubmit: (spec: OverlaySpec) => void;
   private openSymbolPicker: OpenSymbolPicker;
-  private listSpreadCards: ListSpreadCards;
+  private listReferenceableCards: ListReferenceableCards;
   private openFredPicker?: OpenFredPicker;
   private customSources: CustomSourceDef[];
   private sourceAvailability: SeriesSourceAvailability;
@@ -85,7 +85,7 @@ export class OverlayEditModal extends Modal {
     spec: OverlaySpec,
     onSubmit: (spec: OverlaySpec) => void,
     openSymbolPicker: OpenSymbolPicker,
-    listSpreadCards: ListSpreadCards,
+    listReferenceableCards: ListReferenceableCards,
     openFredPicker?: OpenFredPicker,
     title?: string,
     customSources?: CustomSourceDef[],
@@ -113,7 +113,7 @@ export class OverlayEditModal extends Modal {
     };
     this.onSubmit = onSubmit;
     this.openSymbolPicker = openSymbolPicker;
-    this.listSpreadCards = listSpreadCards;
+    this.listReferenceableCards = listReferenceableCards;
     this.openFredPicker = openFredPicker;
     this.customSources = customSources ?? [];
     this.sourceAvailability = sourceAvailability ?? { hasTushare: true, hasFred: true };
@@ -204,7 +204,7 @@ export class OverlayEditModal extends Modal {
       },
       true,
       this.openSymbolPicker,
-      this.listSpreadCards,
+      this.listReferenceableCards,
       this.openFredPicker,
       this.customSources,
       this.sourceAvailability

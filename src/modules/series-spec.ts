@@ -395,7 +395,7 @@ function parseSeriesRef(raw: unknown, path: string, allowScale = false): SeriesR
   if (source === "card") {
     const cardPath = String(map.cardPath ?? "").trim();
     if (!cardPath) {
-      return t("{path} 缺少有效的 cardPath（引用的数据计算卡片文件路径）。", { path });
+      return t("{path} 缺少有效的 cardPath（引用的卡片文件路径）。", { path });
     }
     ref.cardPath = cardPath;
   } else if (source === "quote") {

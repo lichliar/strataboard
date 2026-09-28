@@ -252,7 +252,7 @@ export class UnifiedCardEditModal extends Modal {
     }
     this.visibleRange = spec?.visibleRange ?? "";
     this.height = String(spec?.height ?? DEFAULT_CARD_HEIGHT);
-    this.chartType = spec?.chartType ?? "candlestick";
+    this.chartType = spec?.chartType ?? (this.assetType === "ofund" ? "line" : "candlestick");
     this.theme = spec?.theme ?? "auto";
     this.riseColor = spec?.riseColor ?? "#ef4444";
     this.fallColor = spec?.fallColor ?? "#22c55e";
@@ -291,6 +291,7 @@ export class UnifiedCardEditModal extends Modal {
       legendOpacity: displaySpec?.legendOpacity,
       showLatestValue: displaySpec?.showLatestValue,
       showPointMarkers: displaySpec?.showPointMarkers,
+      showMA: displaySpec?.showMA,
       showGrid: displaySpec?.showGrid,
       gridOpacity: displaySpec?.gridOpacity,
     };
@@ -639,6 +640,11 @@ export class UnifiedCardEditModal extends Modal {
       for (const option of CHART_TYPE_OPTIONS) {
         dropdown.addOption(option.value, t(option.label));
       }
+      // 场外基金净值没有 OHLC — K 线无意义。
+      if (this.assetType === "ofund") {
+        const candlestick = dropdown.selectEl.querySelector('option[value="candlestick"]');
+        if (candlestick instanceof HTMLOptionElement) candlestick.disabled = true;
+      }
       dropdown.setValue(this.chartType).onChange((value) => {
         this.chartType = value as ChartType;
       });
@@ -736,8 +742,9 @@ export class UnifiedCardEditModal extends Modal {
     });
 
     // Per-card overrides of the plugin-wide 显示设置 (tushare K-line cards
-    // have no latest-value/point-marker options, hence series: false).
-    renderDisplayOverrideSettings(pageEl, this.displayOverrides, { series: false });
+    // have no latest-value/point-marker options, hence series: false; they
+    // are the only cards with moving averages, hence ma: true).
+    renderDisplayOverrideSettings(pageEl, this.displayOverrides, { series: false, ma: true });
   }
 
   private renderMaPage(pageEl: HTMLElement) {

@@ -45,6 +45,10 @@ interface ChartRendererOptions {
   showLegend: boolean;
   legendFrosted: boolean;
   legendOpacity: number;
+  // Moving-average lines (global showChartMA merged with the per-card
+  // 显示均线 override at render time); when off no MA series are added and
+  // the legend's MA values disappear with them.
+  showMA: boolean;
   showGrid: boolean;
   gridOpacity: number;
   loadMarketData?: (tradeDate: string) => Promise<MarketData | null>;
@@ -206,7 +210,9 @@ export class ChartRenderer extends MarkdownRenderChild {
     this.uninstallZoomFix = installZoomEventFix(this.chartContainerEl);
 
     this.priceSeries = this.addPriceSeries(0, data, isDark);
-    this.addMovingAverages(0, data);
+    if (this.options.showMA) {
+      this.addMovingAverages(0, data);
+    }
     // 成交量 pane 默认开（卡片级 显示成交量 可关）。
     if (spec.showVolume !== false) {
       this.addVolumeSeries(1, data);

@@ -1,5 +1,5 @@
 import { Setting, type DropdownComponent } from "obsidian";
-import { FRED_TRANSFORM_OPTIONS, MACRO_SERIES_OPTIONS, type AssetType, type CustomSourceDef, type FredSeriesInfo, type FredTransform, type SeriesRef, type SymbolItem } from "../types";
+import { FRED_TRANSFORM_OPTIONS, MACRO_SERIES_OPTIONS, type AssetType, type CustomSourceDef, type FredSeriesInfo, type FredTransform, type ReferenceableCard, type ReferenceableCardKind, type SeriesRef, type SymbolItem } from "../types";
 import { t } from "../i18n";
 
 // Opens the symbol search modal; mirrors plugin.openSymbolSearch (including
@@ -12,9 +12,9 @@ export type OpenSymbolPicker = (onSelect: (item: SymbolItem) => void, assetType?
 // (including its FRED-key guard).
 export type OpenFredPicker = (onSelect: (info: FredSeriesInfo) => void) => void;
 
-// Lists existing spread cards for the 已有卡片 dropdown (path = vault-relative
-// file path, name = display name).
-export type ListSpreadCards = () => Promise<{ path: string; name: string }[]>;
+// Lists existing referenceable cards for the 已有卡片 dropdown (see
+// ReferenceableCard in types.ts).
+export type ListReferenceableCards = () => Promise<ReferenceableCard[]>;
 
 // Which data sources the user has actually configured — the first column
 // mirrors the toolbar 插入数据 source list, so unconfigured sources stay
@@ -25,7 +25,7 @@ export interface SeriesSourceAvailability {
 }
 
 // The first-column 数据源 values: "tushare" covers every Tushare-backed
-// series (the 10 quote asset types + 宏观数据, same as the unified search's
+// series (the 11 quote asset types + 宏观数据, same as the unified search's
 // Tushare category); each enabled custom source gets its own entry.
 export type SeriesRowSource = "tushare" | "fred" | "card" | `custom:${string}`;
 
@@ -36,6 +36,7 @@ type TushareRowType = Exclude<AssetType, "custom"> | "macro";
 const TUSHARE_TYPE_OPTIONS: { value: TushareRowType; label: string }[] = [
   { value: "stock", label: "股票" },
   { value: "fund", label: "基金" },
+  { value: "ofund", label: "场外基金" },
   { value: "index", label: "指数" },
   { value: "nhindex", label: "南华指数" },
   { value: "hk", label: "港股" },
@@ -70,7 +71,7 @@ export class SeriesRefEditor {
   private transform: FredTransform | "";
   private allowCardRef: boolean;
   private openSymbolPicker?: OpenSymbolPicker;
-  private listSpreadCards?: ListSpreadCards;
+  private listReferenceableCards?: ListReferenceableCards;
   private openFredPicker?: OpenFredPicker;
   private customSources: CustomSourceDef[];
   private availability: SeriesSourceAvailability;
@@ -82,7 +83,7 @@ export class SeriesRefEditor {
     onRemove?: () => void,
     allowCardRef = true,
     openSymbolPicker?: OpenSymbolPicker,
-    listSpreadCards?: ListSpreadCards,
+    listReferenceableCards?: ListReferenceableCards,
     openFredPicker?: OpenFredPicker,
     customSources?: CustomSourceDef[],
     availability?: SeriesSourceAvailability
@@ -91,7 +92,7 @@ export class SeriesRefEditor {
     this.availability = availability ?? { hasTushare: true, hasFred: true };
     this.allowCardRef = allowCardRef;
     this.openSymbolPicker = openSymbolPicker;
-    this.listSpreadCards = listSpreadCards;
+    this.listReferenceableCards = listReferenceableCards;
     this.openFredPicker = openFredPicker;
     this.onRemove = onRemove;
 
@@ -358,27 +359,40 @@ export class SeriesRefEditor {
     }
   }
 
-  // Fills the 已有卡片 dropdown once the provider resolves. The row may have
-  // been re-rendered (source switch, modal closed) while loading — bail out
-  // if the dropdown is no longer in the document.
+  // Fills the 已有卡片 dropdown once the provider resolves, grouped by card
+  // type (DropdownComponent has no optgroup API, so options are built on
+  // selectEl directly, same as the macro dropdown). The row may have been
+  // re-rendered (source switch, modal closed) while loading — bail out if
+  // the dropdown is no longer in the document.
   private async populateCardDropdown(dropdown: DropdownComponent) {
-    let cards: { path: string; name: string }[] = [];
+    let cards: ReferenceableCard[] = [];
     try {
-      cards = (await this.listSpreadCards?.()) ?? [];
+      cards = (await this.listReferenceableCards?.()) ?? [];
     } catch (e) {
-      console.error("SeriesRefEditor: failed to list spread cards", e);
+      console.error("SeriesRefEditor: failed to list referenceable cards", e);
     }
     if (!dropdown.selectEl.isConnected) return;
 
     dropdown.selectEl.empty();
     if (cards.length === 0) {
-      dropdown.addOption("", t("暂无数据计算卡片"));
+      dropdown.addOption("", t("暂无可引用的卡片"));
       dropdown.setValue("");
       this.cardPath = "";
       return;
     }
-    for (const card of cards) {
-      dropdown.addOption(card.path, card.name);
+    const groups: { kind: ReferenceableCardKind; label: string }[] = [
+      { kind: "tushare", label: "资产卡" },
+      { kind: "fred", label: "FRED 卡" },
+      { kind: "macro", label: "宏观卡" },
+      { kind: "spread", label: "计算卡" },
+    ];
+    for (const group of groups) {
+      const members = cards.filter((card) => card.kind === group.kind);
+      if (members.length === 0) continue;
+      const optgroup = dropdown.selectEl.createEl("optgroup", { attr: { label: t(group.label) } });
+      for (const card of members) {
+        optgroup.createEl("option", { value: card.path, text: card.name });
+      }
     }
     const selected = cards.some((c) => c.path === this.cardPath) ? this.cardPath : cards[0].path;
     dropdown.setValue(selected);
@@ -422,7 +436,7 @@ export class SeriesRefEditor {
   // Returns a translated error message, or null when the row is valid.
   validate(): string | null {
     if (this.source === "card") {
-      return this.cardPath ? null : t("请选择一个数据计算卡片。");
+      return this.cardPath ? null : t("请选择要引用的卡片。");
     }
     if (this.source === "fred") {
       return this.code.trim() ? null : t("请填写 FRED 系列代码（如 DGS10）。");

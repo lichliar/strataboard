@@ -156,15 +156,16 @@ export class SymbolIndex {
     }
   }
 
-  // Loads stocks, funds, indices, Nanhua indices, HK stocks, global indices,
-  // convertible bonds, futures contracts, FX pairs and SW industry indices in
-  // parallel for the unified search modal. Custom sources have no bulk symbol
-  // list — they are searched remotely per keystroke (RemoteQuoteSearchModal)
-  // or entered manually (ManualSymbolModal).
+  // Loads stocks, funds (场内+场外), indices, Nanhua indices, HK stocks,
+  // global indices, convertible bonds, futures contracts, FX pairs and SW
+  // industry indices in parallel for the unified search modal. Custom sources
+  // have no bulk symbol list — they are searched remotely per keystroke
+  // (RemoteQuoteSearchModal) or entered manually (ManualSymbolModal).
   async loadAll(): Promise<SymbolItem[]> {
     const groups = await Promise.all([
       this.loadAssetType("stock"),
       this.loadAssetType("fund"),
+      this.loadAssetType("ofund"),
       this.loadAssetType("index"),
       this.loadAssetType("nhindex"),
       this.loadAssetType("hk"),
@@ -222,7 +223,23 @@ export class SymbolIndex {
         apiName = "stock_basic";
         break;
       case "fund":
+        // 场内基金 only: fund_basic without a market filter also returns 场外
+        // codes, which fund_daily has no quotes for.
         apiName = "fund_basic";
+        params = {
+          market: "E",
+          list_status: "L",
+          fields: "ts_code,symbol,name,enname,fullname,exchange,list_date",
+        };
+        break;
+      case "ofund":
+        // 场外基金 (fund_basic market=O); quotes come from fund_nav.
+        apiName = "fund_basic";
+        params = {
+          market: "O",
+          list_status: "L",
+          fields: "ts_code,symbol,name,enname,fullname,exchange,list_date",
+        };
         break;
       case "index":
         apiName = "index_basic";

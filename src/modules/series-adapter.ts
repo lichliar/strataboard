@@ -5,7 +5,8 @@ import { resolveDateRange } from "../utils/date";
 import { SqliteCache } from "./sqlite-cache";
 import { DataAdapter } from "./data-adapter";
 import { FredApiClient } from "./fred-api-client";
-import { parseSpreadSpec } from "./series-spec";
+import { parseCardSpec } from "./card-spec";
+import { parseFredCardSpec, parseMacroCardSpec, parseSpreadSpec } from "./series-spec";
 import { evalExpression, parseExpression, type ExprNode } from "./expression";
 import { t } from "../i18n";
 
@@ -19,7 +20,9 @@ interface SeriesAdapterOptions {
 // Unified loader for the generic "series" used by overlay and spread cards.
 // Dispatches across quote (Tushare OHLCV), macro (Tushare 国内宏观: 货币供应 /
 // CPI / PPI / PMI / GDP / 社融 / LPR), fred (FRED API) and card (an existing
-// 差值计算卡 file) sources, all yielding YYYY-MM-DD SeriesPoints.
+// tushare/fred/macro/spread card file) sources, all yielding YYYY-MM-DD
+// SeriesPoints. `visited` threads the card-reference chain so hand-written
+// YAML cycles (A refs B refs A) fail fast instead of recursing forever.
 export class SeriesAdapter {
   private app: App;
   private cache: SqliteCache;
@@ -34,7 +37,13 @@ export class SeriesAdapter {
     this.getFredApiKey = options.getFredApiKey;
   }
 
-  async loadSeries(ref: SeriesRef, range: string, period: SeriesPeriod = "D", force = false): Promise<SeriesPoint[]> {
+  async loadSeries(
+    ref: SeriesRef,
+    range: string,
+    period: SeriesPeriod = "D",
+    force = false,
+    visited: Set<string> = new Set()
+  ): Promise<SeriesPoint[]> {
     switch (ref.source) {
       case "quote":
         return resamplePoints(await this.loadQuoteSeries(ref, range), period);
@@ -43,29 +52,77 @@ export class SeriesAdapter {
       case "fred":
         return resamplePoints(await this.loadFredSeries(ref, range, force), period);
       case "card":
-        return this.loadCardSeries(ref, range, period);
+        return this.loadCardSeries(ref, range, period, visited);
     }
   }
 
-  // Loads an existing spread card file and evaluates its expression series.
-  // The OVERLAY's own range/period govern; the referenced card's range, period
+  // Loads an existing card file and resolves it to a point series by block
+  // type: spread cards evaluate their expression (recursively), tushare cards
+  // yield their close prices, fred/macro cards their single series. The
+  // OVERLAY's own range/period govern; the referenced card's range, period
   // and view settings are ignored.
-  private async loadCardSeries(ref: SeriesRef, range: string, period: SeriesPeriod): Promise<SeriesPoint[]> {
+  private async loadCardSeries(
+    ref: SeriesRef,
+    range: string,
+    period: SeriesPeriod,
+    visited: Set<string>
+  ): Promise<SeriesPoint[]> {
     const cardPath = ref.cardPath!;
+    if (visited.has(cardPath)) {
+      throw new Error(t("检测到循环引用：{path}。", { path: cardPath }));
+    }
+    visited.add(cardPath);
     const file = this.app.vault.getAbstractFileByPath(cardPath);
     if (!(file instanceof TFile)) {
       throw new Error(t("无法读取卡片：{path}（文件不存在）。", { path: cardPath }));
     }
     const content = await this.app.vault.cachedRead(file);
-    const match = content.match(/```spread\n([\s\S]*?)\n```/);
+    const match = content.match(/```(tushare|fred|macro|spread)\n([\s\S]*?)\n```/);
     if (!match) {
-      throw new Error(t("无法读取卡片：{path}（未找到 spread 代码块）。", { path: cardPath }));
+      throw new Error(t("无法读取卡片：{path}（未找到可引用的数据代码块）。", { path: cardPath }));
     }
-    const result = parseSpreadSpec(match[1]);
+    const kind = match[1];
+    const body = match[2];
+    const invalid = (reason: string) =>
+      new Error(t("无法读取卡片：{path}（{reason}）。", { path: cardPath, reason }));
+
+    if (kind === "spread") {
+      const result = parseSpreadSpec(body);
+      if (!result.spec) {
+        throw invalid(result.error ?? t("配置无效"));
+      }
+      return this.loadSpread(result.spec, range, period, visited);
+    }
+    if (kind === "tushare") {
+      const result = parseCardSpec(body);
+      if (!result.ok) {
+        throw invalid(result.error.message);
+      }
+      const spec = result.spec;
+      const points = await this.loadQuoteSeries(
+        { source: "quote", tsCode: spec.symbol, assetType: spec.assetType, sourceId: spec.sourceId },
+        range
+      );
+      return resamplePoints(points, period);
+    }
+    if (kind === "fred") {
+      const result = parseFredCardSpec(body);
+      if (!result.spec) {
+        throw invalid(result.error ?? t("配置无效"));
+      }
+      const points = await this.loadFredSeries(
+        { source: "fred", seriesId: result.spec.seriesId, transform: result.spec.transform },
+        range
+      );
+      return resamplePoints(points, period);
+    }
+    // kind === "macro"
+    const result = parseMacroCardSpec(body);
     if (!result.spec) {
-      throw new Error(t("无法读取卡片：{path}（{reason}）。", { path: cardPath, reason: result.error ?? t("配置无效") }));
+      throw invalid(result.error ?? t("配置无效"));
     }
-    return this.loadSpread(result.spec, range, period);
+    const points = await this.loadMacroSeries({ source: "macro", seriesId: result.spec.seriesId }, range);
+    return resamplePoints(points, period);
   }
 
   private async loadQuoteSeries(ref: SeriesRef, range: string): Promise<SeriesPoint[]> {
@@ -135,14 +192,14 @@ export class SeriesAdapter {
   // series and the migrated "A-B" expression this reproduces the legacy
   // two-leg spread exactly. Invalid expressions throw a Chinese error for the
   // card-level error+retry UI (same discipline as loadCardSeries).
-  async loadSpread(spec: SpreadSpec, range: string, period: SeriesPeriod = "D"): Promise<SeriesPoint[]> {
+  async loadSpread(spec: SpreadSpec, range: string, period: SeriesPeriod = "D", visited: Set<string> = new Set()): Promise<SeriesPoint[]> {
     const parsed = parseExpression(spec.expression, spec.series.length);
     if (!parsed.ok) {
       throw new Error(t("公式错误：{msg}", { msg: parsed.error }));
     }
     const ast = parsed.ast;
 
-    const allPoints = await Promise.all(spec.series.map((ref) => this.loadSeries(ref, range, period)));
+    const allPoints = await Promise.all(spec.series.map((ref) => this.loadSeries(ref, range, period, false, visited)));
 
     if (allPoints.some(isMonthlyish)) {
       return evalMonthly(allPoints, ast);

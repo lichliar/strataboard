@@ -115,6 +115,7 @@ export class CanvasToolbar {
         menu: [
           { text: "数据叠加", icon: "layers", onClick: () => this.insertOverlay() },
           { text: "数据计算", icon: "calculator", onClick: () => this.insertSpread() },
+          { text: "脚本处理", icon: "file-code", onClick: () => this.plugin.openScriptManager() },
         ],
       },
       tradingview: {
@@ -132,12 +133,6 @@ export class CanvasToolbar {
         menu: [
           { text: "日历", icon: "calendar-days", onClick: () => this.insertCalendar() },
         ],
-      },
-      "ai-chat": {
-        id: "ai-chat",
-        label: "AI 助手",
-        icon: "ai-chat",
-        onClick: () => void this.plugin.openAiChat(),
       },
     };
     return this.plugin.pluginSettings.toolbarOrder.map((id) => defs[id]);

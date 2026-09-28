@@ -72,7 +72,7 @@ export async function openOrCreateDailyNote(
   await app.workspace.getLeaf(false).openFile(file);
 }
 
-async function ensureFolder(app: App, folder: string): Promise<void> {
+export async function ensureFolder(app: App, folder: string): Promise<void> {
   const trimmed = folder.replace(/^\/+|\/+$/g, "");
   if (!trimmed) return;
 

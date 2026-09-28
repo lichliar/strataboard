@@ -49,11 +49,12 @@
 
 1. 打开设置-第三方插件-关闭安全模式
 2. 社区插件市场搜索 “StrataBoard”
+3. 首次启用（或更新）时插件会自动从 GitHub release 下载资源文件（`sql-wasm.wasm` / `cli.js` / `mcp-server.js`）；若下载失败可按方式二手动补齐。
 
 ### 方式二：下载 Release
 
-1. 从 [Releases](../../releases/latest) 下载 `main.js`、`manifest.json`、`styles.css`、`sql-wasm.wasm` 四个文件。
-2. 在你的库目录下新建文件夹 `.obsidian/plugins/strataboard/`，把四个文件放进去。
+1. 从 [Releases](../../releases/latest) 下载 `main.js`、`manifest.json`、`styles.css`、`sql-wasm.wasm` 四个文件（需要 MCP/CLI 的话再下载 `cli.js`、`mcp-server.js`）。
+2. 在你的库目录下新建文件夹 `.obsidian/plugins/strataboard/`，把文件放进去。
 3. 重启 Obsidian，在 设置 → 第三方插件 中启用 **StrataBoard**。
 
 **出于法律风险，本插件不再提供免费数据源，首次使用需用户自行配置数据源（问AI）。或者使用付费数据源（目前支持Tushare）**
@@ -77,6 +78,7 @@
 - Tushare Pro（收费数据源）：A 股/基金/指数/港股/可转债/期货/外汇/申万行业/南华指数/中国宏观
 - FRED（免费数据源但需要申请）：美联储宏观序列，支持服务端单位变换（环比/同比/对数…）
 - 自定义数据源：在设置页自行配置任意 RESTful 行情接口（URL 模板 + 响应格式）
+- 脚本产物 CSV：自己写的 Python 脚本把计算结果输出到脚本文件夹的 `output/` 子目录，插件自动注册为数据源（见下「脚本处理」）
 
 ### 自定义数据源
 
@@ -89,6 +91,41 @@
 - **K 线接口 URL**：支持占位符 `{code}`（代码）、`{start}` / `{end}`（YYYYMMDD）、`{endIso}`（YYYY-MM-DD）
 - **搜索接口 URL**（可选）：支持占位符 `{query}`；留空则该源只能手工录入代码建卡
 - **通用 JSON 映射**（仅通用 JSON 格式）：行数组路径（如 `data.klines`）、行类型（数组按列序号 / 对象按字段名）、日期与开高低收/成交量/成交额的列位置，以及可选的搜索结果映射
+
+### 脚本处理
+
+自己写 Python 脚本做复杂数据计算，脚本把结果写成 CSV 放进脚本文件夹的 `output/` 子目录（建议与脚本同名：`脚本/foo.py` → `脚本/output/foo.csv`），插件自动把它注册为数据源——之后即可像其他数据源一样建独立卡、叠加卡、计算卡；产物更新后相关缓存自动失效、卡片自动重绘。
+
+- **运行独立于插件**：插件不提供定时调度，需要定时请用 cron / launchd / 任务计划自己跑；也可以在 工具栏 → 数据处理 → 脚本处理（或命令面板「打开脚本管理」）里手动「立即运行」。想让 AI 帮忙写脚本：弹窗里「AI 辅助」提供一键复制的提示词（已附产物契约与合规规则），发给你自己的 AI 即可。
+- **CSV 契约**：UTF-8、首行表头；两种格式二选一——宽表（推荐，首列是日期，其余每个数值列是一条序列，列名即代码，空值表示该日无数据）或单序列 OHLCV（表头含 `date,open,high,low,close`）。
+- **合规边界**：脚本由用户自行编写与运行，脚本的数据获取行为及其与数据源之间的授权关系由用户负责，插件仅读取脚本产出的本地 CSV。脚本功能不适合高频数据、不作为批量下载工具；建议增量抓取、请求间隔 ≥ 1 秒（弹窗里「新建脚本」生成的模板自带限速与增量抓取示例）。
+
+## 用 AI Agent 操作本插件（MCP / CLI）
+
+本插件不内置 AI 助手，但为你自己的 AI agent（Codex、Claude Code 等）提供两个入口，AI 可以直接查符号、列数据源、校验卡片、探测数据：
+
+- **MCP server（推荐）**：以 stdio 方式在你的 AI agent 中注册 `node <插件目录>/mcp-server.js --vault <vault 路径>`。提供工具：`search_symbols` / `list_sources` / `list_macro_series` / `validate_cards` / `probe_data` / `probe_fred` / `get_card_guide`。
+- **CLI**：`node <插件目录>/cli.js <命令> [--vault <vault 路径>]`，命令有 `search` / `sources` / `macro` / `validate` / `probe` / `probe-fred`，全部输出 JSON，适合脚本调用。
+
+Codex 配置示例（`~/.codex/config.toml`）：
+
+```toml
+[mcp_servers.strataboard]
+command = "node"
+args = ["<插件目录>/mcp-server.js", "--vault", "<vault 路径>"]
+```
+
+其他 agent（JSON 配置）：
+
+```json
+{
+  "mcpServers": {
+    "strataboard": { "command": "node", "args": ["<插件目录>/mcp-server.js", "--vault", "<vault 路径>"] }
+  }
+}
+```
+
+插件目录即 `<vault 路径>/.obsidian/plugins/strataboard`；`--vault` 缺省时读环境变量 `STRATABOARD_VAULT`，再从当前目录向上查找含 `.obsidian` 的目录。设置页「外部 AI 接入」tab 里有按你本机路径填好的配置片段可一键复制。写卡片前让 AI 先读《StrataBoard 卡片编写指南》：全文在该 tab 内可展开查看、一键复制，MCP 客户端可直接调用 `get_card_guide` 工具获取。
 
 ## 网络请求说明
 
