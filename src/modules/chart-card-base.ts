@@ -11,7 +11,7 @@ export interface ChartCardPluginHost {
 }
 
 // Public re-render surface of a chart card renderer (the plugin-level
-// registry stores these; main.ts' tushare renderer satisfies it too).
+// registry stores these; main.ts' quote renderer satisfies it too).
 export interface ChartCardRefreshHandle {
   refreshCard(): void;
 }
@@ -54,7 +54,7 @@ export function applyCanvasDisplayOptions(cardEl: HTMLElement, opts: CanvasDispl
 
 /**
  * Base class for chart-style code-block cards, extracting the canvas
- * interaction model from TushareCodeBlockRenderer so every chart card shares
+ * interaction model from QuoteCodeBlockRenderer so every chart card shares
  * it. Three tiers:
  *  - single click/drag on the card: selects and moves the canvas node
  *    (the node's content blocker keeps pointer events at canvas level);

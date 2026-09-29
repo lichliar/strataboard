@@ -11,10 +11,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   createVaultContext,
-  listMacroSeries,
   listSources,
   probeData,
-  probeFred,
   searchSymbols,
   validateCards,
   type VaultContext,
@@ -97,21 +95,10 @@ async function main(): Promise<void> {
   );
 
   server.registerTool(
-    "list_macro_series",
-    {
-      description: "列出可用的 Tushare 中国宏观序列（seriesId/名称/频率/单位/所需积分）。macro 卡的 seriesId 必须来自这里。",
-      inputSchema: {
-        query: z.string().optional().describe("可选，按 seriesId 或名称过滤，如 cpi"),
-      },
-    },
-    wrap(({ query }) => listMacroSeries({ query }))
-  );
-
-  server.registerTool(
     "validate_cards",
     {
       description:
-        "校验一段 Markdown 文本里的全部 StrataBoard 卡片块（tushare/fred/macro/overlay/spread/financial-widget/calendar）。写完或改完卡片后调用，逐块返回行号与错误原因。",
+        "校验一段 Markdown 文本里的全部 StrataBoard 卡片块（quote/overlay/spread/financial-widget/calendar）。写完或改完卡片后调用，逐块返回行号与错误原因。",
       inputSchema: {
         markdown: z.string().describe("完整的 Markdown 文本（直接传内容，不是文件路径）"),
       },
@@ -126,24 +113,12 @@ async function main(): Promise<void> {
         "真实调用数据接口，确认某代码最近是否有数据。search 查不到或不确定数据是否可用时使用；rows=0 时读 hint 字段里的可能原因。",
       inputSchema: {
         code: z.string().describe("资产代码，如 600519.SH"),
-        assetType: assetTypeSchema.optional().describe("资产类型，默认 stock"),
-        sourceId: z.string().optional().describe("assetType 为 custom 时必填，自定义数据源 id（见 list_sources）"),
+        assetType: assetTypeSchema.optional().describe("资产类型，默认 custom"),
+        sourceId: z.string().optional().describe("自定义数据源 id（见 list_sources）"),
         days: z.number().int().positive().optional().describe("回看天数（日历日），默认 14"),
       },
     },
     wrap(({ code, assetType, sourceId, days }) => probeData(ctx, { code, assetType, sourceId, days }))
-  );
-
-  server.registerTool(
-    "probe_fred",
-    {
-      description: "真实调用 FRED API，确认某 FRED 系列最近是否有观测值。rows=0 时读 hint 字段。",
-      inputSchema: {
-        seriesId: z.string().describe("FRED 系列代码，如 SP500、DGS10"),
-        days: z.number().int().positive().optional().describe("回看天数，默认 400（低频序列需要较长窗口）"),
-      },
-    },
-    wrap(({ seriesId, days }) => probeFred(ctx, { seriesId, days }))
   );
 
   server.registerTool(

@@ -1,8 +1,9 @@
 <p align="center">
-  <img src="docs/logo.svg" width="72" alt="StrataBoard logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-text-dark.svg">
+    <img src="docs/logo-text.svg" width="520" alt="StrataBoard">
+  </picture>
 </p>
-
-<h1 align="center">StrataBoard · Financial Canvas</h1>
 
 <p align="center">
   把金融数据卡片放上 Obsidian Canvas —— 行情、宏观、组件，一板尽览。<br>
@@ -23,10 +24,6 @@
 
 ![插入资产卡片](docs/videos/insert-card.gif)
 
-**插入 FRED 宏观数据卡** —— 直接搜索 FRED 序列（如美债收益率）建卡：
-
-![插入 FRED 卡片](docs/videos/fred-card.gif)
-
 **插入 TradingView 小组件** —— 从 TradingView Widgets 页面复制嵌入代码即可建卡：
 
 ![插入 TradingView 小组件](docs/videos/tradingview-widget.gif)
@@ -35,7 +32,7 @@
 
 **卡片类型**
 
-- **资产行情卡**：股票/基金/指数/宏观 等数据。支持日/周/月周期，不支持高频数据。
+- **资产行情卡**：由你配置的自定义数据源驱动（行情/宏观序列均可）。支持日/周/月周期，不支持高频数据。
 - **数据叠加卡**：多序列同图对比
 - **数据计算卡**：对序列做简单的四则运算
 - **TradingView 小组件卡**：可以直接在ob内插入TradingView Widgets组件。
@@ -57,7 +54,7 @@
 2. 在你的库目录下新建文件夹 `.obsidian/plugins/strataboard/`，把文件放进去。
 3. 重启 Obsidian，在 设置 → 第三方插件 中启用 **StrataBoard**。
 
-**出于法律风险，本插件不再提供免费数据源，首次使用需用户自行配置数据源（问AI）。或者使用付费数据源（目前支持Tushare）**
+**本插件不内置任何数据源，首次使用需自行配置数据接口（REST/JSON）或 vault 内的 CSV 文件——可以让 AI 辅助生成配置（无可用数据源时，「插入数据」会弹出设置引导）。**
 
 ## 使用
 
@@ -69,28 +66,28 @@
 - 拖动卡片标题移动卡片；双击进入图表交互模式（滚轮缩放、拖动平移），再次双击打开统合编辑弹窗——周期、时间范围、图表类型、主题、涨跌色、卡片高度都按卡片独立保存。
 - 熟悉格式后也可以直接编辑卡片文件里的 YAML，保存即生效。
 - 数据缓存在本地 SQLite，只增量拉取新数据；点卡片右上角的刷新按钮强制更新，或在设置中打开「自动刷新」。
-- 叠加卡把多条序列（行情 / 宏观 / FRED，甚至另一张卡片）画进同一张图；计算卡用字母引用各序列写四则表达式，如 `A-B`、`(A+B)/2`。
+- 叠加卡把多条序列（行情 / 宏观序列，甚至另一张卡片）画进同一张图；计算卡用字母引用各序列写四则表达式，如 `A-B`、`(A+B)/2`。
 - 不再需要的数据可以在 设置 → 路径设置 → 清理维护 里扫描并清理孤儿卡片文件与过期缓存。
 
 ## 数据源
-**出于法律风险和技术礼貌，本插件不再支持内置任何免密钥接口，需用户自行配置免费数据源。本插件不支持高频数据获取。仅支持日线级别的数据，方便分析和学习使用。**
+**本插件不内置任何数据源，仅作为数据接入框架与展示工具：所有数据都来自你在设置页自行配置的 REST/JSON 接口或 vault 内的 CSV 文件。本插件不支持高频数据获取，仅支持日线级别的数据，方便分析和学习使用。**
 
-- Tushare Pro（收费数据源）：A 股/基金/指数/港股/可转债/期货/外汇/申万行业/南华指数/中国宏观
-- FRED（免费数据源但需要申请）：美联储宏观序列，支持服务端单位变换（环比/同比/对数…）
-- 自定义数据源：在设置页自行配置任意 RESTful 行情接口（URL 模板 + 响应格式）
+- 自定义数据源：在设置页自行配置任意 RESTful / JSON 数据接口（URL 模板 + 响应格式），或 vault 内的 CSV 文件
 - 脚本产物 CSV：自己写的 Python 脚本把计算结果输出到脚本文件夹的 `output/` 子目录，插件自动注册为数据源（见下「脚本处理」）
 
 ### 自定义数据源
 
-插件不内置任何免密钥行情接口。你可以在 设置 → 数据源设置 → 自定义数据源 中自行添加任意返回 JSON 的 RESTful 行情接口，添加后即可像其他数据源一样建独立卡，也可用于叠加卡与计算卡。
+你可以在 设置 → 数据源设置 中自行添加任意返回 JSON 的 RESTful 数据接口（如 Tushare Pro、FRED 这类官方 API 都可以按通用契约接入），添加后即可建独立卡，也可用于叠加卡与计算卡。
 
 每个数据源需要填写：
 
 - **名称**：显示在选择器、工具栏与卡片文件名中
 - **响应格式**：腾讯格式 / 东方财富格式 / 通用 JSON（见下）
-- **K 线接口 URL**：支持占位符 `{code}`（代码）、`{start}` / `{end}`（YYYYMMDD）、`{endIso}`（YYYY-MM-DD）
-- **搜索接口 URL**（可选）：支持占位符 `{query}`；留空则该源只能手工录入代码建卡
-- **通用 JSON 映射**（仅通用 JSON 格式）：行数组路径（如 `data.klines`）、行类型（数组按列序号 / 对象按字段名）、日期与开高低收/成交量/成交额的列位置，以及可选的搜索结果映射
+- **K 线接口 URL**：支持占位符 `{code}`（代码）、`{start}` / `{end}`（YYYYMMDD）、`{startIso}` / `{endIso}`（YYYY-MM-DD）、`{apiKey}`（密钥）
+- **请求方式**：GET（默认）或 POST；POST 时填写请求体模板（同一套占位符，自动带 `Content-Type: application/json`）
+- **搜索接口**（可选）：GET 搜索填搜索 URL（占位符 `{query}`）；POST 搜索改填搜索请求体模板（`{query}` / `{apiKey}` 占位，URL 取搜索 URL、未配则复用 K 线 URL）；模板不含 `{query}` 时插件把整表拉回本地过滤（结果有缓存）。都不配则该源只能手工录入代码建卡
+- **通用 JSON 映射**（仅通用 JSON 格式）：行数组路径（如 `data.klines`）、行类型（数组按列序号 / 对象按字段名 / `fields` 按列名数组寻址，如 `data.fields` + `data.items`）、日期与开高低收/成交量/成交额的列位置、可选的业务错误透传（`errorPath` / `errorMessagePath`），以及可选的搜索结果映射
+- **兼容模式**（可选）：个别站点（如 api.stlouisfed.org）在 Obsidian 默认网络栈下连接失败时，改用 Node https 发送请求
 
 ### 脚本处理
 
@@ -104,8 +101,8 @@
 
 本插件不内置 AI 助手，但为你自己的 AI agent（Codex、Claude Code 等）提供两个入口，AI 可以直接查符号、列数据源、校验卡片、探测数据：
 
-- **MCP server（推荐）**：以 stdio 方式在你的 AI agent 中注册 `node <插件目录>/mcp-server.js --vault <vault 路径>`。提供工具：`search_symbols` / `list_sources` / `list_macro_series` / `validate_cards` / `probe_data` / `probe_fred` / `get_card_guide`。
-- **CLI**：`node <插件目录>/cli.js <命令> [--vault <vault 路径>]`，命令有 `search` / `sources` / `macro` / `validate` / `probe` / `probe-fred`，全部输出 JSON，适合脚本调用。
+- **MCP server（推荐）**：以 stdio 方式在你的 AI agent 中注册 `node <插件目录>/mcp-server.js --vault <vault 路径>`。提供工具：`search_symbols` / `list_sources` / `validate_cards` / `probe_data` / `get_card_guide`。
+- **CLI**：`node <插件目录>/cli.js <命令> [--vault <vault 路径>]`，命令有 `search` / `sources` / `validate` / `probe`，全部输出 JSON，适合脚本调用。
 
 Codex 配置示例（`~/.codex/config.toml`）：
 
@@ -125,25 +122,22 @@ args = ["<插件目录>/mcp-server.js", "--vault", "<vault 路径>"]
 }
 ```
 
-插件目录即 `<vault 路径>/.obsidian/plugins/strataboard`；`--vault` 缺省时读环境变量 `STRATABOARD_VAULT`，再从当前目录向上查找含 `.obsidian` 的目录。设置页「外部 AI 接入」tab 里有按你本机路径填好的配置片段可一键复制。写卡片前让 AI 先读《StrataBoard 卡片编写指南》：全文在该 tab 内可展开查看、一键复制，MCP 客户端可直接调用 `get_card_guide` 工具获取。
+插件目录即 `<vault 路径>/.obsidian/plugins/strataboard`；`--vault` 缺省时读环境变量 `STRATABOARD_VAULT`，再从当前目录向上查找含 `.obsidian` 的目录。设置页「AI 辅助」tab 里有配置片段（路径用 `<vault路径>` 占位符表示，需自行替换）和「一键配置提示词」——把提示词发给你的 AI agent，它会自动定位 vault 并完成 MCP 注册。写卡片前让 AI 先读《StrataBoard 卡片编写指南》：全文在该 tab 内可展开查看、一键复制，MCP 客户端可直接调用 `get_card_guide` 工具获取。
 
 ## 网络请求说明
 
-本插件需要联网获取数据，仅在你使用对应功能时向以下服务发起请求：
+本插件需要联网获取数据，仅在你使用对应功能时发起请求：
 | 服务 | 域名 | 说明 |
 | --- | --- | --- |
-| Tushare Pro | `api.tushare.pro` | A 股/港股/期货/宏观等数据，使用你自己配置的 Token |
-| FRED | `api.stlouisfed.org` | 美联储宏观序列，使用你自己配置的 API Key |
-| 自定义数据源 | 由你配置的接口地址决定 | 插件不内置任何免密钥接口，仅按你在设置页填写的 URL 发起请求 |
+| 自定义数据源 | 由你配置的接口地址决定 | 插件不内置任何数据接口，仅按你在设置页填写的配置发起请求 |
 | TradingView | `*.tradingview.com` | 仅 TradingView 小组件卡加载其第三方脚本 |
 
-除上述数据源外，插件不会向任何其他服务器发送数据；你的 Token、API Key 与全部缓存数据仅保存在本地。
+除上述请求外，插件不会向任何其他服务器发送数据；你的 API 凭据与全部缓存数据仅保存在本地。
 
 ## 免责声明
-- **本插件仅作为数据展示工具，所有第三方接口均由用户自行配置/调用，用户需自行遵守各数据平台的服务条款。数据版权归原平台所有，不得用于商业用途。**
+- **本插件仅作为数据接入框架与展示工具，不内置任何数据源；所有第三方接口均由用户自行配置/调用，用户需自行遵守各数据平台的服务条款。数据版权归原平台所有，不得用于商业用途。**
 - **本插件仅供个人学习与研究使用，不构成任何投资建议。**
-- Tushare、FRED 等数据源需使用你自己的账号与密钥，使用时请遵守各平台的服务条款。
-- **FRED**：This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
+- 自行配置的数据接口如需账号与密钥（如 Tushare Pro、FRED），使用时请遵守对应平台的服务条款。
 - 插件目前仅支持桌面端 Obsidian。
 
 ## License

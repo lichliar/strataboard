@@ -16,7 +16,7 @@ import {
   type LineData,
   type Time,
 } from "lightweight-charts";
-import type { MarketData, OhlcvRow, ParsedCardSpec, SymbolItem } from "../types";
+import type { OhlcvRow, ParsedCardSpec, SymbolItem } from "../types";
 import { ChartSizeGuard } from "./chart-size-guard";
 import { resolveEffectiveTheme, onAttached, toLayoutPoint, installZoomEventFix } from "../utils/dom";
 import { parseDateYmd, formatDate } from "../utils/date";
@@ -51,7 +51,6 @@ interface ChartRendererOptions {
   showMA: boolean;
   showGrid: boolean;
   gridOpacity: number;
-  loadMarketData?: (tradeDate: string) => Promise<MarketData | null>;
   onRefresh?: () => void;
   onSwitchFreq?: (freq: "D" | "W" | "M") => void;
   // Footer tool buttons (wireframe #screen-card): edit opens the card's edit
@@ -351,31 +350,6 @@ export class ChartRenderer extends MarkdownRenderChild {
       text: `${change >= 0 ? "+" : ""}${formatPercent(changePct)}`,
       attr: { style: `color: ${color}` },
     });
-
-    // daily_basic only covers stocks; funds and indexes would show a row of
-    // "--", so the market data row is only offered for them. Visibility is
-    // controlled by the card's 显示市场数据 setting (double-click editor).
-    const showMarketData = this.options.spec.showMarketData !== false && this.options.spec.assetType === "stock";
-
-    if (showMarketData) {
-      const marketRow = this.headerEl.createEl("div", { cls: "strataboard-header-market" });
-      const marketData = await this.loadMarketData(latest.tradeDate);
-
-      const marketItems = [
-        { label: "市值", value: marketData?.totalMv != null ? formatBigNumber(marketData.totalMv) : "--" },
-        { label: "流通", value: marketData?.circMv != null ? formatBigNumber(marketData.circMv) : "--" },
-        { label: "市盈", value: marketData?.pe != null ? formatNumber(marketData.pe, 2) : "--" },
-        { label: "量比", value: marketData?.volumeRatio != null ? formatNumber(marketData.volumeRatio, 2) : "--" },
-        { label: "换", value: marketData?.turnoverRate != null ? formatPercent(marketData.turnoverRate) : "--" },
-        { label: "额", value: formatBigNumber(latest.amount * 1000) },
-      ];
-
-      for (const item of marketItems) {
-        const wrap = marketRow.createEl("span", { cls: "strataboard-header-market-item" });
-        wrap.createEl("span", { cls: "strataboard-header-market-label", text: `${t(item.label)} ` });
-        wrap.createEl("span", { cls: "strataboard-header-market-value", text: item.value });
-      }
-    }
   }
 
   // Header text for PNG exports (name + code + latest quote, rise/fall
@@ -398,15 +372,6 @@ export class ChartRenderer extends MarkdownRenderChild {
         { text: `${change >= 0 ? "+" : ""}${formatPercent(changePct)}`, color },
       ],
     };
-  }
-
-  private async loadMarketData(tradeDate: string): Promise<MarketData | null> {
-    if (!this.options.loadMarketData) return null;
-    try {
-      return await this.options.loadMarketData(tradeDate);
-    } catch {
-      return null;
-    }
   }
 
   // ===== Footer: freq tabs + SVG tool buttons (wireframe #screen-card) =====

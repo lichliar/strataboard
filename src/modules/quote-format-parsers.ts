@@ -206,9 +206,12 @@ function guessObjectCols(row: any): JsonSourceMap["cols"] | null {
   return cols;
 }
 
-// Best-effort generic JSON mapping: first candidate that guesses cleanly.
+// Best-effort generic JSON mapping: the Tushare-style fields+items shape is
+// recognized first, then the first row-list candidate that guesses cleanly.
 // The wizard previews the parsed rows so a wrong guess is caught by the user.
 export function detectJsonMapping(json: any): JsonSourceMap | null {
+  const fieldsMap = detectFieldsMapping(json);
+  if (fieldsMap) return fieldsMap;
   for (const candidate of findRowCandidates(json)) {
     const cols = guessCols(candidate);
     if (cols) return { rowsPath: candidate.rowsPath, rowKind: candidate.rowKind, cols };
@@ -216,8 +219,88 @@ export function detectJsonMapping(json: any): JsonSourceMap | null {
   return null;
 }
 
+// Recognizes the Tushare response shape {data:{fields: string[], items:
+// any[][]}} (a column-name list next to an array-of-arrays row list, at any
+// depth) and emits a rowKind "fields" mapping. Column names are matched
+// against the same dictionaries as object rows (trade_date/date → date,
+// open/high/low/close/vol, amount); date + close alone count as a success.
+function detectFieldsMapping(json: any): JsonSourceMap | null {
+  return findFieldsMappings(json)[0] ?? null;
+}
+
+// Finds every fields+items node in the payload and emits a rowKind "fields"
+// mapping for each one that guesses cleanly. Exported for the setup wizard's
+// 数据列表 dropdown, which offers these alongside the plain row lists.
+export function findFieldsMappings(json: any): JsonSourceMap[] {
+  const found: JsonSourceMap[] = [];
+  const queue: { node: any; path: string }[] = [{ node: json, path: "" }];
+  while (queue.length > 0) {
+    const { node, path } = queue.shift()!;
+    if (node === null || typeof node !== "object" || Array.isArray(node)) continue;
+    const fields: unknown = node.fields;
+    const items: unknown = node.items;
+    if (
+      Array.isArray(fields) && fields.length > 0 && fields.every((f) => typeof f === "string") &&
+      Array.isArray(items) && items.length > 0 && items.every((r) => Array.isArray(r))
+    ) {
+      const cols = guessFieldsCols(fields, items[0]);
+      if (cols) {
+        const prefix = path ? `${path}.` : "";
+        found.push({ rowsPath: `${prefix}items`, rowKind: "fields", fieldsPath: `${prefix}fields`, cols });
+      }
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      // Row lists are leaf data; never descend into arrays.
+      if (child !== null && typeof child === "object" && !Array.isArray(child)) {
+        queue.push({ node: child, path: path ? `${path}.${key}` : key });
+      }
+    }
+  }
+  return found;
+}
+
+// Column-name guess for a fields+items payload: each field matched by name
+// dictionary, with a value-based fallback for the date and close columns.
+function guessFieldsCols(fields: string[], firstRow: any[]): JsonSourceMap["cols"] | null {
+  const pickBy = (candidates: string[]): string | undefined => fields.find((f) => matchName(f, candidates));
+  const date = pickBy(NAME_KEYS.date) ?? fields.find((_, i) => normalizeJsonDate(firstRow?.[i]) !== "");
+  if (!date) return null;
+  const open = pickBy(NAME_KEYS.open);
+  const high = pickBy(NAME_KEYS.high);
+  const low = pickBy(NAME_KEYS.low);
+  const vol = pickBy(NAME_KEYS.vol);
+  // Close falls back to the first unmatched numeric field, so single-value
+  // series (yields, macro readings) with opaque field names still guess.
+  const taken = new Set([date, open, high, low, vol].filter((f): f is string => Boolean(f)));
+  const close =
+    pickBy(NAME_KEYS.close) ??
+    fields.find((f, i) => !taken.has(f) && Number.isFinite(Number(firstRow?.[i])));
+  if (!close) return null;
+  const cols: JsonSourceMap["cols"] = { date, open: open ?? "", close, high: high ?? "", low: low ?? "", vol: vol ?? "" };
+  const amount = pickBy(AMOUNT_KEYS);
+  if (amount) cols.amount = amount;
+  return cols;
+}
+
+// Business-level error check for APIs that report failures inside a 200
+// response (e.g. Tushare's {code, msg}: code 0 means success). Returns the
+// message at errorMessagePath, or a generic text when the response carries
+// none; null when no errorPath is configured or the indicator says success.
+export function extractApiError(json: any, map: JsonSourceMap): string | null {
+  if (!map.errorPath) return null;
+  const value: unknown = digPathValue(json, map.errorPath);
+  if (value === null || value === undefined || value === "" || value === 0 || value === "0") return null;
+  const message = map.errorMessagePath ? String(digPathValue(json, map.errorMessagePath) ?? "").trim() : "";
+  return message || `API error (code: ${String(value)})`;
+}
+
 // Parses rows with a guessed/explicit mapping — used by the wizard preview.
 export function parseMappedKline(json: any, map: JsonSourceMap): OhlcvRow[] {
+  // rowKind "fields": resolve the column NAMES against the name list at
+  // fieldsPath once per response, then parse as array rows. A name missing
+  // from the list becomes unmapped (OHLC falls back to close below).
+  if (map.rowKind === "fields") map = resolveFieldsMap(json, map);
   const raw: unknown = digPathValue(json, map.rowsPath);
   if (!Array.isArray(raw)) return [];
   const rows: OhlcvRow[] = [];
@@ -247,6 +330,33 @@ export function parseMappedKline(json: any, map: JsonSourceMap): OhlcvRow[] {
     });
   }
   return rows.sort((a, b) => a.tradeDate.localeCompare(b.tradeDate));
+}
+
+// Resolves a rowKind "fields" mapping into an equivalent "array" mapping:
+// each col's column name is looked up in the name list at fieldsPath, and a
+// name not present becomes "" (unmapped). Resolved once per response, not
+// per row.
+function resolveFieldsMap(json: any, map: JsonSourceMap): JsonSourceMap {
+  const raw: unknown = digPathValue(json, map.fieldsPath ?? "");
+  const fields = Array.isArray(raw) ? raw.map((f) => String(f)) : [];
+  const indexOf = (name: string | undefined): string => {
+    if (!name) return "";
+    const index = fields.indexOf(name);
+    return index >= 0 ? String(index) : "";
+  };
+  return {
+    ...map,
+    rowKind: "array",
+    cols: {
+      date: indexOf(map.cols.date),
+      open: indexOf(map.cols.open),
+      close: indexOf(map.cols.close),
+      high: indexOf(map.cols.high),
+      low: indexOf(map.cols.low),
+      vol: indexOf(map.cols.vol),
+      amount: map.cols.amount ? indexOf(map.cols.amount) : undefined,
+    },
+  };
 }
 
 // Splits a composite code "URL部分@映射部分" (e.g. "REPORTNAME@COLUMN" for
@@ -292,16 +402,61 @@ export function digPathValue(json: any, path: string): unknown {
 }
 
 // Reads one column off a row: numeric index for array rows, field name for
-// object rows.
-export function pickRowColumn(row: any, rowKind: "array" | "object", col: string | undefined): unknown {
+// object rows. rowKind "fields" never reaches here — parseMappedKline
+// resolves it to "array" first; the union is accepted so callers holding a
+// JsonSourceMap can pass map.rowKind without narrowing.
+export function pickRowColumn(row: any, rowKind: JsonSourceMap["rowKind"], col: string | undefined): unknown {
   if (col === undefined || col === "") return undefined;
-  if (rowKind === "array") {
+  if (rowKind === "array" || rowKind === "fields") {
     if (!Array.isArray(row)) return undefined;
     const index = Number(col);
     return Number.isInteger(index) ? row[index] : undefined;
   }
   if (row === null || typeof row !== "object" || Array.isArray(row)) return undefined;
   return row[col];
+}
+
+// Parses a generic-JSON search / symbol-list response: rows dug out at
+// searchRowsPath, columns picked per searchCols. rowKind "fields" resolves
+// searchCols the same way parseMappedKline resolves cols — a column NAME is
+// looked up in the fieldsPath list, while an integer string passes through
+// as a column index (so both spellings work in searchCols).
+export function parseMappedSearch(json: any, map: JsonSourceMap | undefined): SymbolItem[] {
+  if (!map?.searchRowsPath || !map.searchCols) return [];
+  let rowKind = map.rowKind;
+  let cols = map.searchCols;
+  if (rowKind === "fields") {
+    const rawFields: unknown = digPathValue(json, map.fieldsPath ?? "");
+    const fields = Array.isArray(rawFields) ? rawFields.map((f) => String(f)) : [];
+    const indexOf = (col: string | undefined): string | undefined => {
+      if (!col) return undefined;
+      if (Number.isInteger(Number(col))) return col;
+      const index = fields.indexOf(col);
+      return index >= 0 ? String(index) : undefined;
+    };
+    rowKind = "array";
+    cols = {
+      code: indexOf(cols.code) ?? "",
+      name: indexOf(cols.name) ?? "",
+      ...(cols.market ? { market: indexOf(cols.market) } : {}),
+    };
+  }
+  const raw: unknown = digPathValue(json, map.searchRowsPath);
+  if (!Array.isArray(raw)) return [];
+  const items: SymbolItem[] = [];
+  for (const r of raw) {
+    const code = String(pickRowColumn(r, rowKind, cols.code) ?? "").trim();
+    const name = String(pickRowColumn(r, rowKind, cols.name) ?? "").trim();
+    if (!code || !name) continue;
+    items.push({
+      tsCode: code,
+      symbol: code,
+      name,
+      exchange: cols.market ? String(pickRowColumn(r, rowKind, cols.market) ?? "") : "",
+      assetType: "custom",
+    });
+  }
+  return items;
 }
 
 // Parses the Eastmoney suggest response; QuoteID (e.g. "1.600519") doubles as

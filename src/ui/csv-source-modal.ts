@@ -127,6 +127,17 @@ export class CsvSourceModal extends Modal {
       });
     });
 
+    const iconSetting = new Setting(contentEl)
+      .setName(t("自定义图标（可选）"))
+      .setDesc(t("粘贴 SVG 代码；留空则在「插入图表」菜单中用颜色圆点区分。"));
+    iconSetting.settingEl.addClass("fc-setting-stacked");
+    iconSetting.addTextArea((text) => {
+      text.setValue(this.def.icon ?? "").onChange((value) => {
+        this.def.icon = value.trim() || undefined;
+      });
+      text.inputEl.addClass("fc-mono");
+    });
+
     const previewEl = contentEl.createDiv("fc-csv-preview");
     this.renderPreview(previewEl);
 

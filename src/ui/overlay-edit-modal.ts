@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
 import type { ChartTheme, CustomSourceDef, DisplayOverrides, OverlayCompareMode, OverlaySpec, SeriesPeriod, SeriesRef } from "../types";
-import { SeriesRefEditor, type ListReferenceableCards, type OpenFredPicker, type OpenSymbolPicker, type SeriesSourceAvailability } from "./series-ref-editor";
+import { SeriesRefEditor, type ListReferenceableCards, type OpenSymbolPicker } from "./series-ref-editor";
 import { SeriesAdapter } from "../modules/series-adapter";
 import { addStepper } from "./stepper";
 import { renderDisplayOverrideSettings } from "./display-overrides";
@@ -76,9 +76,7 @@ export class OverlayEditModal extends Modal {
   private onSubmit: (spec: OverlaySpec) => void;
   private openSymbolPicker: OpenSymbolPicker;
   private listReferenceableCards: ListReferenceableCards;
-  private openFredPicker?: OpenFredPicker;
   private customSources: CustomSourceDef[];
-  private sourceAvailability: SeriesSourceAvailability;
 
   constructor(
     app: App,
@@ -86,10 +84,8 @@ export class OverlayEditModal extends Modal {
     onSubmit: (spec: OverlaySpec) => void,
     openSymbolPicker: OpenSymbolPicker,
     listReferenceableCards: ListReferenceableCards,
-    openFredPicker?: OpenFredPicker,
     title?: string,
-    customSources?: CustomSourceDef[],
-    sourceAvailability?: SeriesSourceAvailability
+    customSources?: CustomSourceDef[]
   ) {
     super(app);
     this.initialSeries = spec.series;
@@ -114,9 +110,7 @@ export class OverlayEditModal extends Modal {
     this.onSubmit = onSubmit;
     this.openSymbolPicker = openSymbolPicker;
     this.listReferenceableCards = listReferenceableCards;
-    this.openFredPicker = openFredPicker;
     this.customSources = customSources ?? [];
-    this.sourceAvailability = sourceAvailability ?? { hasTushare: true, hasFred: true };
     this.setTitle(title ?? t("编辑资产叠加卡"));
   }
 
@@ -183,6 +177,10 @@ export class OverlayEditModal extends Modal {
     for (const ref of this.initialSeries) {
       this.addRow(ref);
     }
+    // Fresh cards start with one empty row bound to the first custom source.
+    if (this.initialSeries.length === 0) {
+      this.addRow();
+    }
     this.addRowEl = pageEl.createEl("button", { cls: "fc-add-row", text: t("+ 添加系列"), attr: { type: "button" } });
     this.addRowEl.addEventListener("click", () => this.addRow());
     this.updateAddRow();
@@ -192,7 +190,7 @@ export class OverlayEditModal extends Modal {
     if (this.editors.length >= MAX_OVERLAY_SERIES) return;
     const editor = new SeriesRefEditor(
       this.rowsEl!,
-      initial ?? { source: "macro", seriesId: "m1_yoy" },
+      initial ?? { source: "quote", assetType: "custom", sourceId: this.customSources[0]?.id ?? "" },
       () => {
         if (this.editors.length <= 1) {
           new Notice(t("至少保留一个数据系列。"));
@@ -205,9 +203,7 @@ export class OverlayEditModal extends Modal {
       true,
       this.openSymbolPicker,
       this.listReferenceableCards,
-      this.openFredPicker,
-      this.customSources,
-      this.sourceAvailability
+      this.customSources
     );
     this.editors.push(editor);
     this.updateAddRow();

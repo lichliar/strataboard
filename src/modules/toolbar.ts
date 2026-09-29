@@ -1,22 +1,32 @@
-import { Menu, Notice, TFile, setTooltip, type WorkspaceLeaf } from "obsidian";
+import { Menu, Notice, TFile, addIcon, setTooltip, type WorkspaceLeaf } from "obsidian";
 import { parseCardSpec } from "./card-spec";
 import { TB_ICONS } from "./toolbar-icons";
+import { LOGO_SVG } from "./logo";
+import { SERIES_LINE_COLORS } from "./series-chart-renderer";
 import { appendSvg } from "../utils/dom";
 import { t } from "../i18n";
 import type StrataBoardPlugin from "../main";
 import type { ToolbarEntryId, ToolbarSourceId } from "../types";
 
-// StrataBoard logo mark: rounded square + three "strata" lines, the top one
-// breaking into a rising trend (strata + financial board). currentColor picks
-// up the hermes amber from .fc-tb-logo.
-const LOGO_SVG =
-  '<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2.2" y="2.2" width="27.6" height="27.6" rx="7" stroke="currentColor" stroke-width="2.2"/><path d="M8 21.5h16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" opacity="0.4"/><path d="M8 17h16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" opacity="0.65"/><path d="M8 12.5l4.5-2.5 4.5 2 7-3.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-
 interface ToolbarMenuItem {
   text: string;
-  icon: string;
+  // Lucide icon name for menuItem.setIcon. Mutually exclusive with the two
+  // custom variants below.
+  icon?: string;
+  // Custom SVG markup (a source's own icon), registered via addIcon.
+  iconSvg?: string;
+  // Palette color for a fallback dot icon when neither icon nor iconSvg.
+  dotColor?: string;
   onClick?: () => void;
   submenu?: ToolbarMenuItem[];
+}
+
+// Stable hash → palette color, so a given source/group always gets the same
+// fallback dot color.
+function paletteColor(key: string): string {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
+  return SERIES_LINE_COLORS[Math.abs(h) % SERIES_LINE_COLORS.length];
 }
 
 // A reorderable top-level entry. `source` ties the entry to its 工具栏显示
@@ -54,9 +64,9 @@ export class CanvasToolbar {
     // The toolbar always renders on the hermes dark palette.
     this.toolbarEl = container.createEl("div", { cls: "strataboard-toolbar fc-hermes" });
 
-    // Logo: strata-layers mark (icon mode) or a horizontal "StrataBoard" word
-    // mark (text mode); click to collapse/expand the toolbar (state persists
-    // in settings).
+    // Logo: brand mark from logo.ts (icon mode) or a horizontal "StrataBoard"
+    // word mark (text mode); click to collapse/expand the toolbar (state
+    // persists in settings).
     const logo = this.toolbarEl.createDiv("fc-tb-logo");
     if (this.plugin.pluginSettings.toolbarStyle === "text") {
       logo.addClass("fc-tb-logo-text");
@@ -79,11 +89,10 @@ export class CanvasToolbar {
     resize.addEventListener("pointerdown", (event) => this.startResize(event));
 
     // Source-classified entries, rendered in the user-defined order. Entries
-    // tied to a source are gated by its 工具栏显示 toggle; 「插入数据」fans out
-    // across every source and 「数据处理」/「组件」are cross-source tools
-    // (quote legs may come from Tushare, custom sources, FRED, …), so they
-    // always render. Token/key guidance lives in the plugin methods
-    // themselves (openUnifiedSearch / insertMacroCard / …), so hidden-source
+    // tied to a source are gated by its 工具栏显示 toggle; 「插入图表」offers
+    // every source in its submenu and 「数据处理」/「组件」are cross-source
+    // tools, so they always render. Configuration guidance lives in the
+    // plugin methods themselves (openUnifiedSearch / …), so hidden-source
     // gating is the only filtering here.
     const sources = this.plugin.pluginSettings.toolbarSources;
     for (const def of this.entryDefs()) {
@@ -104,9 +113,9 @@ export class CanvasToolbar {
     const defs: Record<ToolbarEntryId, ToolbarEntryDef> = {
       "insert-data": {
         id: "insert-data",
-        label: "插入数据",
+        label: "插入图表",
         icon: "insert-data",
-        onClick: () => this.plugin.openUnifiedSearch(),
+        menu: this.buildInsertDataMenu(),
       },
       "data-tools": {
         id: "data-tools",
@@ -115,7 +124,7 @@ export class CanvasToolbar {
         menu: [
           { text: "数据叠加", icon: "layers", onClick: () => this.insertOverlay() },
           { text: "数据计算", icon: "calculator", onClick: () => this.insertSpread() },
-          { text: "脚本处理", icon: "file-code", onClick: () => this.plugin.openScriptManager() },
+          { text: "脚本处理", icon: "file-code-corner", onClick: () => this.plugin.openScriptManager() },
         ],
       },
       tradingview: {
@@ -136,6 +145,37 @@ export class CanvasToolbar {
       },
     };
     return this.plugin.pluginSettings.toolbarOrder.map((id) => defs[id]);
+  }
+
+  // 「插入图表」 submenu: 「全部」 merged search first, then one item per
+  // source group and per ungrouped source. Grouped members never appear
+  // individually — picking a group searches across all its sources.
+  private buildInsertDataMenu(): ToolbarMenuItem[] {
+    const items: ToolbarMenuItem[] = [
+      { text: "全部", icon: "database", onClick: () => this.plugin.openUnifiedSearch("all") },
+    ];
+    const seenGroups = new Set<string>();
+    for (const def of this.plugin.enabledCustomSources()) {
+      if (def.group) {
+        if (seenGroups.has(def.group)) continue;
+        seenGroups.add(def.group);
+        const group = def.group;
+        items.push({
+          text: group,
+          iconSvg: this.plugin.pluginSettings.sourceGroupIcons[group],
+          dotColor: paletteColor(`group:${group}`),
+          onClick: () => this.plugin.openUnifiedSearch(`group:${group}`),
+        });
+      } else {
+        items.push({
+          text: def.name,
+          iconSvg: def.icon,
+          dotColor: paletteColor(def.id),
+          onClick: () => this.plugin.openUnifiedSearch(`custom:${def.id}`),
+        });
+      }
+    }
+    return items;
   }
 
   detach() {
@@ -259,10 +299,32 @@ export class CanvasToolbar {
     });
   }
 
+  // Resolves a menu item's icon to a name usable with setIcon: custom SVG
+  // and palette dots are registered into Obsidian's icon registry via
+  // addIcon (global, overwrite-safe on re-register).
+  private resolveMenuIcon(item: ToolbarMenuItem, index: number): string | undefined {
+    if (item.iconSvg) {
+      const name = `fc-src-icon-${index}-${item.iconSvg.length}`;
+      addIcon(name, item.iconSvg);
+      return name;
+    }
+    if (item.dotColor) {
+      const name = `fc-dot-${item.dotColor.slice(1)}`;
+      addIcon(
+        name,
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="${item.dotColor}"/></svg>`
+      );
+      return name;
+    }
+    return item.icon;
+  }
+
   private addMenuItems(menu: Menu, items: ToolbarMenuItem[]) {
-    for (const item of items) {
+    items.forEach((item, index) => {
       menu.addItem((menuItem) => {
-        menuItem.setTitle(t(item.text)).setIcon(item.icon);
+        menuItem.setTitle(t(item.text));
+        const iconName = this.resolveMenuIcon(item, index);
+        if (iconName) menuItem.setIcon(iconName);
         if (item.submenu) {
           // setSubmenu() is internal (absent from obsidian.d.ts) but is how
           // Obsidian itself nests menus (e.g. table row/column). Unlike an
@@ -274,7 +336,7 @@ export class CanvasToolbar {
           menuItem.onClick(item.onClick);
         }
       });
-    }
+    });
   }
 
   private applyPosition() {
@@ -357,7 +419,7 @@ export class CanvasToolbar {
           const file = this.plugin.app.vault.getAbstractFileByPath(node.filePath);
           if (!(file instanceof TFile)) continue;
           const content = await this.plugin.app.vault.cachedRead(file);
-          const match = content.match(/```tushare\n([\s\S]*?)\n```/);
+          const match = content.match(/```quote\n([\s\S]*?)\n```/);
           if (!match) continue;
           const result = parseCardSpec(match[1]);
           if (!result.ok) continue;

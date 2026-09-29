@@ -2,8 +2,9 @@ import { App, Modal, Notice, Setting, TextComponent } from "obsidian";
 import type { SymbolItem, SymbolListEntry } from "../types";
 import { t } from "../i18n";
 
-// Manual code entry for custom data sources without a searchUrl: 代码 + 名称
-// inputs producing a SymbolItem directly (no remote search to pick from).
+// Manual code entry for custom data sources without remote search (no
+// searchUrl / searchBodyTemplate): 代码 + 名称 inputs producing a SymbolItem
+// directly (no remote search to pick from).
 // When the source carries a static code table (symbols), a dropdown fills
 // both fields from named picks.
 export class ManualSymbolModal extends Modal {

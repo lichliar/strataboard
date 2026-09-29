@@ -7,7 +7,7 @@ import { normalizePath, sanitizeFileNamePart } from "../utils/slug";
 // Prompt the user copies (plus their script / error output) to their own AI.
 // Carries the CSV contract validated by buildScriptSourceDef below plus the
 // compliance rules, and names no concrete endpoints. Shared by the script
-// manager's「AI 辅助」section and 设置 → 外部 AI 接入.
+// manager's「AI 辅助」section and 设置 → AI 辅助.
 export const AI_SCRIPT_PROMPT = `我在用一个 Obsidian 插件（StrataBoard）的「脚本处理」功能：自己写 Python 脚本做数据计算，脚本把结果写成 CSV，插件自动把 CSV 注册为数据源并画成图表卡。请帮我写一个 python3 脚本，并把完整脚本内容给我。
 
 这个脚本要做的事情：【在这里描述你想要的数据或计算；如果是修错，粘贴你的现有脚本和完整报错】
@@ -26,21 +26,28 @@ export const AI_SCRIPT_PROMPT = `我在用一个 Obsidian 插件（StrataBoard�
 // Script-output auto-registration (脚本处理): every CSV a user script drops
 // into <脚本文件夹>/output/ becomes a format "csv" custom source, so the
 // whole card stack (standalone / overlay / spread) can plot it with no
-// manual setup. A file is registered at most ONCE: settings.seenScriptOutputs
+// manual setup. A file is auto-registered at most ONCE: settings.seenScriptOutputs
 // remembers every filePath already processed, so a source the user deleted is
-// never rebuilt (the deletion leaves the filePath in seen). Files that fail
-// validation are NOT marked seen — a half-written CSV gets retried by the
-// next sync (plugin load / watcher create / modify without a matching source).
-export async function syncScriptSources(plugin: StrataBoardPlugin): Promise<string[]> {
+// not rebuilt by passive syncs (plugin load / file create). It IS re-registered
+// when the script runs again — invalidateScriptOutput passes the path via
+// forcePaths — or when the file is deleted and re-created (seen entries whose
+// file no longer exists are pruned). Files that fail validation are NOT marked
+// seen — a half-written CSV gets retried by the next sync.
+export async function syncScriptSources(
+  plugin: StrataBoardPlugin,
+  forcePaths?: ReadonlySet<string>
+): Promise<string[]> {
   const outputDir = `${normalizePath(plugin.pluginSettings.scriptFolderPath)}/output`;
   const seen = new Set(plugin.pluginSettings.seenScriptOutputs);
   const sources = plugin.pluginSettings.customSources;
   const registered: string[] = [];
+  const existing = new Set<string>();
   let dirty = false;
 
   for (const file of plugin.app.vault.getFiles()) {
     if (file.extension !== "csv" || file.parent?.path !== outputDir) continue;
-    if (seen.has(file.path)) continue;
+    existing.add(file.path);
+    if (seen.has(file.path) && !forcePaths?.has(file.path)) continue;
     const slug = sanitizeFileNamePart(file.basename);
     if (!slug) continue; // no usable id — leave unseen, retry next sync
     const alreadyRegistered = sources.some(
@@ -56,8 +63,13 @@ export async function syncScriptSources(plugin: StrataBoardPlugin): Promise<stri
     dirty = true;
   }
 
+  // Prune seen entries whose file is gone — they can never match again, and
+  // pruning lets a re-created output file register fresh.
+  const kept = [...seen].filter((p) => existing.has(p));
+  if (kept.length !== seen.size) dirty = true;
+
   if (dirty) {
-    plugin.pluginSettings.seenScriptOutputs = [...seen];
+    plugin.pluginSettings.seenScriptOutputs = kept;
     // The settings save channel hot-updates the data adapter's source list.
     await plugin.saveSettings();
   }

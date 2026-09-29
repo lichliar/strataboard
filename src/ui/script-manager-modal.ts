@@ -2,92 +2,21 @@ import { App, Modal, Notice, Setting, TFile } from "obsidian";
 import type StrataBoardPlugin from "../main";
 import { ensureFolder } from "../modules/daily-notes";
 import { runScript } from "../modules/script-runner";
-import { AI_SCRIPT_PROMPT } from "../modules/script-sources";
+import { AI_SCRIPT_PROMPT, syncScriptSources } from "../modules/script-sources";
 import { normalizePath } from "../utils/slug";
 import { t } from "../i18n";
 
 // 脚本处理 manager (toolbar 数据处理 menu / command 打开脚本管理): lists the
-// Python scripts in the script folder with an enable toggle (writes
-// settings.disabledScripts), a 立即运行 button (greyed out while disabled),
-// and shows each script's output CSV status. 新建脚本 writes a template
-// skeleton; the log area shows stdout/stderr of manual runs verbatim. The
+// Python scripts in the script folder RECURSIVELY, grouped by subfolder so
+// users can organize large script collections with folders. Each row has an
+// enable toggle (writes settings.disabledScripts, keyed by folder-relative
+// path), a 立即运行 button (greyed out while disabled), and the output CSV
+// status; an output that exists but is not registered as a source gets a
+// 部署为数据源 button (force-registers it via syncScriptSources). Scripts are
+// created outside the plugin (by the user or their AI) — there is no 新建
+// 脚本 button. The log area shows stdout/stderr of manual runs verbatim. The
 //「AI 辅助」section is a copyable prompt (the plugin has no built-in
 // assistant) carrying the CSV contract and the compliance rules.
-
-// Skeleton written by 新建脚本. Carries the CSV output contract, a rate-limit
-// example (≥1s between requests) and an incremental-fetch example (append
-// only what is newer than the CSV's last date).
-const SCRIPT_TEMPLATE = `#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-# StrataBoard 脚本模板
-#
-# 产物契约：把计算结果写成 CSV，放进本目录下的 output/ 子目录（建议与脚本
-# 同名：脚本/foo.py → output/foo.csv）。插件会自动把它注册为数据源并刷新卡片。
-#
-# CSV 格式（二选一）：
-#   1. 宽表（推荐，一个脚本可产出多条序列）：首列是日期（date / YYYYMMDD /
-#      ISO 均可），其余每个数值列是一条序列，列名即代码；空值表示该日无数据。
-#   2. 单序列 OHLCV：表头含 date,open,high,low,close（vol/amount 可选）。
-#
-# 使用边界：不要高频抓取、不要批量下载保存；请求间隔 ≥ 1 秒；优先增量抓取
-# （先读已有 CSV 的最大日期，只补增量）。
-
-import csv
-import os
-import time
-from datetime import datetime, timedelta
-
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-OUTPUT_FILE = os.path.join(
-    OUTPUT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".csv"
-)
-
-
-def fetch_rows(last_date):
-    """增量抓取示例：只返回 last_date（含）之后的新行，[(date, value), ...]。
-
-    实际使用时替换为真实数据请求，并保持限速：
-        resp = requests.get("https://example.com/api", params={"start": last_date})
-        time.sleep(1)  # 限速：请求间隔 ≥ 1 秒
-    """
-    start = (
-        datetime.strptime(last_date, "%Y-%m-%d") + timedelta(days=1)
-        if last_date
-        else datetime.now() - timedelta(days=7)
-    )
-    rows = []
-    day = start
-    while day <= datetime.now():
-        rows.append((day.strftime("%Y-%m-%d"), 0.0))  # TODO: 填入真实数值
-        day += timedelta(days=1)
-    return rows
-
-
-def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    # 读取已有数据（宽表：date + 每条序列一列），确定增量起点。
-    existing = []
-    if os.path.exists(OUTPUT_FILE):
-        with open(OUTPUT_FILE, newline="", encoding="utf-8") as f:
-            existing = list(csv.DictReader(f))
-    last_date = existing[-1]["date"] if existing else None
-
-    merged = existing + [
-        {"date": d, "示例序列": v} for d, v in fetch_rows(last_date)
-    ]
-    merged.sort(key=lambda r: r["date"])
-
-    with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["date", "示例序列"])
-        writer.writeheader()
-        writer.writerows(merged)
-    print(f"已写入 {OUTPUT_FILE}，共 {len(merged)} 行")
-
-
-if __name__ == "__main__":
-    main()
-`;
 
 export class ScriptManagerModal extends Modal {
   private logEl: HTMLElement | null = null;
@@ -113,12 +42,18 @@ export class ScriptManagerModal extends Modal {
     return normalizePath(this.plugin.pluginSettings.scriptFolderPath);
   }
 
+  // Script identity everywhere (disable list, run argv) is the path relative
+  // to the script folder, e.g. "macro/cpi.py".
+  private relPath(file: TFile): string {
+    return file.path.slice(this.folder().length + 1);
+  }
+
   private listScripts(): TFile[] {
-    const folder = this.folder();
+    const prefix = `${this.folder()}/`;
     return this.app.vault
       .getFiles()
-      .filter((file) => file.extension === "py" && file.parent?.path === folder)
-      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+      .filter((file) => file.extension === "py" && file.path.startsWith(prefix))
+      .sort((a, b) => a.path.localeCompare(b.path, "zh-CN"));
   }
 
   private render() {
@@ -128,22 +63,29 @@ export class ScriptManagerModal extends Modal {
     new Setting(contentEl)
       .setName(t("脚本文件夹"))
       .setDesc(t("{folder}（在设置页「路径设置」中修改）", { folder: this.folder() }))
-      .addButton((btn) => btn.setButtonText(t("打开文件夹")).onClick(() => void this.openFolder()))
-      .addButton((btn) =>
-        btn
-          .setButtonText(t("新建脚本"))
-          .setCta()
-          .onClick(() => void this.createScript())
-      );
+      .addButton((btn) => btn.setButtonText(t("打开文件夹")).onClick(() => void this.openFolder()));
 
     const scripts = this.listScripts();
     if (scripts.length === 0) {
       contentEl.createDiv({
         cls: "fc-field-hint",
-        text: t("脚本文件夹中还没有 Python 脚本，点击「新建脚本」生成模板；脚本把结果 CSV 写入 output/ 子目录即可在卡片中使用。"),
+        text: t("脚本文件夹中还没有 Python 脚本：自行编写或用 AI 编写（下方有提示词）后放入该文件夹即可，支持用子文件夹归类；脚本把结果 CSV 写入 output/ 子目录即可在卡片中使用。"),
       });
     }
-    for (const file of scripts) this.renderScriptRow(contentEl, file);
+    // Group by subfolder: root scripts first, then one section per subfolder.
+    const byFolder = new Map<string, TFile[]>();
+    for (const file of scripts) {
+      const rel = this.relPath(file);
+      const dir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+      const list = byFolder.get(dir) ?? [];
+      list.push(file);
+      byFolder.set(dir, list);
+    }
+    for (const file of byFolder.get("") ?? []) this.renderScriptRow(contentEl, file);
+    for (const [dir, files] of [...byFolder.entries()].filter(([d]) => d !== "")) {
+      contentEl.createDiv({ cls: "fc-script-folder-header", text: dir });
+      for (const file of files) this.renderScriptRow(contentEl, file);
+    }
 
     this.renderAiSection(contentEl);
 
@@ -156,13 +98,20 @@ export class ScriptManagerModal extends Modal {
 
   private renderScriptRow(containerEl: HTMLElement, file: TFile) {
     const folder = this.folder();
-    const disabled = this.plugin.pluginSettings.disabledScripts.includes(file.name);
-    const hasOutput = this.app.vault.getAbstractFileByPath(`${folder}/output/${file.basename}.csv`) != null;
+    const rel = this.relPath(file);
+    const disabled = this.plugin.pluginSettings.disabledScripts.includes(rel);
+    const outputPath = `${folder}/output/${file.basename}.csv`;
+    const hasOutput = this.app.vault.getAbstractFileByPath(outputPath) != null;
+    const outputRegistered = this.plugin.pluginSettings.customSources.some(
+      (s) => s.format === "csv" && s.filePath === outputPath
+    );
     const setting = new Setting(containerEl)
       .setName(file.name)
       .setDesc(
         hasOutput
-          ? t("产物：output/{name}.csv", { name: file.basename })
+          ? outputRegistered
+            ? t("产物：output/{name}.csv", { name: file.basename })
+            : t("产物：output/{name}.csv（未注册为数据源）", { name: file.basename })
           : t("产物：尚无（运行后写入 output/{name}.csv）", { name: file.basename })
       );
     setting.addToggle((toggle) =>
@@ -170,18 +119,35 @@ export class ScriptManagerModal extends Modal {
         .setTooltip(t("启用/禁用脚本"))
         .setValue(!disabled)
         .onChange(async (value) => {
-          const list = this.plugin.pluginSettings.disabledScripts.filter((name) => name !== file.name);
-          if (!value) list.push(file.name);
+          const list = this.plugin.pluginSettings.disabledScripts.filter((p) => p !== rel);
+          if (!value) list.push(rel);
           this.plugin.pluginSettings.disabledScripts = list;
           await this.plugin.saveSettings();
           this.render();
         })
     );
+    if (hasOutput && !outputRegistered) {
+      setting.addButton((btn) =>
+        btn.setButtonText(t("部署为数据源")).onClick(() => void this.deployOutput(outputPath))
+      );
+    }
     setting.addButton((btn) => {
       btn.setButtonText(t("立即运行")).setDisabled(disabled);
       if (disabled) btn.setTooltip(t("脚本已禁用"));
       btn.onClick(() => void this.runNow(file));
     });
+  }
+
+  // Force-registers an output CSV the passive sync skipped (e.g. its source
+  // was deleted once): same force-path channel as a manual script run.
+  private async deployOutput(outputPath: string) {
+    const registered = await syncScriptSources(this.plugin, new Set([outputPath]));
+    new Notice(
+      registered.length > 0
+        ? t("已注册为数据源：{path}", { path: outputPath })
+        : t("注册失败：产物文件暂无法解析。")
+    );
+    this.render();
   }
 
   // ===== AI 辅助 (copyable prompt; the plugin has no built-in assistant) =====
@@ -213,8 +179,9 @@ export class ScriptManagerModal extends Modal {
   private async runNow(file: TFile) {
     const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
     const basePath = adapter.getBasePath?.() ?? "";
-    this.appendLog(`$ python3 ${file.name}`);
-    const result = await runScript(`${basePath}/${this.folder()}`, file.name);
+    const rel = this.relPath(file);
+    this.appendLog(`$ python3 ${rel}`);
+    const result = await runScript(`${basePath}/${this.folder()}`, rel);
     if (result.stdout.trim()) this.appendLog(result.stdout.trimEnd());
     if (result.stderr.trim()) this.appendLog(result.stderr.trimEnd());
     this.appendLog(
@@ -230,20 +197,6 @@ export class ScriptManagerModal extends Modal {
       // clear its source's cache keys, re-render every chart card.
       await this.plugin.invalidateScriptOutput(`${this.folder()}/output/${file.basename}.csv`);
     }
-    this.render();
-  }
-
-  private async createScript() {
-    const folder = this.folder();
-    await ensureFolder(this.app, folder);
-    let path = `${folder}/新脚本.py`;
-    let n = 2;
-    while (this.app.vault.getAbstractFileByPath(path)) {
-      path = `${folder}/新脚本${n}.py`;
-      n++;
-    }
-    await this.app.vault.create(path, SCRIPT_TEMPLATE);
-    new Notice(t("已创建脚本模板：{path}", { path }));
     this.render();
   }
 

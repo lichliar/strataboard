@@ -2,15 +2,15 @@ import { App, Modal } from "obsidian";
 import { t } from "../i18n";
 
 export interface SourcePickerEntry {
-  name: string;      // e.g. "Tushare 资产"
-  desc: string;      // e.g. "股票/基金/指数/南华指数 · 日K/周K/月K"
+  name: string;      // source name, or an i18n key like "TradingView 小组件"
+  desc: string;      // e.g. "自定义数据源 · 用户配置"
   onPick: () => void;
 }
 
-// 插入资产数据 source picker: one card per configured data source, each
-// leading to that source's own standalone-card insertion flow (symbol / macro
-// / FRED picker). Mirrors the source-grid visual language of the unified card
-// edit modal (wireframe #screen-unified).
+// 插入资产数据 source picker: one card per configured custom data source,
+// each leading to that source's standalone-card insertion flow (symbol picker
+// or manual entry). Mirrors the source-grid visual language of the unified
+// card edit modal (wireframe #screen-unified).
 export class SourcePickerModal extends Modal {
   private readonly entries: SourcePickerEntry[];
 

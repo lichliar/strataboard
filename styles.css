@@ -295,6 +295,29 @@ body.theme-dark {
   color: var(--fc-muted);
 }
 
+/* 数据源设置: source-group header row and its indented member rows. */
+.fc-source-group-header {
+  margin-top: 12px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.fc-source-group-header .setting-item-name {
+  font-weight: 600;
+}
+.fc-source-group-member .setting-item-info {
+  padding-left: 16px;
+}
+
+/* 脚本处理 manager: subfolder header row grouping the recursive script list. */
+.fc-script-folder-header {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+}
+
 /* 脚本处理 manager: run log area (stdout/stderr verbatim). */
 .fc-script-log {
   max-height: 220px;
@@ -553,12 +576,12 @@ body.theme-dark {
   padding: 8px;
 }
 
-/* Paste area of the 导入 modal. */
-.fc-import-area {
-  width: 100%;
-  min-height: 140px;
+/* File row of the 导入 modal: pick button + chosen file name. */
+.fc-import-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 8px;
-  font-size: 11px;
 }
 
 /* AI-assist block in the custom-source wizard (copyable endpoint-finding
@@ -690,8 +713,7 @@ body.theme-dark {
 
 /* Long-text boxes scroll instead of offering a resize handle. */
 .fc-settings-sub textarea,
-.fc-prompt-area,
-.fc-import-area {
+.fc-prompt-area {
   resize: none;
 }
 
@@ -1977,39 +1999,6 @@ body.theme-dark {
   font-weight: 600;
 }
 
-/* Unified 插入数据 search modal: category chips below the input wrap onto
-   multiple rows so every category stays visible, styled after the settings
-   tab switcher. */
-.fc-cat-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.fc-cat-chip {
-  flex-shrink: 0;
-  padding: 3px 10px;
-  border-radius: 6px;
-  border: none;
-  box-shadow: none;
-  background: transparent;
-  cursor: pointer;
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-}
-
-.fc-cat-chip:hover {
-  color: var(--text-normal);
-  background: var(--background-modifier-hover);
-}
-
-.fc-cat-chip.fc-cat-chip-active {
-  color: var(--text-normal);
-  background: var(--background-modifier-hover);
-  font-weight: 600;
-}
-
 /* Stacked setting row (card edit modal 自定义范围): name/desc on top,
    controls wrapped on a full-width row below instead of squeezed beside. */
 .fc-setting-stacked {
@@ -2105,7 +2094,7 @@ body.theme-dark {
 }
 
 /* ==========================================================================
-   Copyable code snippets in the 外部 AI 接入 settings tab
+   Copyable code snippets in the AI 辅助 settings tab
    (src/settings.ts renderExternalAiSettings).
    ========================================================================== */
 .fc-code-snippet {

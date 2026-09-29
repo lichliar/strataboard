@@ -8,22 +8,15 @@ import * as path from "path";
 import initSqlJs from "sql.js";
 import { parseCardSpec } from "../modules/card-spec";
 import {
-  parseFredCardSpec,
-  parseMacroCardSpec,
   parseOverlaySpec,
   parseSpreadSpec,
 } from "../modules/series-spec";
 import { setRequestInterval } from "../modules/http";
-import { TushareApiClient } from "../modules/tushare-api-client";
 import { CustomQuoteClient } from "../modules/custom-quote-client";
 import { CsvQuoteClient } from "../modules/csv-quote-client";
-import { FredApiClient } from "../modules/fred-api-client";
-import { tushareQuoteApiName } from "../modules/tushare-quote-api";
-import { formatDate, formatIsoDate } from "../utils/date";
+import { formatDate } from "../utils/date";
 import {
   ASSET_TYPES,
-  ASSET_TYPE_MIN_POINTS,
-  MACRO_SERIES_OPTIONS,
   type AssetType,
   type CustomSourceDef,
 } from "../types";
@@ -32,8 +25,6 @@ const PLUGIN_ID = "strataboard";
 
 // Subset of StrataBoardSettings the CLI/MCP read; defaults mirror settings.ts.
 export interface CliSettings {
-  tushareToken?: string;
-  fredApiKey?: string;
   customSources?: CustomSourceDef[];
   symbolCachePath?: string;
   requestIntervalMs?: number;
@@ -197,18 +188,19 @@ export async function searchSymbols(
 }
 
 // ---------------------------------------------------------------------------
-// sources / macro
+// sources
 // ---------------------------------------------------------------------------
 
 export function listSources(ctx: VaultContext): {
   ok: true;
-  sources: { id: string; name: string; format: string; enabled: boolean; symbolCount: number; isScriptOutput: boolean }[];
+  sources: { id: string; name: string; format: string; enabled: boolean; group?: string; symbolCount: number; isScriptOutput: boolean }[];
 } {
   const sources = (ctx.settings.customSources ?? []).map((def) => ({
     id: def.id,
     name: def.name,
     format: def.format,
     enabled: def.enabled,
+    group: def.group,
     symbolCount: def.symbols?.length ?? 0,
     // 脚本处理产物自动注册的源，id 形如 script:<文件名>。
     isScriptOutput: def.id.startsWith("script:"),
@@ -216,32 +208,12 @@ export function listSources(ctx: VaultContext): {
   return { ok: true, sources };
 }
 
-export function listMacroSeries(opts: { query?: string }): {
-  ok: true;
-  series: { seriesId: string; name: string; group: string; freq: string; unit: string; tusharePoints: number | "special" }[];
-} {
-  const query = opts.query?.toLowerCase();
-  const series = MACRO_SERIES_OPTIONS.filter(
-    (o) => !query || o.id.toLowerCase().includes(query) || o.label.toLowerCase().includes(query)
-  ).map((o) => ({
-    seriesId: o.id,
-    name: o.label,
-    group: o.group,
-    freq: o.freq,
-    unit: o.kind === "money" ? (o.unit ?? "万亿元") : o.kind === "percent" ? "%" : "指数",
-    tusharePoints: o.points,
-  }));
-  return { ok: true, series };
-}
-
 // ---------------------------------------------------------------------------
 // validate
 // ---------------------------------------------------------------------------
 
 const KNOWN_BLOCK_TYPES = new Set([
-  "tushare",
-  "fred",
-  "macro",
+  "quote",
   "overlay",
   "spread",
   "financial-widget",
@@ -256,14 +228,14 @@ export interface BlockCheck {
 }
 
 // Validates one fenced block body with the same parser the plugin's renderer
-// uses for that language. tushare/financial-widget/calendar all go through
+// uses for that language. quote/financial-widget/calendar all go through
 // parseCardSpec — the renderers distinguish them by the parsed contentType.
 function validateBlock(lang: string, body: string): string | undefined {
   switch (lang) {
-    case "tushare": {
+    case "quote": {
       const r = parseCardSpec(body);
       if (!r.ok) return r.error.message;
-      if (r.spec.contentType) return "tushare 块不应包含日历/小组件字段。";
+      if (r.spec.contentType) return "quote 块不应包含日历/小组件字段。";
       return undefined;
     }
     case "financial-widget": {
@@ -284,10 +256,6 @@ function validateBlock(lang: string, body: string): string | undefined {
       return parseOverlaySpec(body).error;
     case "spread":
       return parseSpreadSpec(body).error;
-    case "fred":
-      return parseFredCardSpec(body).error;
-    case "macro":
-      return parseMacroCardSpec(body).error;
     default:
       return undefined;
   }
@@ -329,7 +297,7 @@ export function validateCards(opts: { markdown: string; label?: string }): {
 }
 
 // ---------------------------------------------------------------------------
-// probe / probe-fred
+// probe
 // ---------------------------------------------------------------------------
 
 function recentWindow(days: number): { start: string; end: string } {
@@ -338,18 +306,6 @@ function recentWindow(days: number): { start: string; end: string } {
     start: formatDate(new Date(now - days * 86400000)),
     end: formatDate(new Date(now)),
   };
-}
-
-// Picks a date/close column from a Tushare response's field list.
-// trade_date covers quote APIs, nav_date fund_nav; close covers quotes,
-// adj_nav fund_nav, bid_close fx_daily.
-function pickField(fields: string[], names: string[]): number {
-  const lowered = fields.map((f) => f.toLowerCase());
-  for (const name of names) {
-    const idx = lowered.indexOf(name);
-    if (idx >= 0) return idx;
-  }
-  return -1;
 }
 
 export interface ProbeOutput {
@@ -373,128 +329,40 @@ export async function probeData(
   opts: { code: string; assetType?: string; sourceId?: string; days?: number }
 ): Promise<ProbeOutput> {
   const code = opts.code?.trim();
-  if (!code) fail("probe 需要一个代码参数，如: probe 600519.SH --type stock");
+  if (!code) fail("probe 需要一个代码参数，如: probe 600519.SH --source <数据源id>");
   const days = opts.days ?? 14;
   const { start, end } = recentWindow(days);
-  const type = (opts.assetType ?? "stock") as AssetType;
+  const type = (opts.assetType ?? "custom") as AssetType;
   if (!ASSET_TYPES.includes(type)) {
     fail(`无效的资产类型: ${type}（应为 ${ASSET_TYPES.join(" | ")}）。`);
   }
 
-  if (type === "custom") {
-    const sourceId = opts.sourceId;
-    if (!sourceId) fail("类型为 custom 时必须提供 sourceId（用 list_sources / sources 命令查看可用 id）。");
-    const def = (ctx.settings.customSources ?? []).find((s) => s.id === sourceId);
-    if (!def) fail(`自定义数据源不存在: ${sourceId}（用 list_sources / sources 命令查看可用 id）。`);
-    const rows =
-      def.format === "csv"
-        ? await new CsvQuoteClient(def, async (p) => fs.promises.readFile(path.join(ctx.vault, p), "utf8")).fetchKline(code, start, end)
-        : await new CustomQuoteClient(def).fetchKline(code, start, end);
-    if (rows.length === 0) {
-      return {
-        ok: true,
-        type,
-        sourceId,
-        code,
-        rows: 0,
-        hint: `数据源「${def.name}」在该区间没有返回 ${code} 的数据——可能代码不存在、代码格式不符，或区间太短。`,
-      };
-    }
+  const sourceId = opts.sourceId;
+  if (!sourceId) fail("必须提供 sourceId（用 list_sources / sources 命令查看可用 id）。");
+  const def = (ctx.settings.customSources ?? []).find((s) => s.id === sourceId);
+  if (!def) fail(`自定义数据源不存在: ${sourceId}（用 list_sources / sources 命令查看可用 id）。`);
+  const rows =
+    def.format === "csv"
+      ? await new CsvQuoteClient(def, async (p) => fs.promises.readFile(path.join(ctx.vault, p), "utf8")).fetchKline(code, start, end)
+      : await new CustomQuoteClient(def).fetchKline(code, start, end);
+  if (rows.length === 0) {
     return {
       ok: true,
       type,
       sourceId,
       code,
-      rows: rows.length,
-      firstDate: rows[0].tradeDate,
-      lastDate: rows[rows.length - 1].tradeDate,
-      lastClose: rows[rows.length - 1].close,
-    };
-  }
-
-  const token = ctx.settings.tushareToken?.trim();
-  if (!token) fail("未配置 Tushare Token（插件设置 → 数据源 API 设置）。");
-  const apiName = tushareQuoteApiName(type, "D");
-  const response = await new TushareApiClient(token).query(apiName, {
-    ts_code: code,
-    start_date: start,
-    end_date: end,
-  });
-
-  const fields = response.data?.fields ?? [];
-  const items = (response.data?.items ?? []) as unknown[][];
-  if (items.length === 0) {
-    const points = ASSET_TYPE_MIN_POINTS[type];
-    return {
-      ok: true,
-      type,
-      code,
-      apiName,
       rows: 0,
-      hint:
-        `接口调用成功但无数据。可能原因：代码不存在或格式不对；该区间无交易（可加大天数窗口）；` +
-        `或当前 token 积分/权限不足（${apiName} 需要 ${points}，hk_daily 与 yc_cb 是单独授予的权限，与积分无关）。`,
+      hint: `数据源「${def.name}」在该区间没有返回 ${code} 的数据——可能代码不存在、代码格式不符，或区间太短。`,
     };
   }
-
-  const dateIdx = pickField(fields, ["trade_date", "nav_date"]);
-  const closeIdx = pickField(fields, ["close", "adj_nav", "bid_close"]);
-  const dates = dateIdx >= 0 ? items.map((it) => String(it[dateIdx])) : [];
-  const firstDate = dates.length > 0 ? dates.reduce((a, b) => (a < b ? a : b)) : undefined;
-  const lastDate = dates.length > 0 ? dates.reduce((a, b) => (a > b ? a : b)) : undefined;
-  let lastClose: number | undefined;
-  if (closeIdx >= 0 && lastDate !== undefined) {
-    const row = items[dates.indexOf(lastDate)];
-    const v = Number(row?.[closeIdx]);
-    if (Number.isFinite(v)) lastClose = v;
-  }
-
   return {
     ok: true,
     type,
+    sourceId,
     code,
-    apiName,
-    rows: items.length,
-    fields,
-    firstDate,
-    lastDate,
-    ...(lastClose !== undefined ? { lastClose } : {}),
-  };
-}
-
-export async function probeFred(
-  ctx: VaultContext,
-  opts: { seriesId: string; days?: number }
-): Promise<{
-  ok: boolean;
-  seriesId: string;
-  rows: number;
-  firstDate?: string;
-  lastDate?: string;
-  lastValue?: number;
-  hint?: string;
-}> {
-  const seriesId = opts.seriesId?.trim();
-  if (!seriesId) fail("probe-fred 需要一个系列代码，如: probe-fred SP500");
-  const days = opts.days ?? 400;
-  const apiKey = ctx.settings.fredApiKey?.trim();
-  if (!apiKey) fail("未配置 FRED API Key（插件设置 → 数据源 API 设置）。");
-  const startIso = formatIsoDate(new Date(Date.now() - days * 86400000));
-  const points = await new FredApiClient(apiKey).fetchSeries(seriesId, startIso);
-  if (points.length === 0) {
-    return {
-      ok: true,
-      seriesId,
-      rows: 0,
-      hint: "接口调用成功但无观测值——可能系列代码不存在或已停更。",
-    };
-  }
-  return {
-    ok: true,
-    seriesId,
-    rows: points.length,
-    firstDate: points[0].date,
-    lastDate: points[points.length - 1].date,
-    lastValue: points[points.length - 1].value,
+    rows: rows.length,
+    firstDate: rows[0].tradeDate,
+    lastDate: rows[rows.length - 1].tradeDate,
+    lastClose: rows[rows.length - 1].close,
   };
 }

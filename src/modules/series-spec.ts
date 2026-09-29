@@ -1,14 +1,9 @@
 import * as yaml from "js-yaml";
 import {
   ASSET_TYPES,
-  FRED_TRANSFORM_OPTIONS,
-  MACRO_SERIES_OPTIONS,
   type AssetType,
   type ChartTheme,
   type DisplayOverrides,
-  type FredCardSpec,
-  type FredTransform,
-  type MacroCardSpec,
   type OverlayCompareMode,
   type OverlaySpec,
   type SeriesPeriod,
@@ -29,39 +24,18 @@ export interface SeriesSpecParseResult<T> {
   error?: string;
 }
 
-const VALID_SOURCES: SeriesSource[] = ["quote", "macro", "fred", "card"];
+const VALID_SOURCES: SeriesSource[] = ["quote", "card"];
 const VALID_ASSET_TYPES: AssetType[] = ASSET_TYPES;
 const VALID_PERIODS: SeriesPeriod[] = ["D", "M", "Q", "Y"];
-const VALID_FRED_TRANSFORMS: FredTransform[] = FRED_TRANSFORM_OPTIONS.map((o) => o.value);
-const MACRO_IDS = new Set(MACRO_SERIES_OPTIONS.map((o) => o.id));
-
-// Optional FRED transform field; absent/"lin" both mean raw levels (never
-// stored). Returns the transform, undefined, or an error message.
-function parseFredTransform(raw: unknown, key = "transform"): FredTransform | undefined | { error: string } {
-  if (raw === undefined || raw === null) return undefined;
-  const rawValue = String(raw).trim();
-  if (rawValue === "" || rawValue === "lin") return undefined;
-  const value = rawValue as FredTransform;
-  if (!VALID_FRED_TRANSFORMS.includes(value)) {
-    return { error: t("无效的 {key}：{value}（应为 {valid}）。", { key, value: rawValue, valid: VALID_FRED_TRANSFORMS.join(" | ") }) };
-  }
-  return value;
-}
 
 export const DEFAULT_OVERLAY_SPEC: OverlaySpec = {
-  series: [
-    { source: "macro", seriesId: "m1_yoy" },
-    { source: "macro", seriesId: "m2_yoy" },
-  ],
+  series: [],
   range: "10y",
 };
 
 export const DEFAULT_SPREAD_SPEC: SpreadSpec = {
-  series: [
-    { source: "macro", seriesId: "m1_yoy" },
-    { source: "macro", seriesId: "m2_yoy" },
-  ],
-  expression: "A-B",
+  series: [],
+  expression: "",
   range: "10y",
 };
 
@@ -244,111 +218,6 @@ export function stringifySpreadSpec(spec: SpreadSpec): string {
   }).trimEnd();
 }
 
-export function parseFredCardSpec(source: string): SeriesSpecParseResult<FredCardSpec> {
-  const map = parseYamlMap(source);
-  if (typeof map === "string") return { error: map };
-
-  const seriesId = String(map.seriesId ?? "").trim();
-  if (!seriesId) {
-    return { error: t("缺少必填字段 seriesId（FRED 系列代码，如 DGS10）。") };
-  }
-  const label = String(map.label ?? "").trim();
-  const units = String(map.units ?? "").trim();
-  const frequency = String(map.frequency ?? "").trim();
-  const transform = parseFredTransform(map.transform);
-  if (typeof transform === "object") return transform;
-
-  const range = parseRange(map.range);
-  const height = parseHeight(map.height);
-  if (typeof height !== "number" && height !== undefined) return height;
-  const period = parsePeriod(map.period);
-  if (typeof period !== "string") return period;
-  const viewStart = parseViewDate(map.viewStart, "viewStart");
-  if (viewStart !== undefined && typeof viewStart !== "string") return viewStart;
-  const viewEnd = parseViewDate(map.viewEnd, "viewEnd");
-  if (viewEnd !== undefined && typeof viewEnd !== "string") return viewEnd;
-  const display = parseDisplayOverrides(map);
-  if ("error" in display) return display;
-
-  return {
-    spec: {
-      seriesId,
-      ...(label ? { label } : {}),
-      ...(units ? { units } : {}),
-      ...(frequency ? { frequency } : {}),
-      ...(transform ? { transform } : {}),
-      range,
-      period,
-      ...(height !== undefined ? { height } : {}),
-      ...display,
-      ...(viewStart ? { viewStart } : {}),
-      ...(viewEnd ? { viewEnd } : {}),
-    },
-  };
-}
-
-export function stringifyFredCardSpec(spec: FredCardSpec): string {
-  return yaml.dump({
-    seriesId: spec.seriesId,
-    ...(spec.label ? { label: spec.label } : {}),
-    ...(spec.units ? { units: spec.units } : {}),
-    ...(spec.frequency ? { frequency: spec.frequency } : {}),
-    ...(spec.transform ? { transform: spec.transform } : {}),
-    range: spec.range,
-    ...(spec.period && spec.period !== "D" ? { period: spec.period } : {}),
-    ...(spec.height ? { height: spec.height } : {}),
-    ...displayOverridesYaml(spec),
-    ...(spec.viewStart ? { viewStart: spec.viewStart } : {}),
-    ...(spec.viewEnd ? { viewEnd: spec.viewEnd } : {}),
-  }).trimEnd();
-}
-
-export function parseMacroCardSpec(source: string): SeriesSpecParseResult<MacroCardSpec> {
-  const map = parseYamlMap(source);
-  if (typeof map === "string") return { error: map };
-
-  const seriesId = String(map.seriesId ?? "").trim();
-  if (!MACRO_IDS.has(seriesId)) {
-    return { error: t("seriesId 无效：{id}（不是已知的宏观序列）。", { id: seriesId }) };
-  }
-
-  const range = parseRange(map.range);
-  const height = parseHeight(map.height);
-  if (typeof height !== "number" && height !== undefined) return height;
-  const period = parsePeriod(map.period);
-  if (typeof period !== "string") return period;
-  const viewStart = parseViewDate(map.viewStart, "viewStart");
-  if (viewStart !== undefined && typeof viewStart !== "string") return viewStart;
-  const viewEnd = parseViewDate(map.viewEnd, "viewEnd");
-  if (viewEnd !== undefined && typeof viewEnd !== "string") return viewEnd;
-  const display = parseDisplayOverrides(map);
-  if ("error" in display) return display;
-
-  return {
-    spec: {
-      seriesId,
-      range,
-      period,
-      ...(height !== undefined ? { height } : {}),
-      ...display,
-      ...(viewStart ? { viewStart } : {}),
-      ...(viewEnd ? { viewEnd } : {}),
-    },
-  };
-}
-
-export function stringifyMacroCardSpec(spec: MacroCardSpec): string {
-  return yaml.dump({
-    seriesId: spec.seriesId,
-    range: spec.range,
-    ...(spec.period && spec.period !== "D" ? { period: spec.period } : {}),
-    ...(spec.height ? { height: spec.height } : {}),
-    ...displayOverridesYaml(spec),
-    ...(spec.viewStart ? { viewStart: spec.viewStart } : {}),
-    ...(spec.viewEnd ? { viewEnd: spec.viewEnd } : {}),
-  }).trimEnd();
-}
-
 // Returns the parsed YAML object, or an error message string.
 function parseYamlMap(source: string): Record<string, unknown> | string {
   let parsed: unknown;
@@ -387,7 +256,7 @@ function parseSeriesRef(raw: unknown, path: string, allowScale = false): SeriesR
 
   const source = String(map.source ?? "").trim() as SeriesSource;
   if (!VALID_SOURCES.includes(source)) {
-    return t("{path} 的 source 无效：{value}（应为 quote | macro | fred | card）。", { path, value: String(map.source) });
+    return t("{path} 的 source 无效：{value}（应为 quote | card）。", { path, value: String(map.source) });
   }
 
   const ref: SeriesRef = { source };
@@ -398,54 +267,26 @@ function parseSeriesRef(raw: unknown, path: string, allowScale = false): SeriesR
       return t("{path} 缺少有效的 cardPath（引用的卡片文件路径）。", { path });
     }
     ref.cardPath = cardPath;
-  } else if (source === "quote") {
+  } else {
     const tsCode = String(map.tsCode ?? "").trim();
+    // assetType is always "custom" now; keep reading the field only to reject
+    // stale values in hand-written YAML.
     const assetType = String(map.assetType ?? "").trim() as AssetType;
     if (!VALID_ASSET_TYPES.includes(assetType)) {
       return t("{path} 的 assetType 无效：{value}（应为 {valid}）。", { path, value: String(map.assetType), valid: VALID_ASSET_TYPES.join(" | ") });
     }
-    // Tushare codes follow the ts_code shape (global-index ts_codes are bare
-    // — HSI, XIN9 — so the ".XX" suffix is not required). Custom-source codes
-    // are free-form: composite "URL部分@映射部分" report codes, endpoint-
-    // specific ids — non-empty is the only requirement.
-    const codeValid = assetType === "custom" ? tsCode.length > 0 : /^\w+(\.\w+)?$/.test(tsCode);
-    if (!codeValid) {
-      return t("{path} 缺少有效的 tsCode（如 600519.SH、HSI）。", { path });
+    // Custom-source codes are free-form: composite "URL部分@映射部分" report
+    // codes, endpoint-specific ids — non-empty is the only requirement.
+    if (!tsCode) {
+      return t("{path} 缺少有效的 tsCode。", { path });
     }
     ref.tsCode = tsCode;
     ref.assetType = assetType;
     const sourceId = String(map.sourceId ?? "").trim();
-    if (assetType === "custom" && !sourceId) {
-      return t("{path} 的 assetType 为 custom 时必须提供 sourceId（自定义数据源 id）。", { path });
+    if (!sourceId) {
+      return t("{path} 缺少有效的 sourceId（自定义数据源 id）。", { path });
     }
-    if (sourceId) {
-      ref.sourceId = sourceId;
-    }
-  } else if (source === "macro") {
-    const seriesId = String(map.seriesId ?? "").trim();
-    if (!MACRO_IDS.has(seriesId)) {
-      return t("{path} 的 seriesId 无效：{id}（不是已知的宏观序列）。", { path, id: seriesId });
-    }
-    ref.seriesId = seriesId;
-  } else {
-    const seriesId = String(map.seriesId ?? "").trim();
-    if (!seriesId) {
-      return t("{path} 缺少有效的 seriesId（FRED 系列代码，如 DGS10）。", { path });
-    }
-    ref.seriesId = seriesId;
-    // Optional FRED "units" metadata (e.g. "Percent"), written by the search
-    // flow; used at render time to tell percent series apart.
-    const units = String(map.units ?? "").trim();
-    if (units) {
-      ref.units = units;
-    }
-    const transform = parseFredTransform(map.transform, t("{path} 的 transform", { path }));
-    if (typeof transform === "object") {
-      return transform.error;
-    }
-    if (transform) {
-      ref.transform = transform;
-    }
+    ref.sourceId = sourceId;
   }
 
   const label = String(map.label ?? "").trim();

@@ -1,8 +1,7 @@
 import * as yaml from "js-yaml";
-import { ASSET_TYPES, cacheAssetKey, type AssetType, type Freq, type ParsedCardSpec, type RangePreset, type VisibleRangePreset, type WidgetType } from "../types";
+import { cacheAssetKey, type AssetType, type Freq, type ParsedCardSpec, type RangePreset, type VisibleRangePreset, type WidgetType } from "../types";
 import { isDateRangeString } from "../utils/date";
 
-const VALID_ASSET_TYPES: AssetType[] = ASSET_TYPES;
 const VALID_FREQS: Freq[] = ["D", "W", "M"];const VALID_RANGES: RangePreset[] = ["1y", "3y", "5y", "ytd", "max"];
 const VALID_VISIBLE_RANGES: VisibleRangePreset[] = ["1m", "3m", "6m", "1y", "ytd", "max"];
 const VALID_WIDGET_TYPES: WidgetType[] = ["iframe", "html"];
@@ -59,14 +58,10 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
     return { ok: false, error: { message: `Missing required field: 代码. Parsed keys: [${keys}]` } };
   }
 
-  const rawType = extractString(map, "类型") ?? defaults?.assetType ?? "stock";
-  if (!isAssetType(rawType)) {
-    return { ok: false, error: { message: `Invalid 类型: ${rawType}. Must be one of ${VALID_ASSET_TYPES.join(", ")}.` } };
-  }
-
+  const assetType: AssetType = "custom";
   const sourceId = extractString(map, "数据源") ?? defaults?.sourceId;
-  if (rawType === "custom" && !sourceId) {
-    return { ok: false, error: { message: "Missing required field: 数据源（类型为 custom 时必须指定自定义数据源 id）。" } };
+  if (!sourceId) {
+    return { ok: false, error: { message: "Missing required field: 数据源（自定义数据源 id）。" } };
   }
 
   const rawFreq = extractString(map, "周期") ?? defaults?.freq ?? "D";
@@ -88,7 +83,6 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
   const riseColor = extractString(map, "涨色");
   const fallColor = extractString(map, "跌色");
   const showHeader = extractBoolean(map, "显示标题");
-  const showMarketData = extractBoolean(map, "显示市场数据");
   const showVolume = extractBoolean(map, "显示成交量");
   const visibleRange = extractLiteral(map, "可见范围", VALID_VISIBLE_RANGES);
   const visibleStart = extractIsoDate(map, "可见起点");
@@ -115,7 +109,7 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
     ok: true,
     spec: {
       symbol,
-      assetType: rawType,
+      assetType,
       sourceId,
       freq: rawFreq,
       range: rawRange,
@@ -127,7 +121,6 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
       riseColor,
       fallColor,
       showHeader,
-      showMarketData,
       showVolume,
       visibleRange,
       visibleStart,
@@ -162,7 +155,6 @@ function parseWidgetCardSpec(
   const widgetType = inferredWidgetType ?? extractLiteral(map, "小组件类型", VALID_WIDGET_TYPES) ?? "iframe";
   const widgetTitle = extractString(map, "小组件标题");
   const symbol = extractString(map, "代码") ?? widgetTitle ?? "widget";
-  const rawType = extractString(map, "类型") ?? defaults?.assetType ?? "stock";
   const rawFreq = extractString(map, "周期") ?? defaults?.freq ?? "D";
   const rawRange = extractString(map, "范围") ?? defaults?.range ?? "1y";
   const version = extractNumber(map, "版本") ?? defaults?.version ?? 1;
@@ -173,7 +165,7 @@ function parseWidgetCardSpec(
     spec: {
       contentType: "widget",
       symbol,
-      assetType: isAssetType(rawType) ? rawType : "stock",
+      assetType: "custom",
       freq: isFreq(rawFreq) ? rawFreq : "D",
       range: rawRange,
       version,
@@ -202,7 +194,7 @@ function parseCalendarCardSpec(
     spec: {
       contentType: "calendar",
       symbol: "calendar",
-      assetType: "stock",
+      assetType: "custom",
       freq: "D",
       range: "1y",
       version: 1,
@@ -254,14 +246,11 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
 
   const obj: Record<string, unknown> = {
     代码: spec.symbol,
-    类型: spec.assetType,
+    数据源: spec.sourceId,
     周期: spec.freq,
     范围: spec.range,
     版本: spec.version,
   };
-  if (spec.assetType === "custom" && spec.sourceId) {
-    obj.数据源 = spec.sourceId;
-  }
   if (spec.height != null && spec.height !== DEFAULT_CARD_HEIGHT) {
     obj.高度 = spec.height;
   }
@@ -282,9 +271,6 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
   }
   if (spec.showHeader === false) {
     obj.显示标题 = false;
-  }
-  if (spec.showMarketData === false) {
-    obj.显示市场数据 = false;
   }
   if (spec.showVolume === false) {
     obj.显示成交量 = false;
@@ -365,8 +351,7 @@ export function buildCardFrontmatter(spec: ParsedCardSpec): string {
   return [
     "---",
     `fc-代码: ${spec.symbol}`,
-    `fc-类型: ${spec.assetType}`,
-    ...(spec.assetType === "custom" && spec.sourceId ? [`fc-数据源: ${spec.sourceId}`] : []),
+    `fc-数据源: ${spec.sourceId}`,
     `fc-周期: ${spec.freq}`,
     `fc-范围: ${spec.range}`,
     `fc-高度: ${spec.height ?? DEFAULT_CARD_HEIGHT}`,
@@ -460,10 +445,6 @@ function extractOpacity(map: Record<string, unknown>, key: string): number | und
   const raw = extractNumber(map, key);
   if (raw == null || !Number.isFinite(raw)) return undefined;
   return Math.max(0, Math.min(100, Math.round(raw)));
-}
-
-function isAssetType(value: string): value is AssetType {
-  return VALID_ASSET_TYPES.includes(value as AssetType);
 }
 
 function isFreq(value: string): value is Freq {

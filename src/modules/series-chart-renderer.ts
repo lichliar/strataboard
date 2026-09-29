@@ -26,13 +26,13 @@ export interface SeriesChartLine {
 }
 
 interface SeriesChartRendererOptions {
-  title?: string;      // header title, e.g. "资产叠加（M1-M2+上证指数）（归一化）"; omitted = no header (the FRED card renders its own tushare-style header)
+  title?: string;      // header title, e.g. "资产叠加（美的集团+贵州茅台）（归一化）"; omitted = no header
   subtitle?: string;   // small muted line under the title, e.g. the normalization base date
   lines: SeriesChartLine[];
   height?: number;     // px, default 400
   valueSuffix?: string; // e.g. "%" appended to legend values and price-axis ticks
   theme?: ChartTheme;  // default "auto" (follow Obsidian; only then is the theme watcher attached)
-  freezeWidth?: boolean; // canvas only: pin the first-layout width (tushare spec 宽度自适应 off)
+  freezeWidth?: boolean; // canvas only: pin the first-layout width (quote spec 宽度自适应 off)
   initialVisibleRange?: { from: string; to: string };  // YYYY-MM-DD, from the card YAML
   onEdit?: () => void; // pencil button in the header (only rendered when a title is present)
   // Overlay 独立纵轴 mode: every line gets its own invisible overlay price
@@ -57,7 +57,7 @@ const DEFAULT_HEIGHT = 400;
 // Line palette for overlay/spread charts; cycles when a card has more lines
 // than colors. Colors stay readable on both themes. Length matches
 // MAX_OVERLAY_SERIES so a full overlay card never repeats a color.
-const SERIES_LINE_COLORS = [
+export const SERIES_LINE_COLORS = [
   "#2563eb", "#dc2626", "#f59e0b", "#8b5cf6", "#14b8a6",
   "#ec4899", "#0ea5e9", "#84cc16", "#f97316", "#6366f1",
 ];
@@ -78,10 +78,9 @@ function timeToYmd(time: Time): string {
   return `${day.year}-${String(day.month).padStart(2, "0")}-${String(day.day).padStart(2, "0")}`;
 }
 
-// Shared multi-line chart for the overlay (资产叠加), spread (差值计算) and
-// standalone FRED cards: one lightweight-charts LineSeries per line, a
-// crosshair legend with one colored entry per line, theme-aware rebuild, and
-// a Chinese empty state.
+// Shared multi-line chart for the overlay (资产叠加) and spread (差值计算)
+// cards: one lightweight-charts LineSeries per line, a crosshair legend with
+// one colored entry per line, theme-aware rebuild, and a Chinese empty state.
 export class SeriesChartRenderer extends MarkdownRenderChild {
   private options: SeriesChartRendererOptions;
   private chart: IChartApi | null = null;
@@ -130,8 +129,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     // Header row with the card title (and optional subtitle, e.g. the
     // normalization base date) plus action buttons on the right (edit opens
     // the card's edit modal; export screenshots the chart to a PNG). Skipped
-    // when no title is given — the FRED/macro cards render their own
-    // tushare-style header above the chart.
+    // when no title is given.
     if (this.options.title) {
       const headerEl = this.containerEl.createEl("div", { cls: "financial-series-chart-header" });
       const mainEl = headerEl.createEl("div", { cls: "financial-series-chart-header-main" });
@@ -167,7 +165,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     }
 
     // Chart stack: the inline height acts as the flex basis (same sizing
-    // model as the tushare chart card).
+    // model as the quote chart card).
     const stackEl = this.containerEl.createEl("div", { cls: "strataboard-chart-stack" });
     this.stackEl = stackEl;
     stackEl.style.height = `${this.options.height ?? DEFAULT_HEIGHT}px`;
@@ -178,7 +176,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     this.containerEl.toggleClass("fc-hermes", isDark);
     const chartOptions: DeepPartial<ChartOptions> = buildChartOptions(isDark, this.options.showGrid, this.options.gridOpacity);
     // Wheel ZOOMS the time axis on series cards (wheel-pan is disabled so the
-    // two don't fight). buildChartOptions is shared with the tushare K-line
+    // two don't fight). buildChartOptions is shared with the quote K-line
     // card, so override the returned object here instead of changing it; it
     // currently sets only handleScale.axisPressedMouseMove and no handleScroll.
     chartOptions.handleScale = { axisPressedMouseMove: true, mouseWheel: true, pinch: true };
@@ -211,7 +209,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
           priceLineVisible: false,
           ...(this.options.independentScales ? { priceScaleId: this.scaleIds[i] } : {}),
           // Latest-value label on the price axis (colored with the line) —
-          // the series-chart equivalent of the tushare card's latest-price
+          // the series-chart equivalent of the quote card's latest-price
           // line (global 系列图最新值标记 setting). Vertex dots are a separate
           // setting (折线图数据点标记, default off).
           lastValueVisible: this.options.showLatestValue,
@@ -224,10 +222,10 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
       );
       series.setData(data);
       line.color = color;
-      // Single-line cards (FRED/macro/spread) also get a dashed guide line at
-      // the latest value; axisLabelVisible stays off so it doesn't duplicate
-      // the last-value label. Multi-line overlays skip it to keep the axis
-      // uncluttered.
+      // Single-line cards (spread, or a one-line overlay) also get a dashed
+      // guide line at the latest value; axisLabelVisible stays off so it
+      // doesn't duplicate the last-value label. Multi-line overlays skip it
+      // to keep the axis uncluttered.
       if (this.options.showLatestValue && lines.length === 1) {
         series.createPriceLine({
           price: line.points[line.points.length - 1].value,
@@ -351,7 +349,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     this.updateLegendClearance();
   }
 
-  // Same legend-overlay headroom fix as the tushare chart card: the legend
+  // Same legend-overlay headroom fix as the quote chart card: the legend
   // is an absolute DOM overlay at the top of the chart, so the price scale
   // reserves real headroom for it (recomputed on every resize — the margin
   // is a pane-height ratio, the legend is fixed pixels).
@@ -384,7 +382,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
   // right-side whitespace past the last point cannot be expressed as a time
   // range. When the range reaches the latest point, extend the logical range
   // by the configured rightOffset so the line ends stay fully visible — the
-  // same fix as the tushare chart card's applyTimeRange.
+  // same fix as the quote chart card's applyTimeRange.
   private applyTimeRange(from: Time, to: Time) {
     const ts = this.chart!.timeScale();
     ts.setVisibleRange({ from, to });
@@ -422,7 +420,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
       }
       // 宽度自适应 off: pin the stack to its first-layout width so later
       // canvas node width changes stop reaching the chart (canvas-only,
-      // same as the tushare chart's freezeWidth).
+      // same as the quote chart's freezeWidth).
       if (this.options.freezeWidth && this.stackEl && this.containerEl.closest(".canvas-node")) {
         this.stackEl.style.width = `${containerEl.clientWidth}px`;
       }

@@ -5,10 +5,9 @@ import { t } from "../i18n";
 export type SearchQuotes = (text: string) => Promise<SymbolItem[]>;
 
 /**
- * Remote quote picker for custom data sources with a searchUrl. Unlike
- * SymbolSearchModal (local fuzzy index over a bulk list), these sources only
- * offer per-keystroke server-side search — same interaction model as
- * FredSearchModal: debounced, sequence-guarded against stale responses.
+ * Remote quote picker for custom data sources with remote search (searchUrl
+ * or searchBodyTemplate): these sources offer per-keystroke server-side
+ * search — debounced, sequence-guarded against stale responses.
  */
 export class RemoteQuoteSearchModal extends SuggestModal<SymbolItem> {
   private search: SearchQuotes;

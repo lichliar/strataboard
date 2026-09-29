@@ -1,12 +1,9 @@
-import { App, Notice, TFile } from "obsidian";
-import type { FredSeriesInfo, ParsedCardSpec, SeriesPeriod, SeriesPoint, SeriesRef, SpreadSpec } from "../types";
-import { MACRO_SERIES_OPTIONS } from "../types";
-import { resolveDateRange } from "../utils/date";
+import { App, TFile } from "obsidian";
+import type { ParsedCardSpec, SeriesPeriod, SeriesPoint, SeriesRef, SpreadSpec } from "../types";
 import { SqliteCache } from "./sqlite-cache";
 import { DataAdapter } from "./data-adapter";
-import { FredApiClient } from "./fred-api-client";
 import { parseCardSpec } from "./card-spec";
-import { parseFredCardSpec, parseMacroCardSpec, parseSpreadSpec } from "./series-spec";
+import { parseSpreadSpec } from "./series-spec";
 import { evalExpression, parseExpression, type ExprNode } from "./expression";
 import { t } from "../i18n";
 
@@ -14,27 +11,20 @@ interface SeriesAdapterOptions {
   app: App;
   cache: SqliteCache;
   dataAdapter: DataAdapter;
-  getFredApiKey: () => string;
 }
 
 // Unified loader for the generic "series" used by overlay and spread cards.
-// Dispatches across quote (Tushare OHLCV), macro (Tushare 国内宏观: 货币供应 /
-// CPI / PPI / PMI / GDP / 社融 / LPR), fred (FRED API) and card (an existing
-// tushare/fred/macro/spread card file) sources, all yielding YYYY-MM-DD
-// SeriesPoints. `visited` threads the card-reference chain so hand-written
-// YAML cycles (A refs B refs A) fail fast instead of recursing forever.
+// Dispatches across quote (custom-source OHLCV) and card (an existing
+// quote/spread card file) sources, all yielding YYYY-MM-DD SeriesPoints.
+// `visited` threads the card-reference chain so hand-written YAML cycles
+// (A refs B refs A) fail fast instead of recursing forever.
 export class SeriesAdapter {
   private app: App;
-  private cache: SqliteCache;
   private dataAdapter: DataAdapter;
-  private getFredApiKey: () => string;
-  private fredClient?: FredApiClient;
 
   constructor(options: SeriesAdapterOptions) {
     this.app = options.app;
-    this.cache = options.cache;
     this.dataAdapter = options.dataAdapter;
-    this.getFredApiKey = options.getFredApiKey;
   }
 
   async loadSeries(
@@ -47,20 +37,15 @@ export class SeriesAdapter {
     switch (ref.source) {
       case "quote":
         return resamplePoints(await this.loadQuoteSeries(ref, range), period);
-      case "macro":
-        return resamplePoints(await this.loadMacroSeries(ref, range), period);
-      case "fred":
-        return resamplePoints(await this.loadFredSeries(ref, range, force), period);
       case "card":
         return this.loadCardSeries(ref, range, period, visited);
     }
   }
 
   // Loads an existing card file and resolves it to a point series by block
-  // type: spread cards evaluate their expression (recursively), tushare cards
-  // yield their close prices, fred/macro cards their single series. The
-  // OVERLAY's own range/period govern; the referenced card's range, period
-  // and view settings are ignored.
+  // type: spread cards evaluate their expression (recursively), quote cards
+  // yield their close prices. The OVERLAY's own range/period govern; the
+  // referenced card's range, period and view settings are ignored.
   private async loadCardSeries(
     ref: SeriesRef,
     range: string,
@@ -77,7 +62,7 @@ export class SeriesAdapter {
       throw new Error(t("无法读取卡片：{path}（文件不存在）。", { path: cardPath }));
     }
     const content = await this.app.vault.cachedRead(file);
-    const match = content.match(/```(tushare|fred|macro|spread)\n([\s\S]*?)\n```/);
+    const match = content.match(/```(quote|spread)\n([\s\S]*?)\n```/);
     if (!match) {
       throw new Error(t("无法读取卡片：{path}（未找到可引用的数据代码块）。", { path: cardPath }));
     }
@@ -93,35 +78,15 @@ export class SeriesAdapter {
       }
       return this.loadSpread(result.spec, range, period, visited);
     }
-    if (kind === "tushare") {
-      const result = parseCardSpec(body);
-      if (!result.ok) {
-        throw invalid(result.error.message);
-      }
-      const spec = result.spec;
-      const points = await this.loadQuoteSeries(
-        { source: "quote", tsCode: spec.symbol, assetType: spec.assetType, sourceId: spec.sourceId },
-        range
-      );
-      return resamplePoints(points, period);
+    const result = parseCardSpec(body);
+    if (!result.ok) {
+      throw invalid(result.error.message);
     }
-    if (kind === "fred") {
-      const result = parseFredCardSpec(body);
-      if (!result.spec) {
-        throw invalid(result.error ?? t("配置无效"));
-      }
-      const points = await this.loadFredSeries(
-        { source: "fred", seriesId: result.spec.seriesId, transform: result.spec.transform },
-        range
-      );
-      return resamplePoints(points, period);
-    }
-    // kind === "macro"
-    const result = parseMacroCardSpec(body);
-    if (!result.spec) {
-      throw invalid(result.error ?? t("配置无效"));
-    }
-    const points = await this.loadMacroSeries({ source: "macro", seriesId: result.spec.seriesId }, range);
+    const spec = result.spec;
+    const points = await this.loadQuoteSeries(
+      { source: "quote", tsCode: spec.symbol, assetType: spec.assetType, sourceId: spec.sourceId },
+      range
+    );
     return resamplePoints(points, period);
   }
 
@@ -136,55 +101,6 @@ export class SeriesAdapter {
     };
     const rows = await this.dataAdapter.loadOhlcv(spec);
     return rows.map((row) => ({ date: ymdToIso(row.tradeDate), value: row.close }));
-  }
-
-  private async loadMacroSeries(ref: SeriesRef, range: string): Promise<SeriesPoint[]> {
-    const { start, end } = resolveDateRange(range);
-    return this.dataAdapter.loadMacroSeries(ref.seriesId!, ymdToIso(start), ymdToIso(end));
-  }
-
-  private async loadFredSeries(ref: SeriesRef, range: string, force = false): Promise<SeriesPoint[]> {
-    const seriesId = ref.seriesId!;
-    // Transformed data differs from raw levels, so the transformation is part
-    // of the cache key ("DGS10@pch"); raw series keep the bare id.
-    const cacheId = ref.transform ? `${seriesId}@${ref.transform}` : seriesId;
-    const { start, end } = resolveDateRange(range);
-    const startIso = ymdToIso(start);
-    const endIso = ymdToIso(end);
-
-    const cachedMax = await this.cache.getMacroSeriesMaxDate("fred", cacheId);
-    // FRED series update with a lag; consider the cache stale when its latest
-    // observation is older than today - 3 days. force (the card's refresh
-    // button) skips the staleness check and always refetches.
-    const staleThreshold = isoDaysAgo(3);
-    if (force || !cachedMax || cachedMax < staleThreshold) {
-      try {
-        const client = this.getFredClient();
-        const points = await client.fetchSeries(seriesId, cachedMax ?? startIso, ref.transform);
-        await this.cache.mergeMacroSeriesRows("fred", cacheId, points);
-      } catch (e) {
-        console.error("Failed to refresh FRED series:", e);
-        const reason = e instanceof Error ? e.message : String(e);
-        new Notice(t("StrataBoard: FRED 数据刷新失败（{reason}），显示缓存数据。", { reason }));
-      }
-    }
-    return this.cache.loadMacroSeries("fred", cacheId, startIso, endIso);
-  }
-
-  // Interactive FRED series search for the search modal; delegates to the
-  // shared client so key injection/refresh stays in one place.
-  async searchFredSeries(text: string): Promise<FredSeriesInfo[]> {
-    return this.getFredClient().searchSeries(text);
-  }
-
-  private getFredClient(): FredApiClient {
-    if (!this.fredClient) {
-      this.fredClient = new FredApiClient(this.getFredApiKey());
-    } else {
-      // The key may have changed in settings since the client was created.
-      this.fredClient.setApiKey(this.getFredApiKey());
-    }
-    return this.fredClient;
   }
 
   // Loads every series (each resampled to the requested period FIRST), then
@@ -211,10 +127,6 @@ export class SeriesAdapter {
     switch (ref.source) {
       case "quote":
         return ref.tsCode ?? "";
-      case "macro":
-        return MACRO_SERIES_OPTIONS.find((o) => o.id === ref.seriesId)?.label ?? ref.seriesId ?? "";
-      case "fred":
-        return ref.seriesId ?? "";
       case "card":
         // File basename without the .md extension, e.g. "差值计算-1".
         return ref.cardPath?.split("/").pop()?.replace(/\.md$/, "") ?? "";
@@ -228,7 +140,7 @@ function ymdToIso(ymd: string): string {
 
 // Resamples ascending points to the requested period by taking the LAST
 // observation per bucket (calendar month / quarter / year), keeping that
-// observation's actual date. "D" is the identity. Monthly macro data passing
+// observation's actual date. "D" is the identity. Monthly data passing
 // through "M" is therefore unchanged; through "Q"/"Y" it keeps the last
 // month of each quarter/year, which is the desired semantics.
 function resamplePoints(points: SeriesPoint[], period: SeriesPeriod): SeriesPoint[] {
@@ -247,15 +159,6 @@ function resamplePoints(points: SeriesPoint[], period: SeriesPeriod): SeriesPoin
   }
   // Points are ascending, so buckets were inserted in ascending order.
   return [...lastByBucket.values()];
-}
-
-function isoDaysAgo(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
 }
 
 // A series is "monthly-ish" when the median gap between consecutive

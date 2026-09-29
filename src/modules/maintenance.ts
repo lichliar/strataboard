@@ -1,9 +1,7 @@
 import { TFile, type App } from "obsidian";
-import { cacheAssetKey, findMacroSeriesDef, type AssetType, type SeriesRef } from "../types";
+import { cacheAssetKey, type AssetType, type SeriesRef } from "../types";
 import { parseCardSpec } from "./card-spec";
 import {
-  parseFredCardSpec,
-  parseMacroCardSpec,
   parseOverlaySpec,
   parseSpreadSpec,
 } from "./series-spec";
@@ -15,9 +13,7 @@ import { t } from "../i18n";
 // ui/cleanup-modal.ts and settings.ts.
 
 const PLUGIN_BLOCK_TYPES = new Set([
-  "tushare",
-  "fred",
-  "macro",
+  "quote",
   "overlay",
   "spread",
   "financial-widget",
@@ -116,14 +112,12 @@ function isPluginCardFile(file: TFile, blocks: PluginBlock[], content: string): 
 
 export interface UsedCacheKeys {
   quotes: Set<string>; // "symbol|assetType"
-  macro: Set<string>; // "api|seriesId" (api = Tushare API name, the macro_series.source column)
-  fred: Set<string>; // "seriesId" or "seriesId@transform"
 }
 
 // Scans every markdown file in the vault (cards may also live inline in any
 // note via insertCardIntoMd) and collects the cache keys its cards use.
 export async function collectUsedCacheKeys(app: App): Promise<UsedCacheKeys> {
-  const keys: UsedCacheKeys = { quotes: new Set(), macro: new Set(), fred: new Set() };
+  const keys: UsedCacheKeys = { quotes: new Set() };
   const visitedCards = new Set<string>();
   for (const file of app.vault.getMarkdownFiles()) {
     const content = await app.vault.cachedRead(file);
@@ -141,24 +135,12 @@ async function collectBlockKeys(
   visitedCards: Set<string>
 ): Promise<void> {
   switch (block.type) {
-    case "tushare": {
+    case "quote": {
       const result = parseCardSpec(block.body);
       if (!result.ok) return;
       const spec = result.spec;
       if (spec.contentType || spec.widgetType) return; // widget/calendar: no market data
       keys.quotes.add(`${spec.symbol}|${cacheAssetKey(spec.assetType, spec.sourceId)}`);
-      return;
-    }
-    case "fred": {
-      const result = parseFredCardSpec(block.body);
-      if (!result.spec) return;
-      keys.fred.add(fredCacheId(result.spec.seriesId, result.spec.transform));
-      return;
-    }
-    case "macro": {
-      const result = parseMacroCardSpec(block.body);
-      if (!result.spec) return;
-      addMacroKey(keys, result.spec.seriesId);
       return;
     }
     case "overlay":
@@ -184,12 +166,6 @@ async function collectRefKeys(
     case "quote":
       keys.quotes.add(`${ref.tsCode}|${cacheAssetKey(ref.assetType!, ref.sourceId)}`);
       return;
-    case "macro":
-      if (ref.seriesId) addMacroKey(keys, ref.seriesId);
-      return;
-    case "fred":
-      if (ref.seriesId) keys.fred.add(fredCacheId(ref.seriesId, ref.transform));
-      return;
     case "card": {
       // Follow the referenced spread card (cycle-safe) — its own series count
       // as used too.
@@ -207,26 +183,15 @@ async function collectRefKeys(
   }
 }
 
-function addMacroKey(keys: UsedCacheKeys, seriesId: string): void {
-  const def = findMacroSeriesDef(seriesId);
-  if (def) keys.macro.add(`${def.api}|${seriesId}`);
-}
-
-function fredCacheId(seriesId: string, transform?: string): string {
-  return transform ? `${seriesId}@${transform}` : seriesId;
-}
-
 // ==================== Diff against the SQLite cache ====================
 
 export interface StaleCacheEntry {
-  kind: "ohlcv" | "market" | "macro";
-  label: string; // display line, e.g. "600519.SH · stock" / "cn_m · m1_yoy"
+  kind: "ohlcv";
+  label: string; // display line, e.g. "600519.SH · custom:src1"
   detail: string; // type tag + row count
   rows: number;
   symbol?: string;
   assetType?: AssetType;
-  source?: string;
-  seriesId?: string;
 }
 
 export async function findStaleCacheEntries(
@@ -247,44 +212,9 @@ export async function findStaleCacheEntries(
     });
   }
 
-  // market_data shares the quote key: kept while any card uses the symbol.
-  for (const key of await cache.listMarketDataKeys()) {
-    if (used.quotes.has(`${key.symbol}|${key.assetType}`)) continue;
-    stale.push({
-      kind: "market",
-      label: `${key.symbol} · ${key.assetType}`,
-      detail: t("市场数据 · {rows} 行", { rows: key.rows }),
-      rows: key.rows,
-      symbol: key.symbol,
-      assetType: key.assetType,
-    });
-  }
-
-  for (const key of await cache.listMacroSeriesKeys()) {
-    const inUse =
-      key.source === "fred"
-        ? used.fred.has(key.seriesId)
-        : used.macro.has(`${key.source}|${key.seriesId}`);
-    if (inUse) continue;
-    stale.push({
-      kind: "macro",
-      label: `${key.source} · ${key.seriesId}`,
-      detail: t("{kind}序列 · {rows} 行", { kind: key.source === "fred" ? "FRED" : t("宏观"), rows: key.rows }),
-      rows: key.rows,
-      source: key.source,
-      seriesId: key.seriesId,
-    });
-  }
-
   return stale.sort((a, b) => b.rows - a.rows);
 }
 
 export async function deleteStaleCacheEntry(cache: SqliteCache, entry: StaleCacheEntry): Promise<void> {
-  if (entry.kind === "macro") {
-    await cache.deleteMacroSeries(entry.source!, entry.seriesId!);
-  } else if (entry.kind === "market") {
-    await cache.deleteMarketData(entry.symbol!, entry.assetType!);
-  } else {
-    await cache.deleteOhlcv(entry.symbol!, entry.assetType!);
-  }
+  await cache.deleteOhlcv(entry.symbol!, entry.assetType!);
 }

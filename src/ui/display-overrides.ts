@@ -68,7 +68,7 @@ export function renderDisplayOverrideSettings(
     addBoolOverride("系列图最新值标记", "showLatestValue");
     addBoolOverride("折线图数据点标记", "showPointMarkers");
   }
-  // K-line cards only (unified edit modal's tushare source passes ma: true).
+  // K-line cards only (the unified edit modal passes ma: true).
   if (opts.ma) {
     addBoolOverride("显示均线", "showMA");
   }

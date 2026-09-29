@@ -5,7 +5,8 @@ import { t, setLanguage, type Language } from "./i18n";
 import { FolderPathSelect } from "./ui/folder-suggester";
 import { CleanupConfirmModal } from "./ui/cleanup-modal";
 import { ConfirmModal } from "./ui/confirm-modal";
-import { CUSTOM_FORMAT_LABELS, CustomSourceImportModal, CustomSourceModal } from "./ui/custom-source-modal";
+import { TextInputModal } from "./ui/text-input-modal";
+import { AI_SOURCE_PROMPT, CUSTOM_FORMAT_LABELS, CustomSourceImportModal, CustomSourceModal } from "./ui/custom-source-modal";
 import { CsvSourceModal } from "./ui/csv-source-modal";
 import { MIN_REQUEST_INTERVAL_MS } from "./modules/http";
 import {
@@ -17,15 +18,40 @@ import {
 import { syncScriptSources, AI_SCRIPT_PROMPT } from "./modules/script-sources";
 import { renderAiGuide } from "./modules/ai-guide";
 
+// One-click MCP/CLI setup prompt (AI 辅助 tab): the user pastes it into
+// their own AI agent, which locates the vault itself and registers the MCP
+// server in its own config — that way the settings tab never has to display
+// the machine-local paths. The EN translation lives in i18n.ts under this
+// exact string as key; keep the two in sync.
+export const MCP_SETUP_PROMPT = `请帮我把 Obsidian 插件 StrataBoard 的 MCP server 配置好，之后你就可以直接调用它的工具了。
+
+背景：StrataBoard 是一个 Obsidian 金融数据卡片插件，附带一个 MCP stdio server（需要 Node 18+），入口文件是 <vault根目录>/.obsidian/plugins/strataboard/mcp-server.js。它提供这些工具：search_symbols / list_sources / validate_cards / probe_data / get_card_guide。
+
+请按以下步骤操作：
+1. 确定我的 vault 根目录：如果当前工作目录在某个 Obsidian vault 内（向上查找包含 .obsidian 目录的位置）就直接用它；找不到就问我，不要猜。
+2. 按你的客户端注册名为 strataboard 的 MCP server：command 为 node，args 为 ["<vault根目录>/.obsidian/plugins/strataboard/mcp-server.js", "--vault", "<vault根目录>"]（也可以用环境变量 STRATABOARD_VAULT 传 vault 路径）。
+   - Codex：写入 ~/.codex/config.toml 的 [mcp_servers.strataboard]；
+   - Claude Code：执行 claude mcp add，或编辑对应的配置文件；
+   - 其它客户端：用它自己的 MCP 配置方式写入等价的 JSON。
+3. 写完后把最终配置内容给我看一遍，并告诉我是否需要重启或重载客户端才能生效。
+4. 如果 MCP 始终不可用，改用插件附带的 CLI：node "<vault根目录>/.obsidian/plugins/strataboard/cli.js" <命令> --vault "<vault根目录>"，命令有 search / sources / validate / probe。
+
+用我使用的语言与我交流，遇到拿不准的地方先问我再动手。`;
+
+// Dropdown sentinel value for the 新建分组… option in the source-group
+// picker (a group name could never collide since we control the option).
+const NEW_SOURCE_GROUP = "__new_group__";
+
 export interface StrataBoardSettings {
-  tushareToken: string;
-  fredApiKey: string;
   // User-defined custom REST quote sources (数据源设置 → 自定义数据源).
   customSources: CustomSourceDef[];
+  // Custom SVG icons for source groups, keyed by group name (per-source
+  // icons live on CustomSourceDef.icon).
+  sourceGroupIcons: Record<string, string>;
   // UI language (通用设置 tab); command names only update after reload.
   language: Language;
   // Per-source toolbar visibility (工具栏设置 surfaces these toggles). Only
-  // TradingView remains per-source; data inserts all go through 「插入数据」.
+  // TradingView remains per-source; data inserts all go through 「插入图表」.
   toolbarSources: Record<ToolbarSourceId, boolean>;
   toolbarStyle: ToolbarStyle;
   // User-defined order of the top-level toolbar entries (全部刷新/设置 stay
@@ -39,7 +65,8 @@ export interface StrataBoardSettings {
   // 脚本处理: folder holding user Python scripts; their CSV outputs land in
   // its output/ subfolder and are auto-registered as csv custom sources.
   scriptFolderPath: string;
-  // 脚本处理: script file names the user disabled in the script manager.
+  // 脚本处理: script paths (relative to scriptFolderPath, e.g.
+  // "macro/cpi.py") the user disabled in the script manager.
   disabledScripts: string[];
   // 脚本处理: output CSV filePaths already processed by syncScriptSources —
   // a file is registered at most once, so a source the user deleted is never
@@ -52,7 +79,6 @@ export interface StrataBoardSettings {
   toolbarOffsetX: number;
   toolbarOffsetY: number;
   toolbarCollapsed: boolean;
-  symbolListRefreshIntervalDays: number;
   // Global minimum interval between outbound data requests (ms), clamped to
   // MIN_REQUEST_INTERVAL_MS. Enforced by modules/http.ts, applied on load/save.
   requestIntervalMs: number;
@@ -82,12 +108,11 @@ export interface StrataBoardSettings {
 }
 
 export const DEFAULT_SETTINGS: StrataBoardSettings = {
-  tushareToken: "",
-  fredApiKey: "",
   customSources: [],
+  sourceGroupIcons: {},
   language: "zh",
   toolbarSources: { tradingview: true },
-  toolbarStyle: "icon",
+  toolbarStyle: "text",
   toolbarOrder: ["insert-data", "data-tools", "tradingview", "components"],
   toolbarIconSize: 16,
   toolbarWidth: 44,
@@ -104,7 +129,6 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   toolbarOffsetX: 16,
   toolbarOffsetY: 16,
   toolbarCollapsed: false,
-  symbolListRefreshIntervalDays: 7,
   requestIntervalMs: 500,
   widgetIframeHeight: 400,
   // Empty means "follow the core Daily notes plugin, else built-in defaults".
@@ -131,26 +155,25 @@ const TOOLBAR_SOURCE_LABELS: Record<ToolbarSourceId, string> = {
 };
 
 const TOOLBAR_ENTRY_LABELS: Record<ToolbarEntryId, string> = {
-  "insert-data": "插入数据",
+  "insert-data": "插入图表",
   "data-tools": "数据处理",
   tradingview: "TradingView Widget",
   components: "组件",
 };
 
-type SettingsTabId = "general" | "data-source" | "external-ai" | "paths" | "cards" | "toolbar" | "disclaimer";
+type SettingsTabId = "general" | "data-source" | "external-ai" | "paths" | "cards" | "toolbar";
 
 const SETTINGS_TABS: { id: SettingsTabId; label: string }[] = [
   { id: "general", label: "通用设置" },
   { id: "data-source", label: "数据源设置" },
-  { id: "external-ai", label: "外部 AI 接入" },
+  { id: "external-ai", label: "AI 辅助" },
   { id: "paths", label: "路径设置" },
   { id: "cards", label: "卡片与组件" },
   { id: "toolbar", label: "工具栏设置" },
-  { id: "disclaimer", label: "免责声明" },
 ];
 
 // Set by openSettingsTab and consumed by the next display() so the settings
-// window opens directly on the requested tab (e.g. 外部 AI 接入 from the
+// window opens directly on the requested tab (e.g. AI 辅助 from the
 // custom-source modal's AI section).
 let pendingTab: SettingsTabId | null = null;
 
@@ -213,9 +236,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       case "toolbar":
         this.renderToolbarSettings(contentEl);
         break;
-      case "disclaimer":
-        this.renderDisclaimerSettings(contentEl);
-        break;
     }
   }
 
@@ -254,70 +274,19 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
+
+    // Legal text lives at the bottom of 通用设置, collapsed by default like
+    // every other settings sub-section.
+    const disclaimerDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    disclaimerDetails.createEl("summary", { text: t("免责声明") });
+    this.renderDisclaimerSettings(disclaimerDetails);
   }
 
+  // 数据源设置 tab: the plugin ships no data sources — this tab is the
+  // user-configured custom source list (top level) plus the global request
+  // throttle.
   private renderDataSourceSettings(containerEl: HTMLElement): void {
-    new Setting(containerEl).setName(t("数据源 API 设置")).setHeading();
-
-    // Each keyed source gets its own <details> subgroup.
-    const tushareDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    tushareDetails.setAttr("open", "");
-    tushareDetails.createEl("summary", { text: t("Tushare 设置") });
-
-    const tushareSetting = new Setting(tushareDetails).setName("Tushare Token");
-    tushareSetting.settingEl.addClass("fc-setting-stacked");
-    tushareSetting.descEl.appendText(t("你的 Tushare Pro API Token。"));
-    tushareSetting.descEl.createEl("a", {
-      text: t("没有 Token？前往 tushare.pro 申请 →"),
-      href: "https://tushare.pro/user/token",
-    });
-    tushareSetting.addText((text) => {
-      text
-        .setPlaceholder(t("请输入 Token"))
-        .setValue(this.plugin.pluginSettings.tushareToken)
-        .onChange(async (value) => {
-          this.plugin.pluginSettings.tushareToken = value;
-          await this.plugin.saveSettings();
-        });
-      text.inputEl.addClass("fc-mono");
-    });
-
-    const fredDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    fredDetails.setAttr("open", "");
-    fredDetails.createEl("summary", { text: t("FRED 设置") });
-
-    const fredSetting = new Setting(fredDetails).setName("FRED API Key");
-    fredSetting.settingEl.addClass("fc-setting-stacked");
-    fredSetting.descEl.appendText(t("用于获取美联储 FRED 宏观数据（如 DGS10/DGS2），可免费申请："));
-    fredSetting.descEl.createEl("a", {
-      text: "https://fredaccount.stlouisfed.org/apikeys",
-      href: "https://fredaccount.stlouisfed.org/apikeys",
-    });
-    fredSetting.addText((text) => {
-      text
-        .setPlaceholder(t("请输入 API Key"))
-        .setValue(this.plugin.pluginSettings.fredApiKey)
-        .onChange(async (value) => {
-          this.plugin.pluginSettings.fredApiKey = value;
-          await this.plugin.saveSettings();
-        });
-      text.inputEl.addClass("fc-mono");
-    });
-
     this.renderCustomSourceSettings(containerEl);
-
-    new Setting(containerEl)
-      .setName(t("股票列表刷新间隔（天）"))
-      .setDesc(t("多久刷新一次本地股票代码列表缓存。"))
-      .addSlider((slider) =>
-        slider
-          .setLimits(1, 30, 1)
-          .setValue(this.plugin.pluginSettings.symbolListRefreshIntervalDays)
-          .onChange(async (value) => {
-            this.plugin.pluginSettings.symbolListRefreshIntervalDays = value;
-            await this.plugin.saveSettings();
-          })
-      );
 
     new Setting(containerEl)
       .setName(t("请求最小间隔（毫秒）"))
@@ -334,8 +303,8 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       );
   }
 
-  // Full legal text for the dedicated 免责声明 tab. The FRED attribution line
-  // is fixed English in both languages (required wording, never translated).
+  // Full legal text, rendered inside the collapsed 免责声明 block at the
+  // bottom of 通用设置.
   private renderDisclaimerSettings(containerEl: HTMLElement): void {
     const root = containerEl.createDiv("fc-disclaimer");
 
@@ -351,25 +320,9 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       "本插件仅为数据接入框架与展示工具，本身不提供、不存储、不分发任何金融数据，与任何数据平台均不存在合作、授权或背书关系。"
     );
 
-    const builtin = section(
-      "内置数据源（Tushare Pro / FRED）",
-      "内置的 Tushare Pro 与 FRED 连接器均为官方公开 API，须由您自行注册账号并填写个人凭据（Token / API Key）后方可使用。您与数据平台之间的授权关系独立于本插件，您须自行遵守各平台的服务条款，包括但不限于 Tushare Pro 的积分与权限体系及使用范围限制。"
-    );
-    const links: [string, string][] = [
-      ["Tushare Pro 平台条款与文档 →", "https://tushare.pro/document/1?doc_id=13"],
-      ["FRED® API Terms of Use →", "https://research.stlouisfed.org/docs/api/terms_of_use.html"],
-    ];
-    for (const [label, href] of links) {
-      const a = builtin.createEl("p").createEl("a", { text: t(label), href });
-      a.setAttr("target", "_blank");
-    }
-    builtin.createEl("p", {
-      text: "This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.",
-    });
-
     section(
       "自定义数据源",
-      "所有第三方接口地址（URL）、参数与凭据均由您自行配置并自行调用。本插件不内置任何免授权的数据端点。您应确保其配置与使用行为符合数据来源平台的服务条款及适用法律，不得利用本插件从事未经授权的数据抓取或访问。"
+      "本插件不内置任何数据源：所有接口地址（URL）、参数与凭据均由您自行配置并自行调用，或由您运行的脚本产出本地 CSV 文件。您应确保其配置与使用行为符合数据来源平台的服务条款及适用法律，不得利用本插件从事未经授权的数据抓取或访问。"
     );
 
     section(
@@ -393,71 +346,82 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     );
   }
 
-  // 外部 AI 接入: no built-in assistant — external agents (Codex, Claude
-  // Code, …) drive the plugin through the bundled MCP server or CLI. Paths
-  // are resolved at render time so the snippets are copy-paste ready.
+  // AI 辅助: no built-in assistant — external agents (Codex, Claude Code,
+  // …) drive the plugin through the bundled MCP server or CLI. Layout: one
+  // 接入 block (MCP one-click prompt + manual snippets + CLI) followed by
+  // one prompt block per task scenario (add a data source / author cards /
+  // write scripts), so the user picks a prompt by what they want to do. No
+  // machine-local paths are shown (they would leak private directory names):
+  // every snippet uses the <vault路径> placeholder, and the one-click setup
+  // prompt lets the user's AI agent locate the vault and register the server
+  // itself.
   private renderExternalAiSettings(containerEl: HTMLElement): void {
     containerEl.createDiv({
       cls: "fc-field-hint",
-      text: t("本插件不内置 AI 助手。推荐用你自己的 AI agent（Codex、Claude Code 等）通过 MCP 或 CLI 操作本插件：查符号、列数据源、校验卡片、探测数据。"),
+      text: t("本插件不内置 AI 助手，由你自己的 AI agent（Codex、Claude Code 等）配合提示词操作插件。流程：先接入 AI（只需一次），之后按场景复制对应提示词发给它。"),
     });
 
-    const pluginDir = `${this.app.vault.configDir}/plugins/${this.plugin.manifest.id}`;
-    const vaultPath = (this.app.vault.adapter as { basePath?: string }).basePath ?? "";
+    // Placeholder standing in for the vault root everywhere a snippet would
+    // otherwise embed the real (private) absolute path. The plugin id itself
+    // is public, so only the vault part is masked.
+    const pluginDir = `<vault路径>/.obsidian/plugins/${this.plugin.manifest.id}`;
 
-    const guideDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    guideDetails.setAttr("open", "");
-    guideDetails.createEl("summary", { text: t("卡片编写指南（复制给你的 AI）") });
-    guideDetails.createDiv({
+    const accessDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    accessDetails.createEl("summary", { text: t("接入你的 AI（MCP / CLI，只需一次）") });
+    accessDetails.createDiv({
       cls: "fc-field-hint",
-      text: t("完整的卡片块 YAML 规范与示例。复制全文交给你的 AI，让它先读再写卡片；MCP 客户端可直接调用 get_card_guide 工具获取。"),
+      text: t("最省事的方式：复制「一键配置提示词」发给你的 AI agent，它会自动定位 vault 路径并完成注册；下方配置片段供手动配置，把 <vault路径> 换成你的 vault 根目录。"),
     });
-    this.addCodeSnippet(guideDetails, t("指南全文（Markdown）"), renderAiGuide(pluginDir));
-
-    const mcpDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    mcpDetails.setAttr("open", "");
-    mcpDetails.createEl("summary", { text: t("MCP server（推荐）") });
-    mcpDetails.createDiv({
-      cls: "fc-field-hint",
-      text: t("在你的 AI agent 中注册下面的 MCP server（stdio 方式），AI 即可直接调用插件的数据查询与卡片校验能力。"),
-    });
+    this.addCodeSnippet(accessDetails, t("一键配置提示词（复制给你的 AI）"), t(MCP_SETUP_PROMPT));
     this.addCodeSnippet(
-      mcpDetails,
+      accessDetails,
       t("Codex（~/.codex/config.toml）"),
-      `[mcp_servers.strataboard]\ncommand = "node"\nargs = ["${pluginDir}/mcp-server.js", "--vault", "${vaultPath}"]`
+      `[mcp_servers.strataboard]\ncommand = "node"\nargs = ["${pluginDir}/mcp-server.js", "--vault", "<vault路径>"]`
     );
     this.addCodeSnippet(
-      mcpDetails,
+      accessDetails,
       t("其他 agent（Claude Code 等，JSON 配置）"),
       JSON.stringify(
-        { mcpServers: { strataboard: { command: "node", args: [`${pluginDir}/mcp-server.js`, "--vault", vaultPath] } } },
+        { mcpServers: { strataboard: { command: "node", args: [`${pluginDir}/mcp-server.js`, "--vault", "<vault路径>"] } } },
         null,
         2
       )
     );
-    mcpDetails.createDiv({
-      cls: "fc-field-hint",
-      text: t("提供工具：search_symbols / list_sources / list_macro_series / validate_cards / probe_data / probe_fred / get_card_guide。"),
-    });
-
-    const cliDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    cliDetails.setAttr("open", "");
-    cliDetails.createEl("summary", { text: t("CLI（脚本与命令行调用）") });
     this.addCodeSnippet(
-      cliDetails,
-      t("命令"),
-      `node ${pluginDir}/cli.js <命令> [--vault <vault路径>]\n\nsearch / sources / macro / validate / probe / probe-fred`
+      accessDetails,
+      t("CLI 命令（MCP 不可用时的替代）"),
+      `node ${pluginDir}/cli.js <命令> [--vault <vault路径>]\n\nsearch / sources / validate / probe`
     );
-    cliDetails.createDiv({
+    accessDetails.createDiv({
+      cls: "fc-field-hint",
+      text: t("提供工具：search_symbols / list_sources / validate_cards / probe_data / get_card_guide。"),
+    });
+    accessDetails.createDiv({
       cls: "fc-field-hint",
       text: t("所有命令输出 JSON，适合脚本与 agent 调用；--vault 缺省时读环境变量 STRATABOARD_VAULT，再从当前目录向上查找含 .obsidian 的目录。"),
     });
 
+    const sourceDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    sourceDetails.createEl("summary", { text: t("提示词：添加数据源") });
+    sourceDetails.createDiv({
+      cls: "fc-field-hint",
+      text: t("想让 AI 帮你找接口、生成数据源配置时使用（需先完成上方接入）。AI 会引导你确认需求、检查已有数据源是否已覆盖，再找接口并核对插件适配范围，能配的数据尽量一次配齐，产出可直接粘贴的 URL 或写入 vault 的配置 JSON（在 数据源设置 → 导入 中选择导入），并自行验证；插件不支持的接口形态会明确告知，并建议改用脚本处理。"),
+    });
+    this.addCodeSnippet(sourceDetails, t("引导提示词（复制给你的 AI）"), t(AI_SOURCE_PROMPT));
+
+    const cardDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    cardDetails.createEl("summary", { text: t("提示词：编写 / 修改卡片") });
+    cardDetails.createDiv({
+      cls: "fc-field-hint",
+      text: t("想让 AI 直接创建或修改卡片文件时使用：完整的卡片块 YAML 规范与示例，复制全文交给 AI 先读再写。MCP 客户端可直接调用 get_card_guide 工具获取，无需手动复制。"),
+    });
+    this.addCodeSnippet(cardDetails, t("指南全文（Markdown）"), renderAiGuide(pluginDir));
+
     const scriptDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    scriptDetails.createEl("summary", { text: t("脚本处理（让 AI 帮你写脚本）") });
+    scriptDetails.createEl("summary", { text: t("提示词：编写数据处理脚本") });
     scriptDetails.createDiv({
       cls: "fc-field-hint",
-      text: t("在「{folder}」中放置 Python 脚本，脚本把结果 CSV 写入其 output/ 子目录，插件会自动把它注册为自定义数据源（之后可建独立卡、叠加卡、计算卡）。画布工具栏「数据处理 → 脚本管理」（或命令「打开脚本管理」）里可新建模板脚本、立即运行、查看日志。脚本由你自己编写与运行——可以让 AI 代写：复制下方提示词（已附产物契约与合规规则），连同你的需求或报错一起发给你的 AI。", {
+      text: t("接口形态插件不支持（需要登录、返回 HTML/XML 等）、或想自己抓取 / 加工数据时使用。在「{folder}」中放置 Python 脚本，脚本把结果 CSV 写入其 output/ 子目录，插件会自动把它注册为自定义数据源（之后可建独立卡、叠加卡、计算卡）；画布工具栏「数据处理 → 脚本管理」（或命令「打开脚本管理」）里可立即运行、查看日志。复制下方提示词（已附产物契约与合规规则），连同你的需求或报错一起发给你的 AI。", {
         folder: this.plugin.pluginSettings.scriptFolderPath,
       }),
     });
@@ -479,54 +443,19 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     block.createEl("pre", { cls: "fc-mono", text: code });
   }
 
-  // 自定义数据源 management: the plugin ships no URLs — each entry is a
-  // user-configured REST/JSON endpoint template (see CustomSourceModal).
-  // Toggling 启用 gates pickers/toolbar entries; deleting a source breaks
-  // cards that reference it (they render the missing-source error).
+  // 自定义数据源 management: the plugin ships no data sources — each entry
+  // is a user-configured REST/JSON endpoint template or vault CSV file (see
+  // CustomSourceModal / CsvSourceModal). Rendered at the top level of the
+  // 数据源设置 tab. Toggling 启用 gates pickers/toolbar entries; deleting a
+  // source breaks cards that reference it (they render the missing-source
+  // error).
   private renderCustomSourceSettings(containerEl: HTMLElement): void {
-    const details = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    details.setAttr("open", "");
-    details.createEl("summary", { text: t("自定义数据源") });
-    details.createDiv({
+    containerEl.createDiv({
       cls: "fc-field-hint",
       text: t("自行配置任意 RESTful / JSON 数据接口或 vault 内的 CSV 文件：粘贴完整 URL 即可自动生成模板（支持 {code} {start} {end} {startIso} {endIso} 占位符），K 线行情、单值序列、固定报表均可接入，响应格式自动识别。"),
     });
 
-    for (const def of this.plugin.pluginSettings.customSources) {
-      const setting = new Setting(details)
-        .setName(def.name)
-        .setDesc(`${t(CUSTOM_FORMAT_LABELS[def.format])} · ${def.format === "csv" ? def.filePath ?? "" : def.klineUrl ?? ""}`);
-      setting.addToggle((toggle) =>
-        toggle.setValue(def.enabled).onChange(async (value) => {
-          def.enabled = value;
-          await this.plugin.saveSettings();
-          this.display();
-        })
-      );
-      setting.addButton((btn) =>
-        btn.setButtonText(t("编辑")).onClick(() => {
-          if (def.format === "csv") {
-            this.openCsvSourceModal(def);
-          } else {
-            this.openCustomSourceModal(def);
-          }
-        })
-      );
-      setting.addButton((btn) =>
-        btn
-          .setButtonText(t("删除"))
-          .setWarning()
-          .onClick(() => {
-            new ConfirmModal(this.app, t("删除自定义数据源「{name}」？引用它的卡片将无法加载。", { name: def.name }), () => {
-              const sources = this.plugin.pluginSettings.customSources;
-              this.plugin.pluginSettings.customSources = sources.filter((s) => s.id !== def.id);
-              void this.plugin.saveSettings().then(() => this.display());
-            }).open();
-          })
-      );
-    }
-
-    new Setting(details)
+    new Setting(containerEl)
       .addButton((btn) =>
         btn
           .setButtonText(t("添加数据源"))
@@ -562,6 +491,135 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           );
         })
       );
+
+    const sources = this.plugin.pluginSettings.customSources;
+    // Group labels in first-appearance order; ungrouped sources render last.
+    const groupNames = [
+      ...new Set(sources.map((s) => s.group).filter((g): g is string => !!g)),
+    ];
+    for (const group of groupNames) {
+      const members = sources.filter((s) => s.group === group);
+      new Setting(containerEl)
+        .setClass("fc-source-group-header")
+        .setName(group)
+        .setDesc(t("数据源组 · {n} 个源", { n: members.length }))
+        .addButton((btn) =>
+          btn.setButtonText(t("图标")).onClick(() => {
+            const icons = this.plugin.pluginSettings.sourceGroupIcons;
+            new TextInputModal(
+              this.app,
+              t("自定义组图标"),
+              (svg) => {
+                if (svg) {
+                  icons[group] = svg;
+                } else {
+                  delete icons[group];
+                }
+                void this.plugin.saveSettings().then(() => this.display());
+              },
+              icons[group] ?? "",
+              { multiline: true, allowEmpty: true }
+            ).open();
+          })
+        )
+        .addButton((btn) =>
+          btn.setButtonText(t("重命名")).onClick(() => {
+            new TextInputModal(this.app, t("重命名分组"), (name) => {
+              for (const s of sources) {
+                if (s.group === group) s.group = name;
+              }
+              const icons = this.plugin.pluginSettings.sourceGroupIcons;
+              if (icons[group]) {
+                icons[name] = icons[group];
+                delete icons[group];
+              }
+              void this.plugin.saveSettings().then(() => this.display());
+            }, group).open();
+          })
+        )
+        .addButton((btn) =>
+          btn
+            .setButtonText(t("解散分组"))
+            .setWarning()
+            .onClick(() => {
+              new ConfirmModal(this.app, t("解散分组「{name}」？组内数据源会保留，仅取消归类。", { name: group }), () => {
+                for (const s of sources) {
+                  if (s.group === group) delete s.group;
+                }
+                delete this.plugin.pluginSettings.sourceGroupIcons[group];
+                void this.plugin.saveSettings().then(() => this.display());
+              }).open();
+            })
+        );
+      for (const def of members) {
+        this.renderCustomSourceRow(containerEl, def, groupNames, true);
+      }
+    }
+    for (const def of sources.filter((s) => !s.group)) {
+      this.renderCustomSourceRow(containerEl, def, groupNames, false);
+    }
+  }
+
+  private renderCustomSourceRow(
+    containerEl: HTMLElement,
+    def: CustomSourceDef,
+    groupNames: string[],
+    indented: boolean
+  ): void {
+    const setting = new Setting(containerEl)
+      .setName(def.name)
+      .setDesc(`${t(CUSTOM_FORMAT_LABELS[def.format])} · ${def.format === "csv" ? def.filePath ?? "" : def.klineUrl ?? ""}`);
+    if (indented) setting.setClass("fc-source-group-member");
+    setting.addDropdown((dropdown) => {
+      dropdown.addOption("", t("未分组"));
+      for (const name of groupNames) {
+        dropdown.addOption(name, name);
+      }
+      dropdown.addOption(NEW_SOURCE_GROUP, t("新建分组…"));
+      dropdown.setValue(def.group ?? "").onChange((value) => {
+        if (value === NEW_SOURCE_GROUP) {
+          new TextInputModal(this.app, t("新建分组"), (name) => {
+            def.group = name;
+            void this.plugin.saveSettings().then(() => this.display());
+          }).open();
+          return;
+        }
+        if (value) {
+          def.group = value;
+        } else {
+          delete def.group;
+        }
+        void this.plugin.saveSettings().then(() => this.display());
+      });
+    });
+    setting.addToggle((toggle) =>
+      toggle.setValue(def.enabled).onChange(async (value) => {
+        def.enabled = value;
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+    setting.addButton((btn) =>
+      btn.setButtonText(t("编辑")).onClick(() => {
+        if (def.format === "csv") {
+          this.openCsvSourceModal(def);
+        } else {
+          this.openCustomSourceModal(def);
+        }
+      })
+    );
+    setting.addButton((btn) =>
+      btn
+        .setButtonText(t("删除"))
+        .setWarning()
+        .onClick(() => {
+          new ConfirmModal(this.app, t("删除自定义数据源「{name}」？引用它的卡片将无法加载。", { name: def.name }), () => {
+            const sources = this.plugin.pluginSettings.customSources;
+            this.plugin.pluginSettings.customSources = sources.filter((s) => s.id !== def.id);
+            void this.plugin.saveSettings().then(() => this.display());
+          }).open();
+        })
+    );
   }
 
   private openCustomSourceModal(def?: CustomSourceDef): void {
@@ -593,7 +651,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
 
     // 卡片路径: the three card folders, folded like 缓存路径 below.
     const cardDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    cardDetails.setAttr("open", "");
     cardDetails.createEl("summary", { text: t("卡片路径") });
 
     this.addFolderPathSetting(cardDetails, {
@@ -647,7 +704,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
 
     this.addFolderPathSetting(cacheDetails, {
       name: t("数据缓存路径"),
-      desc: t("SQLite 行情/市场数据缓存所在文件夹（会在此目录下创建 ohlcv.db 和 market.db）。"),
+      desc: t("SQLite 行情数据缓存所在文件夹（会在此目录下创建 ohlcv.db）。"),
       value: this.plugin.pluginSettings.dataCachePath,
       defaultValue: DEFAULT_SETTINGS.dataCachePath,
       onChange: async (value) => {
@@ -689,7 +746,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
 
     new Setting(details)
       .setName(t("清理闲置数据缓存"))
-      .setDesc(t("清理数据缓存中不再被任何卡片使用的行情、市场数据与宏观/FRED 序列，保持缓存体积合理。"))
+      .setDesc(t("清理数据缓存中不再被任何卡片使用的行情数据，保持缓存体积合理。"))
       .addButton((btn) =>
         btn.setButtonText(t("扫描闲置缓存")).onClick(() => void this.runStaleCacheCleanup())
       );
@@ -990,7 +1047,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   private renderToolbarSettings(containerEl: HTMLElement): void {
     // 外观 open by default; source visibility and button order fold away.
     const lookDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    lookDetails.setAttr("open", "");
     lookDetails.createEl("summary", { text: t("外观") });
 
     new Setting(lookDetails)
@@ -1014,8 +1070,8 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       .setDesc(t("工具栏按钮显示为纯图标（悬停显示名称）或文字。"))
       .addDropdown((dropdown) =>
         dropdown
-          .addOption("icon", t("图标"))
           .addOption("text", t("文字"))
+          .addOption("icon", t("图标"))
           .setValue(this.plugin.pluginSettings.toolbarStyle)
           .onChange(async (value) => {
             this.plugin.pluginSettings.toolbarStyle = value as ToolbarStyle;
@@ -1048,7 +1104,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     sourceDetails.createEl("summary", { text: t("工具栏显示的数据源") });
     sourceDetails.createDiv({
       cls: "fc-field-hint",
-      text: t("关闭后对应入口不再出现在画布工具栏（命令面板与右键菜单不受影响）。其余数据入口统一走「插入数据」。"),
+      text: t("关闭后对应入口不再出现在画布工具栏（命令面板与右键菜单不受影响）。其余数据入口统一走「插入图表」。"),
     });
     for (const id of Object.keys(TOOLBAR_SOURCE_LABELS) as ToolbarSourceId[]) {
       new Setting(sourceDetails).setName(t(TOOLBAR_SOURCE_LABELS[id])).addToggle((toggle) =>

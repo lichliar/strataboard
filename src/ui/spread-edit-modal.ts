@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
 import type { ChartTheme, CustomSourceDef, DisplayOverrides, SeriesPeriod, SeriesRef, SpreadSpec } from "../types";
-import { SeriesRefEditor, type OpenFredPicker, type OpenSymbolPicker, type SeriesSourceAvailability } from "./series-ref-editor";
+import { SeriesRefEditor, type OpenSymbolPicker } from "./series-ref-editor";
 import { parseExpression } from "../modules/expression";
 import { appendSvg } from "../utils/dom";
 import { addStepper } from "./stepper";
@@ -90,11 +90,9 @@ export class SpreadEditModal extends Modal {
 
   private onSubmit: (spec: SpreadSpec) => void;
   private openSymbolPicker: OpenSymbolPicker;
-  private openFredPicker?: OpenFredPicker;
   private customSources: CustomSourceDef[];
-  private sourceAvailability: SeriesSourceAvailability;
 
-  constructor(app: App, spec: SpreadSpec, onSubmit: (spec: SpreadSpec) => void, openSymbolPicker: OpenSymbolPicker, openFredPicker?: OpenFredPicker, title?: string, customSources?: CustomSourceDef[], sourceAvailability?: SeriesSourceAvailability) {
+  constructor(app: App, spec: SpreadSpec, onSubmit: (spec: SpreadSpec) => void, openSymbolPicker: OpenSymbolPicker, title?: string, customSources?: CustomSourceDef[]) {
     super(app);
     this.expression = spec.expression;
     this.refs = spec.series.map((ref) => ({ ...ref }));
@@ -118,9 +116,7 @@ export class SpreadEditModal extends Modal {
     };
     this.onSubmit = onSubmit;
     this.openSymbolPicker = openSymbolPicker;
-    this.openFredPicker = openFredPicker;
     this.customSources = customSources ?? [];
-    this.sourceAvailability = sourceAvailability ?? { hasTushare: true, hasFred: true };
     this.setTitle(title ?? t("编辑数据计算卡"));
   }
 
@@ -205,6 +201,10 @@ export class SpreadEditModal extends Modal {
 
     pageEl.createDiv({ cls: "fc-field-hint fc-hint-mt", text: t("系列列表") });
     this.rowsEl = pageEl.createDiv("fc-calc-series-rows");
+    // Fresh cards start with one empty row bound to the first custom source.
+    if (this.refs.length === 0) {
+      this.refs.push({ source: "quote", assetType: "custom", sourceId: this.customSources[0]?.id ?? "" });
+    }
     this.renderSeriesRows();
 
     this.addRowEl = pageEl.createEl("button", {
@@ -213,7 +213,7 @@ export class SpreadEditModal extends Modal {
     });
     this.addRowEl.addEventListener("click", () => {
       if (this.refs.length >= MAX_SERIES) return;
-      this.refs.push({ source: "macro", seriesId: "m1_yoy" });
+      this.refs.push({ source: "quote", assetType: "custom", sourceId: this.customSources[0]?.id ?? "" });
       this.renderSeriesRows();
       this.revalidateExpression();
     });
@@ -279,9 +279,7 @@ export class SpreadEditModal extends Modal {
         false,
         this.openSymbolPicker,
         undefined,
-        this.openFredPicker,
-        this.customSources,
-        this.sourceAvailability
+        this.customSources
       );
       this.editors.push(editor);
     });

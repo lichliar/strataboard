@@ -1,13 +1,13 @@
 import { httpRequest } from "./http";
-import type { CustomSourceDef, JsonSourceMap, OhlcvRow, SymbolItem } from "../types";
+import type { CustomSourceDef, OhlcvRow, SymbolItem } from "../types";
 import {
-  digPathValue,
+  extractApiError,
   parseEastmoneyKline,
   parseEastmoneySearch,
   parseMappedKline,
+  parseMappedSearch,
   parseTencentKline,
   parseTencentSearch,
-  pickRowColumn,
   resolveMapCode,
   splitCompositeCode,
 } from "./quote-format-parsers";
@@ -18,7 +18,8 @@ import { t } from "../i18n";
 // 源). The plugin ships no endpoint URLs; both URLs come from the user's
 // templates with {query} / {code} / {start} / {end} (YYYYMMDD) / {startIso} /
 // {endIso} (YYYY-MM-DD) / {apiKey} placeholders filled per request;
-// apiKeyHeader adds an auth header on top. `def.format` picks
+// apiKeyHeader adds an auth header on top. Search is GET (searchUrl) or POST
+// (searchBodyTemplate, URL falls back to klineUrl). `def.format` picks
 // the response parser preset; "json" maps arbitrary payloads via def.jsonMap.
 
 // Tencent-format kline pages top out at ~640 bars; paging goes back at most
@@ -29,19 +30,41 @@ const MAX_PAGES = 8;
 export class CustomQuoteClient {
   constructor(private def: CustomSourceDef) {}
 
-  // Server-side symbol search. Sources without a searchUrl have no remote
-  // search — the UI opens the manual-entry modal instead of calling this.
+  // Server-side symbol search. A source configures a GET searchUrl ({query}
+  // placeholder), a POST searchBodyTemplate (same placeholders as
+  // bodyTemplate plus {query}), or neither (no remote search — the UI offers
+  // manual entry instead). With only the body template the URL falls back to
+  // klineUrl. Templates WITHOUT {query} fetch the whole symbol list; the
+  // caller filters locally (DataAdapter.searchRemoteQuotes).
   async searchQuotes(query: string): Promise<SymbolItem[]> {
-    if (!this.def.searchUrl) return [];
-    const url = fillTemplate(this.def.searchUrl, templateValues(this.def, { query: encodeURIComponent(query) }));
-    const response = await authedGet(this.def, url);
+    const def = this.def;
+    const urlTemplate = def.searchUrl ?? (def.searchBodyTemplate ? def.klineUrl : undefined);
+    if (!urlTemplate) return [];
+    const url = fillTemplate(urlTemplate, templateValues(def, { query: encodeURIComponent(query) }));
+    const headers = buildAuthHeaders(def);
+    // {query} goes into the body raw (URL-encoding would break non-ASCII
+    // keywords); {apiKey} stays raw in bodies per the bodyTemplate contract.
+    const body = def.searchBodyTemplate
+      ? fillTemplate(def.searchBodyTemplate, { apiKey: def.apiKey ?? "", query })
+      : undefined;
+    const response = await httpRequest({
+      url,
+      method: body !== undefined ? "POST" : "GET",
+      ...(headers ? { headers } : {}),
+      ...(body !== undefined ? { body } : {}),
+      ...(def.transport ? { transport: def.transport } : {}),
+    });
+    if (def.format === "json" && def.jsonMap) {
+      const apiError = extractApiError(response.json, def.jsonMap);
+      if (apiError) throw new Error(apiError);
+    }
     const items =
-      this.def.format === "tencent"
+      def.format === "tencent"
         ? parseTencentSearch(response.text)
-        : this.def.format === "eastmoney"
+        : def.format === "eastmoney"
           ? parseEastmoneySearch(response.json)
-          : this.parseJsonSearch(response.json);
-    return items.map((item) => ({ ...item, sourceId: this.def.id }));
+          : parseMappedSearch(response.json, def.jsonMap);
+    return items.map((item) => ({ ...item, sourceId: def.id }));
   }
 
   // Daily bars for [start, end] (YYYYMMDD), oldest first.
@@ -60,14 +83,16 @@ export class CustomQuoteClient {
     const all = new Map<string, OhlcvRow>();
     let pageEnd = end;
     for (let page = 0; page < MAX_PAGES; page++) {
-      const url = fillTemplate(this.def.klineUrl!, templateValues(this.def, {
+      const values = {
         code: encodeURIComponent(code),
         start,
         end: pageEnd,
         startIso: isoDate(start),
         endIso: isoDate(pageEnd),
-      }));
-      const response = await authedGet(this.def, url);
+      };
+      const url = fillTemplate(this.def.klineUrl!, templateValues(this.def, values));
+      const response = await authedRequest(this.def, url, values);
+      this.throwOnApiError(response.json);
       const rows = parseTencentKline(response.json, code);
       if (rows.length === 0) break;
       for (const row of rows) {
@@ -85,17 +110,19 @@ export class CustomQuoteClient {
   // Eastmoney format: a ranged query returns the whole window in one call;
   // retry the same URL once for the occasional dropped connection.
   private async fetchEastmoneyKline(code: string, start: string, end: string): Promise<OhlcvRow[]> {
-    const url = fillTemplate(this.def.klineUrl!, templateValues(this.def, {
+    const values = {
       code: encodeURIComponent(code),
       start,
       end,
       startIso: isoDate(start),
       endIso: isoDate(end),
-    }));
+    };
+    const url = fillTemplate(this.def.klineUrl!, templateValues(this.def, values));
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const response = await authedGet(this.def, url);
+        const response = await authedRequest(this.def, url, values);
+        this.throwOnApiError(response.json);
         return parseEastmoneyKline(response.json);
       } catch (e) {
         lastError = e instanceof Error ? e : new Error(String(e));
@@ -104,47 +131,42 @@ export class CustomQuoteClient {
     throw lastError ?? new Error(t("自定义数据源「{name}」行情接口请求失败。", { name: this.def.name }));
   }
 
-  // Generic JSON format: single GET, rows dug out at jsonMap.rowsPath and
-  // mapped by column index (rowKind "array") or field name ("object"); a
-  // {code} placeholder in the mapping resolves to the requested code first.
+  // Generic JSON format: rows dug out at jsonMap.rowsPath and mapped by
+  // column index (rowKind "array"), field name ("object") or column name
+  // ("fields"); a {code} placeholder in the mapping resolves to the
+  // requested code first. The request honors def.method/bodyTemplate/
+  // transport, so POST sources (e.g. Tushare) work through the same path.
   private async fetchJsonKline(code: string, start: string, end: string): Promise<OhlcvRow[]> {
     const { urlCode, mapCode } = splitCompositeCode(code);
     const map = this.def.jsonMap ? resolveMapCode(this.def.jsonMap, mapCode) : undefined;
     if (!map) {
       throw new Error(t("自定义数据源「{name}」缺少 JSON 字段映射配置。", { name: this.def.name }));
     }
-    const url = fillTemplate(this.def.klineUrl!, templateValues(this.def, {
+    const values = {
       code: encodeURIComponent(urlCode),
       start,
       end,
       startIso: isoDate(start),
       endIso: isoDate(end),
-    }));
-    const response = await authedGet(this.def, url);
+    };
+    const url = fillTemplate(this.def.klineUrl!, templateValues(this.def, values));
+    const response = await authedRequest(this.def, url, values);
+    // Business errors ride a 200 response on some APIs (e.g. Tushare
+    // {code, msg}) — surface them instead of silently parsing empty data.
+    const apiError = extractApiError(response.json, map);
+    if (apiError) throw new Error(apiError);
     // The endpoint may ignore the range params; enforce the window locally.
     return parseMappedKline(response.json, map)
       .filter((row) => row.tradeDate >= start && row.tradeDate <= end);
   }
 
-  private parseJsonSearch(json: any): SymbolItem[] {
+  // Throws when the response carries a business-level error and the source
+  // has jsonMap.errorPath configured; a no-op otherwise.
+  private throwOnApiError(json: any): void {
     const map = this.def.jsonMap;
-    if (!map?.searchRowsPath || !map.searchCols) return [];
-    const raw: unknown = digPathValue(json, map.searchRowsPath);
-    if (!Array.isArray(raw)) return [];
-    const items: SymbolItem[] = [];
-    for (const r of raw) {
-      const code = String(pickRowColumn(r, map.rowKind, map.searchCols.code) ?? "").trim();
-      const name = String(pickRowColumn(r, map.rowKind, map.searchCols.name) ?? "").trim();
-      if (!code || !name) continue;
-      items.push({
-        tsCode: code,
-        symbol: code,
-        name,
-        exchange: map.searchCols.market ? String(pickRowColumn(r, map.rowKind, map.searchCols.market) ?? "") : "",
-        assetType: "custom",
-      });
-    }
-    return items;
+    if (!map) return;
+    const message = extractApiError(json, map);
+    if (message) throw new Error(message);
   }
 }
 
@@ -152,18 +174,20 @@ export class CustomQuoteClient {
 // and a recent range, returning the payload for format detection / preview.
 // The ~400-day window also covers low-frequency series (quarterly/annual
 // readings), so verification doesn't false-fail on an empty recent window.
+// Goes through authedRequest, so POST sources can be probed too.
 // Throws the request error on failure.
 export async function fetchKlineSample(def: CustomSourceDef, code: string): Promise<{ json: any; text: string }> {
   const end = formatDate(new Date());
   const start = formatDate(new Date(Date.now() - 400 * 86400000));
-  const url = fillTemplate(def.klineUrl ?? "", templateValues(def, {
+  const values = {
     code: encodeURIComponent(splitCompositeCode(code).urlCode),
     start,
     end,
     startIso: isoDate(start),
     endIso: isoDate(end),
-  }));
-  const response = await authedGet(def, url);
+  };
+  const url = fillTemplate(def.klineUrl ?? "", templateValues(def, values));
+  const response = await authedRequest(def, url, values);
   return { json: response.json, text: response.text };
 }
 
@@ -171,8 +195,9 @@ export async function fetchKlineSample(def: CustomSourceDef, code: string): Prom
 // search URL; "json" sources keep their manual mapping.
 export async function autoDetectSearchFormat(def: CustomSourceDef): Promise<CustomSourceDef["format"]> {
   if (!def.searchUrl) return def.format;
-  const url = fillTemplate(def.searchUrl, templateValues(def, { query: encodeURIComponent("000001") }));
-  const response = await authedGet(def, url);
+  const values = { query: encodeURIComponent("000001") };
+  const url = fillTemplate(def.searchUrl, templateValues(def, values));
+  const response = await authedRequest(def, url, values);
   if (parseTencentSearch(response.text).length > 0) return "tencent";
   if (parseEastmoneySearch(response.json).length > 0) return "eastmoney";
   return "json";
@@ -207,10 +232,25 @@ export function buildAuthHeaders(def: Pick<CustomSourceDef, "apiKey" | "apiKeyHe
   return { [name]: fillTemplate(spec.slice(colon + 1).trim(), { apiKey: key }) };
 }
 
-// GET through the global throttle with the source's auth headers attached.
-function authedGet(def: CustomSourceDef, url: string) {
+// Sends a source request through the global throttle with the source's auth
+// headers attached. Honors def.method (default GET), def.transport and — for
+// POST — def.bodyTemplate, filled with the same placeholder values as the
+// URL (extraValues) except {apiKey}, which is NOT URL-encoded in the body
+// (the URL copy stays encoded, see templateValues).
+function authedRequest(def: CustomSourceDef, url: string, extraValues?: Record<string, string>) {
   const headers = buildAuthHeaders(def);
-  return headers ? httpRequest({ url, method: "GET", headers }) : httpRequest({ url, method: "GET" });
+  const method = def.method ?? "GET";
+  const body =
+    method === "POST" && def.bodyTemplate
+      ? fillTemplate(def.bodyTemplate, { apiKey: def.apiKey ?? "", ...extraValues })
+      : undefined;
+  return httpRequest({
+    url,
+    method,
+    ...(headers ? { headers } : {}),
+    ...(body !== undefined ? { body } : {}),
+    ...(def.transport ? { transport: def.transport } : {}),
+  });
 }
 
 function isoDate(ymd: string): string {

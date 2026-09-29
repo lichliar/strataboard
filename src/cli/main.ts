@@ -11,10 +11,8 @@ import * as path from "path";
 import {
   CliError,
   createVaultContext,
-  listMacroSeries,
   listSources,
   probeData,
-  probeFred,
   searchSymbols,
   validateCards,
 } from "./commands";
@@ -62,15 +60,11 @@ const USAGE = `StrataBoard CLI — 供外部 AI 在不启动 Obsidian 的情况�
       资产类型: ${ASSET_TYPES.join(" | ")}
   sources
       列出全部自定义数据源（含脚本产物标记）。
-  macro [--query <关键词>]
-      列出可用的 Tushare 宏观序列（seriesId/名称/频率/所需积分）。
   validate <文件路径|->
       校验一个 Markdown 文件中所有 StrataBoard 卡片块（"-" 表示从 stdin 读）。
       全部通过退出码 0，任一失败退出码 1。
-  probe <代码> [--type <资产类型>=stock] [--source <数据源id>] [--days N=14]
-      探测某代码最近 N 天是否真有数据。--type custom 必须带 --source。
-  probe-fred <seriesId> [--days N=400]
-      探测某 FRED 系列最近 N 天是否有观测值。
+  probe <代码> [--type <资产类型>=custom] [--source <数据源id>] [--days N=14]
+      探测某代码最近 N 天是否真有数据。必须带 --source。
 `;
 
 function flagString(flags: ParsedArgs["flags"], name: string): string | undefined {
@@ -96,7 +90,7 @@ async function main(): Promise<void> {
   }
 
   // Vault resolution order: --vault flag > STRATABOARD_VAULT > walk up from
-  // cwd. Commands that need the vault resolve it lazily; validate/macro work
+  // cwd. Commands that need the vault resolve it lazily; validate works
   // anywhere (even outside a vault).
   const needVault = () => createVaultContext(flagString(args.flags, "vault") ?? process.env.STRATABOARD_VAULT);
 
@@ -112,9 +106,6 @@ async function main(): Promise<void> {
     }
     case "sources":
       out(listSources(needVault()));
-      break;
-    case "macro":
-      out(listMacroSeries({ query: flagString(args.flags, "query") }));
       break;
     case "validate": {
       const target = args._[1];
@@ -138,15 +129,6 @@ async function main(): Promise<void> {
         assetType: flagString(args.flags, "type"),
         sourceId: flagString(args.flags, "source"),
         days: flagInt(args.flags, "days", 14),
-      });
-      if (result.hint) process.stderr.write(`提示：${result.hint}\n`);
-      out(result);
-      break;
-    }
-    case "probe-fred": {
-      const result = await probeFred(needVault(), {
-        seriesId: args._[1] ?? "",
-        days: flagInt(args.flags, "days", 400),
       });
       if (result.hint) process.stderr.write(`提示：${result.hint}\n`);
       out(result);
