@@ -1,6 +1,6 @@
 import { Notice } from "obsidian";
 import type { CustomSourceDef, OhlcvRow, ParsedCardSpec, SymbolItem } from "../types";
-import { cacheAssetKey, isWholeTableSearchSource } from "../types";
+import { cacheAssetKey, isWholeTableSearchSource, resolveGroupApiKey } from "../types";
 import { resolveDateRange, formatDate, parseDateYmd, nextTradingDate, prevTradingDate } from "../utils/date";
 import { matchSymbolEntry } from "../utils/symbol-list";
 import { SqliteCache } from "./sqlite-cache";
@@ -12,9 +12,11 @@ import { t } from "../i18n";
 // returns its full symbol list and we filter locally. The list is cached per
 // source — a group-scoped search fans out to every member, and refetching a
 // multi-thousand-row table per source per keystroke would take seconds under
-// the global serial throttle. Settings saves clear the cache
-// (setCustomSources), so edited/re-imported sources refetch immediately.
-const WHOLE_TABLE_SEARCH_TTL_MS = 10 * 60 * 1000;
+// the global serial throttle. Symbol tables change slowly, so the TTL is a
+// day; settings saves still clear the cache (setCustomSources), so
+// edited/re-imported sources refetch immediately, and the import path warms
+// the cache right after importing.
+const WHOLE_TABLE_SEARCH_TTL_MS = 24 * 60 * 60 * 1000;
 // Cap on locally filtered remote results pushed into the suggest modal.
 const REMOTE_SEARCH_LIMIT = 200;
 
@@ -44,13 +46,14 @@ export class DataAdapter {
   }
 
   // Resolves the enabled CustomSourceDef behind a sourceId, or throws the
-  // guidance every custom-source path shares.
+  // guidance every custom-source path shares. The returned def carries the
+  // group-fallback apiKey (runtime-only, never persisted).
   private resolveCustomSource(sourceId: string | undefined): CustomSourceDef {
     const def = this.customSources.find((s) => s.id === sourceId && s.enabled);
     if (!def) {
       throw new Error(t("自定义数据源「{id}」不存在或已停用，请在设置页检查。", { id: sourceId ?? "" }));
     }
-    return def;
+    return { ...def, apiKey: resolveGroupApiKey(def, this.customSources) };
   }
 
   // Server-side quote search for a custom source, used by the unified search
@@ -144,14 +147,22 @@ export class DataAdapter {
     }
   }
 
-  private fetchOhlcv(spec: ParsedCardSpec, start: string, end: string): Promise<OhlcvRow[]> {
+  private async fetchOhlcv(spec: ParsedCardSpec, start: string, end: string): Promise<OhlcvRow[]> {
     // Custom sources return ready-mapped rows; format "csv" reads a
     // vault-local file instead of an HTTP endpoint.
     const def = this.resolveCustomSource(spec.sourceId);
     if (def.format === "csv") {
       return new CsvQuoteClient(def, this.readVaultFile).fetchKline(spec.symbol, start, end);
     }
-    return new CustomQuoteClient(def).fetchKline(spec.symbol, start, end);
+    // The classification the search endpoint declared for this code,
+    // persisted in the symbol cache when the user picked it — it outranks
+    // codeRules when resolving {p.*} params. Absent for hand-entered codes,
+    // which fall back to codeRules / source defaults.
+    const declaredProfile = await this.cache
+      .lookupSymbol(spec.symbol, cacheAssetKey("custom", def.id))
+      .then((item) => item?.profile)
+      .catch(() => undefined);
+    return new CustomQuoteClient(def).fetchKline(spec.symbol, start, end, undefined, declaredProfile);
   }
 
   private resample(rows: OhlcvRow[], freq: "W" | "M"): OhlcvRow[] {

@@ -50,7 +50,9 @@ export class RemoteQuoteSearchModal extends SuggestModal<SymbolItem> {
 
   renderSuggestion(item: SymbolItem, el: HTMLElement): void {
     el.createSpan({ text: `${item.name} (${item.symbol})` });
-    el.createSpan({ cls: "fc-symbol-meta", text: item.exchange });
+    // Declared-dead codes stay selectable but are marked — never silently
+    // removed from results.
+    el.createSpan({ cls: "fc-symbol-meta", text: [item.exchange, item.dead ? t("已知无行情") : ""].filter(Boolean).join(" · ") });
   }
 
   onChooseSuggestion(item: SymbolItem, _evt: MouseEvent | KeyboardEvent): void {

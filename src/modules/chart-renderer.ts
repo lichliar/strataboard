@@ -175,7 +175,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     const { spec, data } = this.options;
 
     if (data.length === 0) {
-      this.containerEl.createEl("div", {
+      this.containerEl.createDiv({
         cls: "strataboard-empty",
         text: t("暂无数据：{symbol} 在所选时间范围内没有数据。", { symbol: spec.symbol }),
       });
@@ -193,7 +193,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     this.applyThemeScope(isDark);
 
     this.chartStackEl!.style.height = `${this.options.height}px`;
-    this.chartContainerEl = this.chartStackEl!.createEl("div", {
+    this.chartContainerEl = this.chartStackEl!.createDiv({
       cls: "strataboard-chart-container",
     });
 
@@ -322,30 +322,30 @@ export class ChartRenderer extends MarkdownRenderChild {
     const isRise = change >= 0;
     const color = isRise ? this.options.riseColor : this.options.fallColor;
 
-    this.headerEl = this.containerEl.createEl("div", { cls: "strataboard-header" });
+    this.headerEl = this.containerEl.createDiv({ cls: "strataboard-header" });
 
-    const topRow = this.headerEl.createEl("div", { cls: "strataboard-header-top" });
+    const topRow = this.headerEl.createDiv({ cls: "strataboard-header-top" });
 
-    const titleWrap = topRow.createEl("div", { cls: "strataboard-header-title-wrap" });
-    const title = titleWrap.createEl("div", { cls: "strataboard-header-title" });
-    title.createEl("span", { cls: "strataboard-header-name", text: symbol?.name ?? this.options.spec.symbol });
+    const titleWrap = topRow.createDiv({ cls: "strataboard-header-title-wrap" });
+    const title = titleWrap.createDiv({ cls: "strataboard-header-title" });
+    title.createSpan({ cls: "strataboard-header-name", text: symbol?.name ?? this.options.spec.symbol });
     if (symbol?.enname) {
-      title.createEl("span", { cls: "strataboard-header-enname", text: ` · ${symbol.enname}` });
+      title.createSpan({ cls: "strataboard-header-enname", text: ` · ${symbol.enname}` });
     }
-    titleWrap.createEl("div", { cls: "strataboard-header-code", text: symbol?.tsCode ?? this.options.spec.symbol });
+    titleWrap.createDiv({ cls: "strataboard-header-code", text: symbol?.tsCode ?? this.options.spec.symbol });
 
-    const quoteRow = this.headerEl.createEl("div", { cls: "strataboard-header-quote" });
-    quoteRow.createEl("span", {
+    const quoteRow = this.headerEl.createDiv({ cls: "strataboard-header-quote" });
+    quoteRow.createSpan({
       cls: "strataboard-header-price",
       text: formatNumber(latest.close, 2),
       attr: { style: `color: ${color}` },
     });
-    quoteRow.createEl("span", {
+    quoteRow.createSpan({
       cls: "strataboard-header-change",
       text: `${change >= 0 ? "+" : ""}${formatNumber(change, 2)}`,
       attr: { style: `color: ${color}` },
     });
-    quoteRow.createEl("span", {
+    quoteRow.createSpan({
       cls: "strataboard-header-change-pct",
       text: `${change >= 0 ? "+" : ""}${formatPercent(changePct)}`,
       attr: { style: `color: ${color}` },
@@ -377,8 +377,8 @@ export class ChartRenderer extends MarkdownRenderChild {
   // ===== Footer: freq tabs + SVG tool buttons (wireframe #screen-card) =====
 
   private addFooter() {
-    const footerEl = this.containerEl.createEl("div", { cls: "strataboard-card-footer" });
-    this.periodTabsEl = footerEl.createEl("div", { cls: "strataboard-period-tabs" });
+    const footerEl = this.containerEl.createDiv({ cls: "strataboard-card-footer" });
+    this.periodTabsEl = footerEl.createDiv({ cls: "strataboard-period-tabs" });
     const freqs: { id: "D" | "W" | "M"; label: string }[] = [
       { id: "D", label: "日K" },
       { id: "W", label: "周K" },
@@ -397,7 +397,7 @@ export class ChartRenderer extends MarkdownRenderChild {
       });
     }
 
-    const tools = footerEl.createEl("div", { cls: "strataboard-card-tools" });
+    const tools = footerEl.createDiv({ cls: "strataboard-card-tools" });
     const addTool = (icon: string, tooltip: string, onClick?: () => void) => {
       const btn = tools.createEl("button", { cls: "strataboard-tool-btn" });
       setIcon(btn, icon);
@@ -425,7 +425,7 @@ export class ChartRenderer extends MarkdownRenderChild {
   // ===== Chart stack =====
 
   private addChartStack() {
-    this.chartStackEl = this.containerEl.createEl("div", { cls: "strataboard-chart-stack" });
+    this.chartStackEl = this.containerEl.createDiv({ cls: "strataboard-chart-stack" });
   }
 
   // ===== Series creation =====
@@ -611,7 +611,7 @@ export class ChartRenderer extends MarkdownRenderChild {
   // ===== Crosshair legend =====
 
   private addLegend(data: OhlcvRow[]) {
-    const legendEl = this.chartContainerEl!.createEl("div", {
+    const legendEl = this.chartContainerEl!.createDiv({
       cls: "strataboard-chart-legend",
     });
     this.legendEl = legendEl;
@@ -622,12 +622,12 @@ export class ChartRenderer extends MarkdownRenderChild {
     }
     const isCandle = this.options.chartType !== "line";
 
-    const dateEl = legendEl.createEl("span", { cls: "strataboard-chart-legend-date" });
+    const dateEl = legendEl.createSpan({ cls: "strataboard-chart-legend-date" });
     const mkItem = (label: string, labelColor?: string): HTMLElement => {
-      const wrap = legendEl.createEl("span", { cls: "strataboard-chart-legend-item" });
-      const labelEl = wrap.createEl("span", { cls: "strataboard-chart-legend-label", text: label });
+      const wrap = legendEl.createSpan({ cls: "strataboard-chart-legend-item" });
+      const labelEl = wrap.createSpan({ cls: "strataboard-chart-legend-label", text: label });
       if (labelColor) labelEl.style.color = labelColor;
-      return wrap.createEl("span", { cls: "strataboard-chart-legend-value" });
+      return wrap.createSpan({ cls: "strataboard-chart-legend-value" });
     };
 
     this.legendRefs = {
@@ -1040,7 +1040,7 @@ export async function exportChartPng(chart: IChartApi, name: string, header?: Ch
     // Clipboard unavailable: fall through to a file download.
   }
   const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
+  const anchor = createEl("a");
   anchor.href = url;
   anchor.download = `${name}-${formatDate(new Date())}.png`;
   anchor.click();
@@ -1072,12 +1072,12 @@ function composePng(chart: IChartApi, shot: HTMLCanvasElement, surfaceEl: HTMLEl
   let headerHeight = 0;
   if (hasHeader) {
     headerHeight = padTop + titleSize;
-    if (header!.subtitle) headerHeight += lineGap + subSize;
-    if (header!.quote && header!.quote.length > 0) headerHeight += lineGap + quoteSize;
+    if (header.subtitle) headerHeight += lineGap + subSize;
+    if (header.quote && header.quote.length > 0) headerHeight += lineGap + quoteSize;
     headerHeight += padBottom;
   }
 
-  const out = document.createElement("canvas");
+  const out = createEl("canvas");
   out.width = shot.width;
   out.height = Math.round(headerHeight * dpr) + shot.height;
   const ctx = out.getContext("2d");
@@ -1095,18 +1095,18 @@ function composePng(chart: IChartApi, shot: HTMLCanvasElement, surfaceEl: HTMLEl
     let y = padTop * dpr;
     ctx.font = `600 ${titleSize * dpr}px ${fontFamily}`;
     ctx.fillStyle = palette.text;
-    ctx.fillText(header!.title, padX * dpr, y, maxWidth);
+    ctx.fillText(header.title, padX * dpr, y, maxWidth);
     y += (titleSize + lineGap) * dpr;
-    if (header!.subtitle) {
+    if (header.subtitle) {
       ctx.font = `${subSize * dpr}px ${fontFamily}`;
       ctx.fillStyle = palette.muted;
-      ctx.fillText(header!.subtitle, padX * dpr, y, maxWidth);
+      ctx.fillText(header.subtitle, padX * dpr, y, maxWidth);
       y += (subSize + lineGap) * dpr;
     }
-    if (header!.quote && header!.quote.length > 0) {
+    if (header.quote && header.quote.length > 0) {
       ctx.font = `600 ${quoteSize * dpr}px ${fontFamily}`;
       let x = padX * dpr;
-      for (const seg of header!.quote) {
+      for (const seg of header.quote) {
         ctx.fillStyle = seg.color ?? palette.text;
         ctx.fillText(seg.text, x, y);
         x += ctx.measureText(seg.text).width + 12 * dpr;

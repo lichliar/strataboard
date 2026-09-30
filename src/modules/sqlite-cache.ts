@@ -97,10 +97,16 @@ export class SqliteCache {
         exchange TEXT,
         list_date TEXT,
         asset_type TEXT NOT NULL,
+        profile TEXT,
         refreshed_at TEXT NOT NULL,
         PRIMARY KEY (asset_type, ts_code)
       )
     `);
+    // Existing databases predate the profile column (the search endpoint's
+    // declared classification, persisted on pick).
+    try {
+      this.symbolsDb!.run("ALTER TABLE symbols ADD COLUMN profile TEXT");
+    } catch { /* column already present */ }
     this.symbolsDb!.run(`
       CREATE INDEX IF NOT EXISTS idx_symbols_search
       ON symbols(asset_type, symbol, name)
@@ -260,7 +266,7 @@ export class SqliteCache {
   // resolve their names later via lookupSymbol.
   async lookupSymbol(tsCode: string, assetType: string): Promise<SymbolItem | undefined> {
     const stmt = this.symbolsDb!.prepare(`
-      SELECT ts_code, symbol, name, enname, exchange, list_date, asset_type, refreshed_at
+      SELECT ts_code, symbol, name, enname, exchange, list_date, asset_type, profile, refreshed_at
       FROM symbols
       WHERE asset_type = ? AND ts_code = ?
     `);
@@ -283,6 +289,7 @@ export class SqliteCache {
       exchange: (r.exchange as string | undefined | null) ?? "",
       listDate: (r.list_date as string | undefined | null) ?? undefined,
       assetType: r.asset_type as AssetType,
+      profile: (r.profile as string | undefined | null) ?? undefined,
     };
   }
 
@@ -294,8 +301,8 @@ export class SqliteCache {
     const refreshedAt = new Date().toISOString();
     const insertStmt = db.prepare(`
       INSERT OR REPLACE INTO symbols
-      (ts_code, symbol, name, enname, exchange, list_date, asset_type, refreshed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (ts_code, symbol, name, enname, exchange, list_date, asset_type, profile, refreshed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const item of items) {
       insertStmt.run([
@@ -306,6 +313,7 @@ export class SqliteCache {
         item.exchange,
         item.listDate ?? null,
         cacheAssetKey(item.assetType, item.sourceId),
+        item.profile ?? null,
         refreshedAt,
       ]);
     }

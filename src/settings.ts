@@ -1,12 +1,13 @@
 import { App, Notice, PluginSettingTab, Setting, TFile } from "obsidian";
 import type StrataBoardPlugin from "./main";
 import type { CustomSourceDef, ToolbarEntryId, ToolbarPosition, ToolbarSourceId, ToolbarStyle } from "./types";
+import { isWholeTableSearchSource, resolveApiKeySource, sourceNeedsApiKey } from "./types";
 import { t, setLanguage, type Language } from "./i18n";
 import { FolderPathSelect } from "./ui/folder-suggester";
 import { CleanupConfirmModal } from "./ui/cleanup-modal";
 import { ConfirmModal } from "./ui/confirm-modal";
 import { TextInputModal } from "./ui/text-input-modal";
-import { AI_SOURCE_PROMPT, CUSTOM_FORMAT_LABELS, CustomSourceImportModal, CustomSourceModal } from "./ui/custom-source-modal";
+import { AI_SOURCE_PROMPT, CUSTOM_FORMAT_LABELS, CustomSourceImportModal, CustomSourceModal, mergeImportedSources } from "./ui/custom-source-modal";
 import { CsvSourceModal } from "./ui/csv-source-modal";
 import { MIN_REQUEST_INTERVAL_MS } from "./modules/http";
 import {
@@ -17,6 +18,7 @@ import {
 } from "./modules/maintenance";
 import { syncScriptSources, AI_SCRIPT_PROMPT } from "./modules/script-sources";
 import { renderAiGuide } from "./modules/ai-guide";
+import { openPluginSettings } from "./utils/obsidian-internals";
 
 // One-click MCP/CLI setup prompt (AI 辅助 tab): the user pastes it into
 // their own AI agent, which locates the vault itself and registers the MCP
@@ -179,16 +181,16 @@ let pendingTab: SettingsTabId | null = null;
 
 export function openSettingsTab(app: App, tab: SettingsTabId): void {
   pendingTab = tab;
-  // app.setting is not in the public d.ts but is the standard way plugins
-  // open the settings window.
-  const setting = (app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
-  setting?.open();
-  setting?.openTabById("strataboard");
+  openPluginSettings(app, "strataboard");
 }
 
 export class StrataBoardSettingTab extends PluginSettingTab {
   plugin: StrataBoardPlugin;
   private activeTab: SettingsTabId = "general";
+  // 数据源设置 groups render collapsed by default; expanded state lives on
+  // the tab instance so it survives re-renders within a session (but is not
+  // persisted to settings).
+  private expandedSourceGroups = new Set<string>();
 
   constructor(app: App, plugin: StrataBoardPlugin) {
     super(app, plugin);
@@ -295,7 +297,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         slider
           .setLimits(MIN_REQUEST_INTERVAL_MS, 2000, 50)
           .setValue(Math.max(MIN_REQUEST_INTERVAL_MS, this.plugin.pluginSettings.requestIntervalMs))
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.requestIntervalMs = value;
             await this.plugin.saveSettings();
@@ -310,7 +311,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
 
     const section = (title: string, body: string): HTMLElement => {
       const el = root.createDiv("fc-disclaimer-section");
-      el.createEl("h4", { text: t(title) });
+      new Setting(el).setName(t(title)).setHeading();
       el.createEl("p", { text: t(body) });
       return el;
     };
@@ -432,7 +433,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   private addCodeSnippet(container: HTMLElement, label: string, code: string): void {
     const block = container.createDiv("fc-code-snippet");
     const head = block.createDiv("fc-code-snippet-head");
-    head.createEl("span", { text: label });
+    head.createSpan({ text: label });
     const copyBtn = head.createEl("button", { text: t("复制") });
     copyBtn.addEventListener("click", () => {
       void navigator.clipboard.writeText(code).then(
@@ -467,10 +468,15 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       )
       .addButton((btn) =>
         btn.setButtonText(t("导入")).onClick(() => {
-          new CustomSourceImportModal(this.app, (defs) => {
-            this.plugin.pluginSettings.customSources.push(...defs);
+          new CustomSourceImportModal(this.app, (defs, warnings) => {
+            // Same-name entries overwrite in place (old id and apiKey are
+            // kept), so re-importing a corrected config never duplicates.
+            const { updated, added } = mergeImportedSources(this.plugin.pluginSettings.customSources, defs);
             void this.plugin.saveSettings().then(() => {
-              new Notice(t("导入成功：新增 {n} 个数据源。", { n: defs.length }));
+              new Notice(t("导入成功：更新 {updated} 个、新增 {added} 个数据源。", { updated, added }));
+              for (const warning of warnings.slice(0, 5)) new Notice(warning, 8000);
+              if (warnings.length > 5) new Notice(t("另有 {n} 条导入警告未显示。", { n: warnings.length - 5 }));
+              this.warmWholeTableSearchCache(defs);
               this.display();
             });
           }).open();
@@ -499,10 +505,26 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     ];
     for (const group of groupNames) {
       const members = sources.filter((s) => s.group === group);
+      // Groups render collapsed by default; the chevron toggles expansion
+      // (state kept on the tab instance for the session).
+      const expanded = this.expandedSourceGroups.has(group);
       new Setting(containerEl)
         .setClass("fc-source-group-header")
         .setName(group)
         .setDesc(t("数据源组 · {n} 个源", { n: members.length }))
+        .addExtraButton((btn) =>
+          btn
+            .setIcon(expanded ? "chevron-down" : "chevron-right")
+            .setTooltip(expanded ? t("收起分组") : t("展开分组"))
+            .onClick(() => {
+              if (this.expandedSourceGroups.has(group)) {
+                this.expandedSourceGroups.delete(group);
+              } else {
+                this.expandedSourceGroups.add(group);
+              }
+              this.display();
+            })
+        )
         .addButton((btn) =>
           btn.setButtonText(t("图标")).onClick(() => {
             const icons = this.plugin.pluginSettings.sourceGroupIcons;
@@ -525,12 +547,17 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         .addButton((btn) =>
           btn.setButtonText(t("重命名")).onClick(() => {
             new TextInputModal(this.app, t("重命名分组"), (name) => {
+              // Group names compare trimmed at key-resolution time; keep the
+              // stored name clean so a stray space can't cut a source off
+              // from its group's shared apiKey.
+              const trimmed = name.trim();
+              if (!trimmed || trimmed === group) return;
               for (const s of sources) {
-                if (s.group === group) s.group = name;
+                if (s.group === group) s.group = trimmed;
               }
               const icons = this.plugin.pluginSettings.sourceGroupIcons;
               if (icons[group]) {
-                icons[name] = icons[group];
+                icons[trimmed] = icons[group];
                 delete icons[group];
               }
               void this.plugin.saveSettings().then(() => this.display());
@@ -551,6 +578,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
               }).open();
             })
         );
+      if (!expanded) continue;
       for (const def of members) {
         this.renderCustomSourceRow(containerEl, def, groupNames, true);
       }
@@ -568,7 +596,14 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   ): void {
     const setting = new Setting(containerEl)
       .setName(def.name)
-      .setDesc(`${t(CUSTOM_FORMAT_LABELS[def.format])} · ${def.format === "csv" ? def.filePath ?? "" : def.klineUrl ?? ""}`);
+      .setDesc(
+        [
+          `${t(CUSTOM_FORMAT_LABELS[def.format])} · ${def.format === "csv" ? def.filePath ?? def.klineUrl ?? "" : def.klineUrl ?? ""}`,
+          this.describeApiKeySource(def),
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      );
     if (indented) setting.setClass("fc-source-group-member");
     setting.addDropdown((dropdown) => {
       dropdown.addOption("", t("未分组"));
@@ -579,7 +614,9 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       dropdown.setValue(def.group ?? "").onChange((value) => {
         if (value === NEW_SOURCE_GROUP) {
           new TextInputModal(this.app, t("新建分组"), (name) => {
-            def.group = name;
+            const trimmed = name.trim();
+            if (!trimmed) return;
+            def.group = trimmed;
             void this.plugin.saveSettings().then(() => this.display());
           }).open();
           return;
@@ -622,9 +659,34 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     );
   }
 
+  // Where the source's runtime apiKey comes from, for the row description:
+  // own entry, borrowed from a named group member, or missing even though
+  // the templates ask for one (a silent-401 trap worth surfacing).
+  private describeApiKeySource(def: CustomSourceDef): string | null {
+    const info = resolveApiKeySource(def, this.plugin.pluginSettings.customSources);
+    if (info.source === "self") return t("密钥：本条目");
+    if (info.source === "group") return t("密钥：复用自「{name}」", { name: info.donorName ?? "" });
+    if (def.group?.trim() && sourceNeedsApiKey(def)) return t("密钥：未找到（组内无已填密钥的启用源）");
+    return null;
+  }
+
+  // Warms the whole-table search cache for freshly imported enabled
+  // sources, so the first search after import doesn't stall on a cold
+  // multi-thousand-row fetch through the serial throttle. Fire-and-forget.
+  private warmWholeTableSearchCache(defs: CustomSourceDef[]): void {
+    for (const def of defs) {
+      if (!def.enabled || !isWholeTableSearchSource(def)) continue;
+      void this.plugin.dataAdapter?.searchRemoteQuotes(def.id, "").catch(() => undefined);
+    }
+  }
+
   private openCustomSourceModal(def?: CustomSourceDef): void {
-    new CustomSourceModal(this.app, def, (result) => this.upsertCustomSource(result), () =>
-      openSettingsTab(this.app, "external-ai")
+    new CustomSourceModal(
+      this.app,
+      def,
+      (result) => this.upsertCustomSource(result),
+      () => openSettingsTab(this.app, "external-ai"),
+      this.plugin.pluginSettings.customSources
     ).open();
   }
 
@@ -971,7 +1033,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         slider
           .setLimits(0, 100, 1)
           .setValue(this.plugin.pluginSettings.legendBackgroundOpacity)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.legendBackgroundOpacity = value;
             await this.plugin.saveSettings();
@@ -1030,7 +1091,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         slider
           .setLimits(0, 100, 1)
           .setValue(this.plugin.pluginSettings.gridOpacity)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.pluginSettings.gridOpacity = value;
             await this.plugin.saveSettings();

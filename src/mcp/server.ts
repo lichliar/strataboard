@@ -15,6 +15,7 @@ import {
   probeData,
   searchSymbols,
   validateCards,
+  validateConfig,
   type VaultContext,
 } from "../cli/commands";
 import { renderAiGuide } from "../modules/ai-guide";
@@ -47,7 +48,7 @@ function errorResult(e: unknown): JsonContent {
 // Adapts a commands.ts function to a tool handler: result objects go out as
 // JSON text (same shape the CLI prints); thrown errors become isError
 // results so the server process never dies on a bad call.
-function wrap<A>(fn: (args: A) => unknown | Promise<unknown>): (args: A) => Promise<JsonContent> {
+function wrap<A>(fn: (args: A) => unknown): (args: A) => Promise<JsonContent> {
   return async (args) => {
     try {
       return jsonResult(await fn(args));
@@ -119,6 +120,22 @@ async function main(): Promise<void> {
       },
     },
     wrap(({ code, assetType, sourceId, days }) => probeData(ctx, { code, assetType, sourceId, days }))
+  );
+
+  server.registerTool(
+    "validate_config",
+    {
+      description:
+        "导入前验证一个数据源配置 JSON 文件（数组）：逐源结构校验（含字段放错层级的警告），再对 testCode 与全部 symbols 实发请求探测（默认 400 天窗口，月频/季频序列也能验证；干净 0 行会自动加宽到约 10 年复核一次以区分退市与配置错误），配了搜索模板的源发一次搜索（查询词取自该源自己的 testCode/symbols；模板含 {p.*} 时还会加测一个搜索结果代码，覆盖「代码不在符号表」的场景）。密钥解析顺序：文件内（含同组回落）→ apiKeys/apiKey 参数注入（按组名 > 源名 > 全局兜底）→ vault 里同名或同组的已配源。失败条目带 reason 与原始响应片段（sample）。生成或修改数据源配置后、让用户导入前先调用它。",
+      inputSchema: {
+        file: z.string().describe("配置文件路径：绝对路径或 vault 相对路径（如 数据源配置.json）"),
+        days: z.number().int().positive().optional().describe("探测窗口天数，默认 400"),
+        apiKey: z.string().optional().describe("注入的 API 密钥（全局兜底；文件里不含密钥时使用）"),
+        apiKeys: z.record(z.string(), z.string()).optional().describe("按名注入的多把密钥：{\"组名或源名\": \"密钥\"}，组名 > 源名 > apiKey 全局兜底"),
+        structuralOnly: z.boolean().optional().describe("只做结构校验，不发任何网络请求"),
+      },
+    },
+    wrap(({ file, days, apiKey, apiKeys, structuralOnly }) => validateConfig(ctx, { file, days, apiKey, apiKeys, structuralOnly }))
   );
 
   server.registerTool(

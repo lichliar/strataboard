@@ -1,4 +1,4 @@
-import * as yaml from "js-yaml";
+import { parse, stringify } from "yaml";
 import { cacheAssetKey, type AssetType, type Freq, type ParsedCardSpec, type RangePreset, type VisibleRangePreset, type WidgetType } from "../types";
 import { isDateRangeString } from "../utils/date";
 
@@ -29,7 +29,7 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
   const normalizedSource = normalizeYamlSource(source);
   let parsed: unknown;
   try {
-    parsed = yaml.load(normalizedSource);
+    parsed = parse(normalizedSource);
   } catch (e) {
     return { ok: false, error: { message: `Invalid YAML: ${e instanceof Error ? e.message : String(e)}` } };
   }
@@ -227,7 +227,7 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
     if (spec.height != null && spec.height !== DEFAULT_CARD_HEIGHT) {
       obj.高度 = spec.height;
     }
-    return yaml.dump(obj, { lineWidth: -1, noRefs: true }).trim();
+    return stringify(obj, { lineWidth: 0, aliasDuplicateObjects: false }).trim();
   }
 
   if (spec.contentType === "widget" || spec.widgetType) {
@@ -241,7 +241,7 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
     if (spec.height != null && spec.height !== DEFAULT_CARD_HEIGHT) {
       obj.高度 = spec.height;
     }
-    return yaml.dump(obj, { lineWidth: -1, noRefs: true }).trim();
+    return stringify(obj, { lineWidth: 0, aliasDuplicateObjects: false }).trim();
   }
 
   const obj: Record<string, unknown> = {
@@ -322,7 +322,7 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
   if (spec.gridOpacity != null) {
     obj.网格透明度 = spec.gridOpacity;
   }
-  return yaml.dump(obj, { lineWidth: -1, noRefs: true }).trim();
+  return stringify(obj, { lineWidth: 0, aliasDuplicateObjects: false }).trim();
 }
 
 export function buildCardFrontmatter(spec: ParsedCardSpec): string {

@@ -4,6 +4,13 @@ import { TB_ICONS } from "./toolbar-icons";
 import { LOGO_SVG } from "./logo";
 import { SERIES_LINE_COLORS } from "./series-chart-renderer";
 import { appendSvg } from "../utils/dom";
+import {
+  openPluginSettings,
+  type CanvasLike,
+  type CanvasNodeLike,
+  type CanvasViewLike,
+  type MenuItemWithSubmenu,
+} from "../utils/obsidian-internals";
 import { t } from "../i18n";
 import type StrataBoardPlugin from "../main";
 import type { ToolbarEntryId, ToolbarSourceId } from "../types";
@@ -56,13 +63,13 @@ export class CanvasToolbar {
     if (this.activeLeaf === leaf) return;
     this.detach();
 
-    const view = leaf.view as any;
+    const view = leaf.view as CanvasViewLike;
     if (!view?.canvas) return;
 
     this.activeLeaf = leaf;
-    const container = view.containerEl as HTMLElement;
+    const container = view.containerEl;
     // The toolbar always renders on the hermes dark palette.
-    this.toolbarEl = container.createEl("div", { cls: "strataboard-toolbar fc-hermes" });
+    this.toolbarEl = container.createDiv({ cls: "strataboard-toolbar fc-hermes" });
 
     // Logo: brand mark from logo.ts (icon mode) or a horizontal "StrataBoard"
     // word mark (text mode); click to collapse/expand the toolbar (state
@@ -329,7 +336,7 @@ export class CanvasToolbar {
           // setSubmenu() is internal (absent from obsidian.d.ts) but is how
           // Obsidian itself nests menus (e.g. table row/column). Unlike an
           // onClick item, a submenu item keeps the parent menu open.
-          const submenu = (menuItem as any).setSubmenu() as Menu;
+          const submenu = (menuItem as MenuItemWithSubmenu).setSubmenu();
           submenu.setUseNativeMenu(false);
           this.addMenuItems(submenu, item.submenu);
         } else if (item.onClick) {
@@ -389,18 +396,19 @@ export class CanvasToolbar {
 
   // Gear: jump straight to this plugin's settings tab.
   private openSettings() {
-    const setting = (this.plugin.app as any).setting;
-    setting?.open();
-    setting?.openTabById(this.plugin.manifest.id);
+    openPluginSettings(this.plugin.app, this.plugin.manifest.id);
   }
 
   private async refreshAll() {
-    const view = this.activeLeaf?.view as any;
+    const view = this.activeLeaf?.view as CanvasViewLike | undefined;
     if (!view?.canvas) return;
 
     const libraryPath = this.plugin.pluginSettings.cardLibraryPath;
-    const nodes = Array.from(view.canvas.nodes.values()) as any[];
-    const cardNodes = nodes.filter((node) => node.filePath && node.filePath.startsWith(libraryPath + "/"));
+    const nodes = Array.from(view.canvas.nodes.values());
+    const cardNodes = nodes.filter(
+      (node): node is CanvasNodeLike & { filePath: string } =>
+        typeof node.filePath === "string" && node.filePath.startsWith(libraryPath + "/")
+    );
 
     if (cardNodes.length === 0) {
       new Notice(t("当前画布上没有金融卡片。"));
@@ -445,7 +453,7 @@ export class CanvasToolbar {
   }
 
   placeFileNode(file: TFile | string) {
-    const view = this.activeLeaf?.view as any;
+    const view = this.activeLeaf?.view as CanvasViewLike | undefined;
     if (!view?.canvas) {
       new Notice(t("当前没有激活的 Canvas 视图。"));
       return;
@@ -465,7 +473,7 @@ export class CanvasToolbar {
     // top of each other at the viewport center.
     const libraryPath = this.plugin.pluginSettings.cardLibraryPath;
     const cardCount = Array.from(canvas.nodes.values()).filter(
-      (node: any) => node.filePath && node.filePath.startsWith(libraryPath + "/")
+      (node) => node.filePath && node.filePath.startsWith(libraryPath + "/")
     ).length;
     const cascade = (cardCount % 8) * 40;
 
@@ -475,7 +483,7 @@ export class CanvasToolbar {
       size: { width: 800, height: 500 },
     };
 
-    let node;
+    let node: CanvasNodeLike | undefined;
     try {
       node = canvas.createFileNode?.(options);
     } catch (e) {
@@ -484,7 +492,7 @@ export class CanvasToolbar {
     }
 
     if (node) {
-      canvas.requestSave();
+      canvas.requestSave?.();
       this.fitNodeHeightToCard(node, canvas);
     } else {
       new Notice(t("在画布上放置卡片失败"));
@@ -500,7 +508,7 @@ export class CanvasToolbar {
   // largest measurement (grow-only, never shrink the user's node). Uses the
   // internal node.resize() (verified against app.asar), same as canvas'
   // own drag-resize.
-  private fitNodeHeightToCard(node: any, canvas: any) {
+  private fitNodeHeightToCard(node: CanvasNodeLike, canvas: CanvasLike) {
     const probe = () => {
       const cardEl = node.nodeEl?.querySelector(".strataboard-card") as HTMLElement | null;
       if (!cardEl) return;
@@ -508,8 +516,8 @@ export class CanvasToolbar {
       // scrollHeight still reports the natural content height.
       const contentHeight = cardEl.scrollHeight;
       if (contentHeight > node.height) {
-        node.resize({ width: node.width, height: contentHeight });
-        canvas.requestSave();
+        node.resize?.({ width: node.width, height: contentHeight });
+        canvas.requestSave?.();
       }
     };
     for (const delay of [80, 300, 800, 1600]) {

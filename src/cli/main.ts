@@ -15,26 +15,34 @@ import {
   probeData,
   searchSymbols,
   validateCards,
+  validateConfig,
 } from "./commands";
 import { ASSET_TYPES } from "../types";
 
 interface ParsedArgs {
   _: string[];
-  flags: Record<string, string | boolean>;
+  // A repeated flag collects all values into an array (e.g. --api-key).
+  flags: Record<string, string | boolean | string[]>;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
   const args: ParsedArgs = { _: [], flags: {} };
+  const put = (name: string, value: string | boolean) => {
+    const prev = args.flags[name];
+    if (prev === undefined) args.flags[name] = value;
+    else if (Array.isArray(prev)) prev.push(String(value));
+    else args.flags[name] = [String(prev), String(value)];
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith("--")) {
       const eq = a.indexOf("=");
       if (eq >= 0) {
-        args.flags[a.slice(2, eq)] = a.slice(eq + 1);
+        put(a.slice(2, eq), a.slice(eq + 1));
       } else if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
-        args.flags[a.slice(2)] = argv[++i];
+        put(a.slice(2), argv[++i]);
       } else {
-        args.flags[a.slice(2)] = true;
+        put(a.slice(2), true);
       }
     } else {
       args._.push(a);
@@ -65,11 +73,31 @@ const USAGE = `StrataBoard CLI — 供外部 AI 在不启动 Obsidian 的情况�
       全部通过退出码 0，任一失败退出码 1。
   probe <代码> [--type <资产类型>=custom] [--source <数据源id>] [--days N=14]
       探测某代码最近 N 天是否真有数据。必须带 --source。
+  validate-config <配置文件路径> [--days N=400] [--api-key <密钥|名称=密钥>]... [--api-key-file <json路径>] [--structural-only]
+      导入前验证一个数据源配置 JSON（数组）：逐源结构校验 + 对 testCode 与
+      全部 symbols 实发请求探测（默认 400 天窗口，--days 覆盖；干净 0 行会自动加宽到
+      约 10 年复核一次以区分退市与配置错误），配了搜索模板的源发一次搜索（模板含
+      {p.*} 时还会加测一个搜索结果代码，覆盖"代码不在符号表"的场景）。
+      密钥解析顺序：文件内（含同组回落）→ 注入 → vault 里同名或同组的已配源。
+      注入：--api-key 可重复，值是 <密钥>（全局兜底）或 <组名或源名>=<密钥>
+      （按组名 > 源名 > 全局兜底指派）；--api-key-file 读 {"组名或源名": "密钥"} JSON
+      （路径绝对或 vault 相对）；再兜底 STRATABOARD_API_KEY 环境变量。
+      --structural-only 只做结构校验、不发任何请求。
+      路径可以是绝对路径或 vault 相对路径。全部通过退出码 0，任一失败退出码 1。
 `;
 
 function flagString(flags: ParsedArgs["flags"], name: string): string | undefined {
   const v = flags[name];
   return typeof v === "string" && v !== "" ? v : undefined;
+}
+
+// All values of a repeatable flag (single value comes back as a one-element
+// list; boolean-only flags come back empty).
+function flagStrings(flags: ParsedArgs["flags"], name: string): string[] {
+  const v = flags[name];
+  if (typeof v === "string") return [v];
+  if (Array.isArray(v)) return v;
+  return [];
 }
 
 function flagInt(flags: ParsedArgs["flags"], name: string, def: number): number {
@@ -132,6 +160,43 @@ async function main(): Promise<void> {
       });
       if (result.hint) process.stderr.write(`提示：${result.hint}\n`);
       out(result);
+      break;
+    }
+    case "validate-config": {
+      const target = args._[1];
+      if (!target) throw new CliError("validate-config 需要一个配置文件路径（绝对路径或 vault 相对路径）。");
+      const ctx = needVault();
+      // Named key injections: "--api-key <key>" is the global fallback (the
+      // "" entry), "--api-key <组名或源名>=<key>" targets one group/source;
+      // --api-key-file merges a {"name": "key"} JSON object underneath.
+      const apiKeys: Record<string, string> = {};
+      const keyFile = flagString(args.flags, "api-key-file");
+      if (keyFile) {
+        const keyPath = path.isAbsolute(keyFile) ? keyFile : path.join(ctx.vault, keyFile);
+        if (!fs.existsSync(keyPath)) throw new CliError(`密钥文件不存在: ${keyPath}`);
+        try {
+          const parsed = JSON.parse(fs.readFileSync(keyPath, "utf8"));
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("必须是对象");
+          for (const [k, v] of Object.entries(parsed)) {
+            if (typeof v === "string" && v.trim()) apiKeys[k.trim()] = v.trim();
+          }
+        } catch (e) {
+          throw new CliError(`密钥文件不是合法 JSON（{"组名或源名": "密钥"}）: ${keyPath} — ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      for (const spec of flagStrings(args.flags, "api-key")) {
+        const eq = spec.indexOf("=");
+        if (eq > 0) apiKeys[spec.slice(0, eq).trim()] = spec.slice(eq + 1).trim();
+        else apiKeys[""] = spec.trim();
+      }
+      const result = await validateConfig(ctx, {
+        file: target,
+        days: flagInt(args.flags, "days", 400),
+        apiKeys: Object.keys(apiKeys).length > 0 ? apiKeys : undefined,
+        structuralOnly: Boolean(args.flags["structural-only"]),
+      });
+      out(result);
+      if (!result.ok) process.exitCode = 1;
       break;
     }
     default:

@@ -1,13 +1,15 @@
 import * as Papa from "papaparse";
 import type { CustomSourceDef, JsonSourceMap, OhlcvRow, SymbolListEntry } from "../types";
 import { normalizeJsonDate, parseMappedKline, resolveMapCode, splitCompositeCode } from "./quote-format-parsers";
+import { fetchSourceText } from "./custom-quote-client";
+import { resolveSymbolParams } from "../utils/symbol-list";
 import { t } from "../i18n";
 
 // Quote client for format "csv" custom sources: a vault-local CSV file
-// instead of an HTTP endpoint. `readFile` is injected (main.ts wires
-// app.vault.cachedRead) so the parsing layer stays obsidian-free and
-// node-exercisable. The whole file is re-read on every fetch — local reads
-// are cheap and the cache merge is idempotent, so there is no mtime logic.
+// (filePath, via the injected readFile — main.ts wires app.vault.cachedRead)
+// or a remote CSV/TSV endpoint (klineUrl, fetched like any HTTP source).
+// The whole payload is re-read on every fetch — reads are cheap and the
+// cache merge is idempotent, so there is no mtime logic.
 //
 // The header line keys every row as an object, so the shared jsonMap
 // machinery applies unchanged: def.jsonMap is { rowsPath: "", rowKind:
@@ -17,14 +19,16 @@ export class CsvQuoteClient {
   constructor(private def: CustomSourceDef, private readFile: (path: string) => Promise<string>) {}
 
   async fetchKline(code: string, start: string, end: string): Promise<OhlcvRow[]> {
-    if (!this.def.filePath) {
-      throw new Error(t("CSV 数据源「{name}」缺少文件路径配置。", { name: this.def.name }));
+    if (!this.def.filePath && !this.def.klineUrl) {
+      throw new Error(t("CSV 数据源「{name}」缺少文件路径或 URL 配置。", { name: this.def.name }));
     }
     if (!this.def.jsonMap) {
       throw new Error(t("CSV 数据源「{name}」缺少列映射配置。", { name: this.def.name }));
     }
-    const text = await this.readFile(this.def.filePath);
-    return parseCsvKline(text, this.def.jsonMap, splitCompositeCode(code).mapCode)
+    const text = this.def.filePath
+      ? await this.readFile(this.def.filePath)
+      : await fetchSourceText(this.def, code, start, end);
+    return parseCsvKline(text, this.def.jsonMap, splitCompositeCode(code).mapCode, resolveSymbolParams(this.def, code))
       .filter((row) => row.tradeDate >= start && row.tradeDate <= end);
   }
 }
@@ -49,10 +53,11 @@ export function parseCsvTable(text: string): CsvTable {
 // Pure CSV → OhlcvRow parse shared by the client, the setup wizard's 保存前
 // 测试解析, and node smoke tests. `code` resolves {code} placeholders in the
 // mapping (wide-table column pick); pass "" for fixed (OHLCV) mappings.
-// A blank close cell means "no data that day" (脚本产物契约) — the row is
-// dropped up front so Number("") can't parse it as a zero close.
-export function parseCsvKline(text: string, map: JsonSourceMap, code: string): OhlcvRow[] {
-  const resolved = resolveMapCode(map, code);
+// `params` resolves {p.<name>} placeholders the same way (symbol-level
+// column names). A blank close cell means "no data that day" (脚本产物契约) —
+// the row is dropped up front so Number("") can't parse it as a zero close.
+export function parseCsvKline(text: string, map: JsonSourceMap, code: string, params?: Record<string, string>): OhlcvRow[] {
+  const resolved = resolveMapCode(map, code, params);
   const closeCol = resolved.cols.close;
   const rows = parseCsvTable(text).rows.filter((r) => String(r[closeCol] ?? "").trim() !== "");
   return parseMappedKline(rows, { ...resolved, rowsPath: "", rowKind: "object" });

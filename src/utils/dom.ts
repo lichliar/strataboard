@@ -7,9 +7,7 @@ export function resolveEffectiveTheme(theme: ChartTheme): "dark" | "light" {
 }
 
 export function createContainer(className: string): HTMLDivElement {
-  const el = document.createElement("div");
-  el.className = className;
-  return el;
+  return createDiv({ cls: className });
 }
 
 /**

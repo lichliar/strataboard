@@ -48,7 +48,7 @@ export class WidgetRenderer extends MarkdownRenderChild {
   private renderIframe() {
     const src = this.resolveSrc();
     if (!src) {
-      this.containerEl.createEl("div", {
+      this.containerEl.createDiv({
         cls: "strataboard-empty",
         text: t("未配置 iframe URL 或 HTML 内容。"),
       });

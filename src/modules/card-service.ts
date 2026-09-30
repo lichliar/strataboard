@@ -140,7 +140,7 @@ export class CardService {
     for (const file of files) {
       try {
         const cache = this.options.app.metadataCache.getFileCache(file);
-        const storedKey = cache?.frontmatter?.["fc-key"];
+        const storedKey: unknown = cache?.frontmatter?.["fc-key"];
         // Legacy keys carried a `|range` suffix (dropped — see canonicalKey);
         // the prefix match keeps cards created before that fix reusable.
         if (typeof storedKey === "string" && (storedKey === key || storedKey.startsWith(`${key}|`))) {

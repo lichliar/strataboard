@@ -48,6 +48,7 @@ import type { AssetType, CustomSourceDef, OverlayCompareMode, OverlaySpec, Parse
 import { resolveDateRange, formatIsoDate, parseDateYmd } from "./utils/date";
 import { normalizePath } from "./utils/slug";
 import { onAttached } from "./utils/dom";
+import { getCanvasView, openPluginSettings, type CanvasNodeLike } from "./utils/obsidian-internals";
 import { t, setLanguage } from "./i18n";
 import { syncScriptSources } from "./modules/script-sources";
 import { ScriptManagerModal } from "./ui/script-manager-modal";
@@ -246,16 +247,15 @@ class QuoteCodeBlockRenderer extends MarkdownRenderChild {
     const nodeEl = this.findCanvasNodeEl();
     if (!nodeEl) return;
     new ConfirmModal(this.plugin.app, t("从画布中移除该卡片？卡片文件仍保留在卡片库中。"), () => {
-      const view = this.plugin.app.workspace.getActiveViewOfType(ItemView) as any;
-      const canvas = view?.canvas;
+      const canvas = getCanvasView(this.plugin.app)?.canvas;
       if (!canvas?.nodes) {
         new Notice(t("当前没有激活的 Canvas 视图。"));
         return;
       }
-      let target: any = null;
+      let target: CanvasNodeLike | null = null;
       for (const node of canvas.nodes.values()) {
         const el = node.nodeEl ?? node.el;
-        if (el === nodeEl || el?.contains?.(nodeEl)) {
+        if (el === nodeEl || el?.contains(nodeEl)) {
           target = node;
           break;
         }
@@ -303,7 +303,7 @@ class QuoteCodeBlockRenderer extends MarkdownRenderChild {
     });
 
     if (!this.result.ok) {
-      this.containerEl.createEl("div", {
+      this.containerEl.createDiv({
         text: t("错误：{msg}", { msg: this.result.error.message }),
         cls: "strataboard-error",
       });
@@ -314,7 +314,7 @@ class QuoteCodeBlockRenderer extends MarkdownRenderChild {
 
     // Placeholder while OHLCV data is fetched; ChartRenderer (or the error
     // path below) empties the container when done.
-    this.containerEl.createEl("div", {
+    this.containerEl.createDiv({
       cls: "strataboard-empty",
       text: t("正在加载数据：{symbol}…", { symbol: spec.symbol }),
     });
@@ -360,10 +360,10 @@ class QuoteCodeBlockRenderer extends MarkdownRenderChild {
       this.addChild(this.chartRenderer);
     } catch (e) {
       this.containerEl.empty();
-      const errorEl = this.containerEl.createEl("div", {
+      const errorEl = this.containerEl.createDiv({
         cls: "strataboard-empty strataboard-load-error",
       });
-      errorEl.createEl("div", {
+      errorEl.createDiv({
         text: t("加载数据失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }),
       });
       const retryBtn = errorEl.createEl("button", {
@@ -476,7 +476,7 @@ class WidgetCodeBlockRenderer extends MarkdownRenderChild {
     onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
 
     if (!this.result.ok) {
-      this.containerEl.createEl("div", {
+      this.containerEl.createDiv({
         text: t("错误：{msg}", { msg: this.result.error.message }),
         cls: "strataboard-error",
       });
@@ -539,7 +539,7 @@ class CalendarCodeBlockRenderer extends MarkdownRenderChild {
     onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
 
     if (!this.result.ok) {
-      this.containerEl.createEl("div", {
+      this.containerEl.createDiv({
         text: t("错误：{msg}", { msg: this.result.error.message }),
         cls: "strataboard-error",
       });
@@ -683,7 +683,7 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     this.containerEl.empty();
 
     if (!this.result.spec) {
-      this.containerEl.createEl("div", {
+      this.containerEl.createDiv({
         text: t("错误：{msg}", { msg: this.result.error ?? t("无效的卡片配置。") }),
         cls: "strataboard-error",
       });
@@ -703,7 +703,7 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
     // Placeholder while series data is fetched; SeriesChartRenderer (or the
     // error path below) empties the container when done.
-    this.containerEl.createEl("div", {
+    this.containerEl.createDiv({
       cls: "strataboard-empty",
       text: t("正在加载数据…"),
     });
@@ -838,10 +838,10 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
   private renderLoadError(e: unknown) {
     this.containerEl.empty();
-    const errorEl = this.containerEl.createEl("div", {
+    const errorEl = this.containerEl.createDiv({
       cls: "strataboard-empty strataboard-load-error",
     });
-    errorEl.createEl("div", {
+    errorEl.createDiv({
       text: t("加载数据失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }),
     });
     const retryBtn = errorEl.createEl("button", {
@@ -874,7 +874,7 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     this.containerEl.empty();
 
     if (!this.result.spec) {
-      this.containerEl.createEl("div", {
+      this.containerEl.createDiv({
         text: t("错误：{msg}", { msg: this.result.error ?? t("无效的卡片配置。") }),
         cls: "strataboard-error",
       });
@@ -892,7 +892,7 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       });
     });
 
-    this.containerEl.createEl("div", {
+    this.containerEl.createDiv({
       cls: "strataboard-empty",
       text: t("正在加载数据…"),
     });
@@ -962,10 +962,10 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
 
   private renderLoadError(e: unknown) {
     this.containerEl.empty();
-    const errorEl = this.containerEl.createEl("div", {
+    const errorEl = this.containerEl.createDiv({
       cls: "strataboard-empty strataboard-load-error",
     });
-    errorEl.createEl("div", {
+    errorEl.createDiv({
       text: t("加载数据失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }),
     });
     const retryBtn = errorEl.createEl("button", {
@@ -1041,8 +1041,7 @@ export default class StrataBoardPlugin extends Plugin {
       id: "open-settings",
       name: t("打开金融卡片设置"),
       callback: () => {
-        (this.app as any).setting.open();
-        (this.app as any).setting.openTabById(this.manifest.id);
+        openPluginSettings(this.app, this.manifest.id);
       },
     });
 
@@ -1227,7 +1226,7 @@ export default class StrataBoardPlugin extends Plugin {
     // the card library on every load; it now lives in 设置 → AI 辅助.
     void this.removeLegacyAiGuide();
 
-    this.attachToolbarToCanvas(this.app.workspace.activeLeaf);
+    this.attachToolbarToCanvas(this.app.workspace.getActiveViewOfType(ItemView)?.leaf ?? null);
   }
 
   onunload() {
@@ -1256,10 +1255,10 @@ export default class StrataBoardPlugin extends Plugin {
     // sources added later) still gets defaults, and the live settings never
     // share object references with DEFAULT_SETTINGS. Keys are filtered
     // against the known sources so dropped ones vanish.
-    const storedSources = stored?.toolbarSources ?? {};
+    const storedSources: Record<string, boolean> = stored?.toolbarSources ?? {};
     const knownSourceKeys = new Set<string>(Object.keys(DEFAULT_SETTINGS.toolbarSources));
     this.pluginSettings.toolbarSources = { ...DEFAULT_SETTINGS.toolbarSources };
-    for (const [key, value] of Object.entries(storedSources) as [string, boolean][]) {
+    for (const [key, value] of Object.entries(storedSources)) {
       if (knownSourceKeys.has(key)) {
         this.pluginSettings.toolbarSources[key as ToolbarSourceId] = value;
       }
@@ -1753,27 +1752,27 @@ export default class StrataBoardPlugin extends Plugin {
     const sourceNode = this.findCanvasNodeForPath(sourcePath);
     if (!sourceNode) return false;
 
-    const view = this.app.workspace.getActiveViewOfType(ItemView) as any;
-    if (!view?.canvas) return false;
+    const canvas = getCanvasView(this.app)?.canvas;
+    if (!canvas) return false;
 
-    const newNode = view.canvas.createFileNode({
+    const newNode = canvas.createFileNode?.({
       file,
       pos: { x: sourceNode.x + sourceNode.width + 50, y: sourceNode.y },
       size: { width: sourceNode.width, height: sourceNode.height },
     });
 
     if (newNode) {
-      view.canvas.requestSave();
+      canvas.requestSave?.();
       return true;
     }
     return false;
   }
 
   private findCanvasNodeForPath(sourcePath: string): { x: number; y: number; width: number; height: number } | null {
-    const view = this.app.workspace.getActiveViewOfType(ItemView) as any;
-    if (!view?.canvas) return null;
+    const canvas = getCanvasView(this.app)?.canvas;
+    if (!canvas) return null;
 
-    for (const node of view.canvas.nodes.values()) {
+    for (const node of canvas.nodes.values()) {
       if (node.filePath === sourcePath) {
         return {
           x: node.x ?? 0,
@@ -1792,12 +1791,12 @@ export default class StrataBoardPlugin extends Plugin {
   // attribute each chart-card renderer stamps on its container — synchronous,
   // because Menu.addItem is a no-op once the menu is shown.
   private detectCanvasCardType(file: TFile): string | null {
-    const view = this.app.workspace.getActiveViewOfType(ItemView) as any;
-    if (!view?.canvas?.nodes) return null;
-    for (const node of view.canvas.nodes.values()) {
+    const canvas = getCanvasView(this.app)?.canvas;
+    if (!canvas?.nodes) return null;
+    for (const node of canvas.nodes.values()) {
       if (node.filePath !== file.path) continue;
       const el = node.nodeEl ?? node.el;
-      return el?.querySelector?.("[data-strataboard-block]")?.getAttribute("data-strataboard-block") ?? null;
+      return el?.querySelector("[data-strataboard-block]")?.getAttribute("data-strataboard-block") ?? null;
     }
     return null;
   }

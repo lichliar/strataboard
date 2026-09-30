@@ -3,8 +3,11 @@
 // No obsidian imports, so they can be exercised from node.
 
 // Query-param names commonly carrying the search keyword; used to turn a
-// pasted full search URL into a {query} template.
-const SEARCH_QUERY_PARAMS = ["q", "query", "keyword", "keywords", "wd", "word", "input", "search", "key"];
+// pasted full search URL into a {query} template. "key" is deliberately
+// absent: bare key= holds a credential far more often than a keyword, and
+// API_KEY_PARAMS already claims it — a param listed in both would be
+// rewritten by whichever template ran first.
+const SEARCH_QUERY_PARAMS = ["q", "query", "keyword", "keywords", "wd", "word", "input", "search"];
 
 // Query-param names commonly carrying an API key/credential (compared
 // lowercased); their values become {apiKey} placeholders in the template and
@@ -38,15 +41,15 @@ function replaceDateTokens(url: string, pattern: RegExp, startToken: string, end
   if (matches.length === 0) return url;
   const replacements = new Map<number, string>();
   if (matches.length === 1) {
-    replacements.set(matches[0].index!, endToken);
+    replacements.set(matches[0].index, endToken);
   } else {
-    replacements.set(matches[0].index!, startToken);
-    replacements.set(matches[matches.length - 1].index!, endToken);
+    replacements.set(matches[0].index, startToken);
+    replacements.set(matches[matches.length - 1].index, endToken);
   }
   let out = "";
   let cursor = 0;
   for (const match of matches) {
-    const index = match.index!;
+    const index = match.index;
     const replacement = replacements.get(index);
     if (replacement === undefined) continue;
     out += url.slice(cursor, index) + replacement;

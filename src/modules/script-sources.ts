@@ -33,16 +33,45 @@ export const AI_SCRIPT_PROMPT = `我在用一个 Obsidian 插件（StrataBoard�
 // forcePaths — or when the file is deleted and re-created (seen entries whose
 // file no longer exists are pruned). Files that fail validation are NOT marked
 // seen — a half-written CSV gets retried by the next sync.
-export async function syncScriptSources(
+// Concurrent syncs (plugin load + a file-create event landing together) race
+// past the alreadyRegistered check — both see the source missing and both
+// push it. Serialize syncs on a module-level chain so the second caller
+// always observes the first one's registrations.
+let syncChain: Promise<unknown> = Promise.resolve();
+
+export function syncScriptSources(
+  plugin: StrataBoardPlugin,
+  forcePaths?: ReadonlySet<string>
+): Promise<string[]> {
+  const run = syncChain.then(() => syncScriptSourcesOnce(plugin, forcePaths));
+  syncChain = run.catch(() => {});
+  return run;
+}
+
+async function syncScriptSourcesOnce(
   plugin: StrataBoardPlugin,
   forcePaths?: ReadonlySet<string>
 ): Promise<string[]> {
   const outputDir = `${normalizePath(plugin.pluginSettings.scriptFolderPath)}/output`;
   const seen = new Set(plugin.pluginSettings.seenScriptOutputs);
-  const sources = plugin.pluginSettings.customSources;
   const registered: string[] = [];
   const existing = new Set<string>();
   let dirty = false;
+
+  // Self-heal settings duplicated by the old race (or by merging devices):
+  // keep the first copy of each script source id, drop the rest.
+  const seenScriptIds = new Set<string>();
+  const sources = plugin.pluginSettings.customSources.filter((s) => {
+    if (!s.id.startsWith("script:")) return true;
+    if (seenScriptIds.has(s.id)) {
+      console.warn(`[StrataBoard] dropping duplicate script source "${s.name}" (${s.id})`);
+      dirty = true;
+      return false;
+    }
+    seenScriptIds.add(s.id);
+    return true;
+  });
+  if (dirty) plugin.pluginSettings.customSources = sources;
 
   for (const file of plugin.app.vault.getFiles()) {
     if (file.extension !== "csv" || file.parent?.path !== outputDir) continue;

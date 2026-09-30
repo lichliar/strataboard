@@ -1,7 +1,7 @@
 import esbuild from "esbuild";
 import process from "process";
 import path from "path";
-import builtins from "builtin-modules";
+import { builtinModules } from "node:module";
 import { pluginDir } from "./scripts/deploy-target.mjs";
 
 const banner =
@@ -33,9 +33,10 @@ const context = await esbuild.context({
 		"@lezer/common",
 		"@lezer/highlight",
 		"@lezer/lr",
-		...builtins],
+		...builtinModules],
 	format: "cjs",
 	target: "es2022",
+	charset: "utf8",
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,

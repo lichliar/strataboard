@@ -1,5 +1,6 @@
 import { App, moment, normalizePath, Notice, TFile } from "obsidian";
 import { t } from "../i18n";
+import type { AppWithInternalPlugins } from "../utils/obsidian-internals";
 
 export interface DailyNotesConfig {
   folder: string;
@@ -25,7 +26,7 @@ export function resolveDailyNotesConfig(
 
 function readCoreDailyNotesOptions(app: App): { folder?: string; format?: string } {
   try {
-    const options = (app as any).internalPlugins?.plugins?.["daily-notes"]?.instance?.options;
+    const options = (app as AppWithInternalPlugins).internalPlugins?.plugins?.["daily-notes"]?.instance?.options;
     return {
       folder: typeof options?.folder === "string" ? options.folder : undefined,
       format: typeof options?.format === "string" ? options.format : undefined,

@@ -119,7 +119,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
 
     const lines = this.options.lines.filter((line) => line.points.length > 0);
     if (lines.length === 0) {
-      this.containerEl.createEl("div", {
+      this.containerEl.createDiv({
         cls: "strataboard-empty",
         text: t("暂无数据：所选系列在该时间范围内没有数据。"),
       });
@@ -131,18 +131,18 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     // the card's edit modal; export screenshots the chart to a PNG). Skipped
     // when no title is given.
     if (this.options.title) {
-      const headerEl = this.containerEl.createEl("div", { cls: "financial-series-chart-header" });
-      const mainEl = headerEl.createEl("div", { cls: "financial-series-chart-header-main" });
+      const headerEl = this.containerEl.createDiv({ cls: "financial-series-chart-header" });
+      const mainEl = headerEl.createDiv({ cls: "financial-series-chart-header-main" });
       // Long titles (an overlay card composes every series name — up to
       // MAX_OVERLAY_SERIES of them) are ellipsized in CSS; the full text
       // stays available on hover.
-      const titleEl = mainEl.createEl("span", { cls: "financial-series-chart-title", text: this.options.title });
+      const titleEl = mainEl.createSpan({ cls: "financial-series-chart-title", text: this.options.title });
       setTooltip(titleEl, this.options.title);
       if (this.options.subtitle) {
-        const subtitleEl = mainEl.createEl("div", { cls: "financial-series-chart-subtitle", text: this.options.subtitle });
+        const subtitleEl = mainEl.createDiv({ cls: "financial-series-chart-subtitle", text: this.options.subtitle });
         setTooltip(subtitleEl, this.options.subtitle);
       }
-      const actions = headerEl.createEl("div", { cls: "strataboard-header-actions" });
+      const actions = headerEl.createDiv({ cls: "strataboard-header-actions" });
       if (this.options.onEdit) {
         const editBtn = actions.createEl("button", { cls: "strataboard-header-btn" });
         setIcon(editBtn, "pencil");
@@ -166,10 +166,10 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
 
     // Chart stack: the inline height acts as the flex basis (same sizing
     // model as the quote chart card).
-    const stackEl = this.containerEl.createEl("div", { cls: "strataboard-chart-stack" });
+    const stackEl = this.containerEl.createDiv({ cls: "strataboard-chart-stack" });
     this.stackEl = stackEl;
     stackEl.style.height = `${this.options.height ?? DEFAULT_HEIGHT}px`;
-    this.chartContainerEl = stackEl.createEl("div", { cls: "strataboard-chart-container" });
+    this.chartContainerEl = stackEl.createDiv({ cls: "strataboard-chart-container" });
 
     const theme = this.options.theme ?? "auto";
     const isDark = resolveEffectiveTheme(theme) === "dark";
@@ -312,7 +312,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
   // ===== Crosshair legend =====
 
   private addLegend(lines: SeriesChartLine[]) {
-    const legendEl = this.chartContainerEl!.createEl("div", {
+    const legendEl = this.chartContainerEl!.createDiv({
       cls: "strataboard-chart-legend",
     });
     this.legendEl = legendEl;
@@ -321,18 +321,18 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     if (!this.options.legendFrosted) {
       legendEl.addClass("strataboard-chart-legend-plain");
     }
-    this.legendDateEl = legendEl.createEl("span", { cls: "strataboard-chart-legend-date" });
+    this.legendDateEl = legendEl.createSpan({ cls: "strataboard-chart-legend-date" });
 
     this.legendLines = lines.map((line) => {
-      const wrap = legendEl.createEl("span", { cls: "strataboard-chart-legend-item" });
-      const labelEl = wrap.createEl("span", {
+      const wrap = legendEl.createSpan({ cls: "strataboard-chart-legend-item" });
+      const labelEl = wrap.createSpan({
         cls: "strataboard-chart-legend-label",
         text: line.name,
       });
       // Labels are colored to match their lines, so each line is
       // identifiable from the legend.
       labelEl.style.color = line.color!;
-      const valueEl = wrap.createEl("span", { cls: "strataboard-chart-legend-value" });
+      const valueEl = wrap.createSpan({ cls: "strataboard-chart-legend-value" });
       return { points: line.points, valueEl };
     });
 

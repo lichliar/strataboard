@@ -11,7 +11,7 @@ export interface RequestUrlParam {
   contentType?: string;
   body?: string | ArrayBuffer;
   headers?: Record<string, string>;
-  throw?: boolean;
+  throwOnHttpError?: boolean;
 }
 
 export interface RequestUrlResponse {
@@ -23,7 +23,7 @@ export interface RequestUrlResponse {
 }
 
 // Drop-in for Obsidian's requestUrl on top of global fetch (Node 18+).
-// Obsidian semantics: non-2xx throws unless `throw: false`.
+// Obsidian semantics: status >= 400 throws unless throwOnHttpError: false.
 export async function requestUrl(param: RequestUrlParam): Promise<RequestUrlResponse> {
   const headers: Record<string, string> = { ...(param.headers ?? {}) };
   if (param.contentType && !Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
@@ -53,7 +53,7 @@ export async function requestUrl(param: RequestUrlParam): Promise<RequestUrlResp
     json,
     text,
   };
-  if (param.throw !== false && (res.status < 200 || res.status >= 300)) {
+  if (param.throwOnHttpError !== false && res.status >= 400) {
     throw new Error(`Request to ${param.url} failed with status ${res.status}: ${text.slice(0, 300)}`);
   }
   return out;

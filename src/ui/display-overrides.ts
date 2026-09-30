@@ -52,7 +52,6 @@ export function renderDisplayOverrideSettings(
     setting.addSlider((s) => {
       s.setLimits(0, 100, 1)
         .setValue(state[field] ?? placeholder)
-        .setDynamicTooltip()
         .onChange((value) => {
           state[field] = value;
         });

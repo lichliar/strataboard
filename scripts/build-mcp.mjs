@@ -16,6 +16,7 @@ await esbuild.build({
   platform: "node",
   format: "cjs",
   target: "node18",
+  charset: "utf8",
   alias: {
     obsidian: path.join(repoRoot, "src/cli/obsidian-shim.ts"),
   },

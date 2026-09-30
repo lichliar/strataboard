@@ -1,4 +1,4 @@
-import * as yaml from "js-yaml";
+import { parse, stringify } from "yaml";
 import {
   ASSET_TYPES,
   type AssetType,
@@ -16,8 +16,8 @@ import { parseExpression } from "./expression";
 import { t } from "../i18n";
 
 // Parse/serialize for the overlay (资产叠加) and spread (差值计算) card
-// specs. These live outside ParsedCardSpec and are parsed with js-yaml
-// directly, using English keys.
+// specs. These live outside ParsedCardSpec and are parsed with the `yaml`
+// package directly, using English keys.
 
 export interface SeriesSpecParseResult<T> {
   spec?: T;
@@ -183,7 +183,7 @@ export function parseSpreadSpec(source: string): SeriesSpecParseResult<SpreadSpe
 }
 
 export function stringifyOverlaySpec(spec: OverlaySpec): string {
-  return yaml.dump({
+  return stringify({
     series: spec.series,
     range: spec.range,
     ...(spec.period && spec.period !== "D" ? { period: spec.period } : {}),
@@ -196,11 +196,11 @@ export function stringifyOverlaySpec(spec: OverlaySpec): string {
     ...displayOverridesYaml(spec),
     ...(spec.viewStart ? { viewStart: spec.viewStart } : {}),
     ...(spec.viewEnd ? { viewEnd: spec.viewEnd } : {}),
-  }).trimEnd();
+  }, { lineWidth: 0, aliasDuplicateObjects: false }).trimEnd();
 }
 
 export function stringifySpreadSpec(spec: SpreadSpec): string {
-  return yaml.dump({
+  return stringify({
     expression: spec.expression,
     series: spec.series,
     range: spec.range,
@@ -215,14 +215,14 @@ export function stringifySpreadSpec(spec: SpreadSpec): string {
     ...displayOverridesYaml(spec),
     ...(spec.viewStart ? { viewStart: spec.viewStart } : {}),
     ...(spec.viewEnd ? { viewEnd: spec.viewEnd } : {}),
-  }).trimEnd();
+  }, { lineWidth: 0, aliasDuplicateObjects: false }).trimEnd();
 }
 
 // Returns the parsed YAML object, or an error message string.
 function parseYamlMap(source: string): Record<string, unknown> | string {
   let parsed: unknown;
   try {
-    parsed = yaml.load(source.replace(/\r\n?/g, "\n"));
+    parsed = parse(source.replace(/\r\n?/g, "\n"));
   } catch (e) {
     return t("YAML 解析失败：{msg}", { msg: e instanceof Error ? e.message : String(e) });
   }
