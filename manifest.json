@@ -1,7 +1,7 @@
 {
 	"id": "strataboard",
 	"name": "StrataBoard",
-	"version": "0.6.0",
+	"version": "0.7.0",
 	"minAppVersion": "1.7.2",
 	"description": "Insert financial data cards onto Canvas: quotes, macro series, overlays and widgets",
 	"author": "izzy",
