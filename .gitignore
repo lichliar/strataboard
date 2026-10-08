@@ -11,7 +11,9 @@ sql-wasm.wasm
 # Local-only reference material, not part of the plugin (see AGENTS.md)
 app.js
 .od-skills/
-# Raw screen recordings; the README uses the converted docs/videos/*.mp4
+# Raw screen recordings; the README/docs use the converted docs/gifs/*.gif
 录频/
 # Local media tooling (ffmpeg-static), not part of the plugin
 .tools/
+AGENTS.md
+docs/dev/

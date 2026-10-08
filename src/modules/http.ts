@@ -71,6 +71,16 @@ export class HttpStatusError extends Error {
   }
 }
 
+// A 200 response whose body is an HTML page (doctype/<html> at the head) is
+// never data: it is a WAF/gateway interstitial or a dead domain's landing
+// page. Clients expecting JSON/text data use this to fail with a named cause
+// instead of silently parsing zero rows. Leading whitespace is tolerated;
+// plain-text payloads (tencent's v_hint search, CSV) don't start with a tag.
+const HTML_INTERSTITIAL_RE = /^\s*(?:<!doctype\s+html|<html[\s>])/i;
+export function looksLikeHtmlInterstitial(text?: string): boolean {
+  return !!text && HTML_INTERSTITIAL_RE.test(text);
+}
+
 export async function httpRequest(params: HttpRequestOptions): Promise<RequestUrlResponse> {
   const options = withDefaultHeaders(params);
   const attempts = 1 + Math.max(0, options.retry ?? 1);

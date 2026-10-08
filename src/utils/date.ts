@@ -16,6 +16,14 @@ export function formatIsoDate(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+// "YYYY-MM-DD HH:mm" in local time — the 最近运行 stamp of script outputs.
+export function formatDateTime(ms: number): string {
+  const date = new Date(ms);
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${formatIsoDate(date)} ${hh}:${mm}`;
+}
+
 export function parseDateYmd(ymd: string): Date {
   return new Date(
     parseInt(ymd.slice(0, 4), 10),
@@ -101,6 +109,10 @@ export function getFreqName(freq: Freq): string {
       return "weekly";
     case "M":
       return "monthly";
+    case "Q":
+      return "quarterly";
+    case "Y":
+      return "yearly";
     case "D":
     default:
       return "daily";

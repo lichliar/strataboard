@@ -18,6 +18,7 @@ import type { JsonRowCandidate } from "../modules/quote-format-parsers";
 import { autoDetectSearchFormat, fetchKlineSample } from "../modules/custom-quote-client";
 import { autoTemplateSearchUrl, autoTemplateUrl, extractApiKey } from "../utils/url-template";
 import { parseSymbolList, resolveSymbolParams, stringifySymbolList } from "../utils/symbol-list";
+import { applyInfoDescs } from "./info-desc";
 import { t } from "../i18n";
 
 // Setup dialog for one user-defined custom data source (设置页 → 自定义数据源).
@@ -26,13 +27,15 @@ import { t } from "../i18n";
 // auto-detects the response format (腾讯/东方财富 presets or a guessed
 // generic-JSON mapping). While ADDING a source the layout is two sections
 // on one page; editing an existing source shows only the first one:
-//   1. 配置 — URL first (pasting one auto-fills name / sample code / API
-//      key), then 名称 / API Key and the probe status with its 检测连接
-//      button; rarely-touched inputs (请求方式 / 请求体 / 示例代码 / 鉴权
+//   1. 配置 — 名称 first, then K线接口地址 (pasting one auto-fills name /
+//      sample code / API key) and API Key, then the probe status with its
+//      检测连接 button; rarely-touched inputs (请求方式 / 请求体 / 示例代码 / 鉴权
 //      Header / 兼容模式 / 搜索 URL / 代码表) live under 高级选项, the manual
 //      field mapping under 字段映射（可选）(auto-opens when a generic-JSON
 //      source parses nothing). A failed probe offers 复制报错 — a copyable
-//      error report for the user's AI — in edit mode too.
+//      error report for the user's AI — in edit mode too. Field descriptions
+//      render as hover-only info icons (applyInfoDescs), not text under the
+//      field name.
 //   2. AI 辅助设置 — a single jump button to the settings tab's AI 辅助
 //      page, which now hosts both the MCP/CLI one-click setup and the
 //      AI_SOURCE_PROMPT guided prompt (the plugin has no built-in
@@ -54,33 +57,37 @@ export const CUSTOM_FORMAT_LABELS: Record<CustomSourceDef["format"], string> = {
 // to the plugin through the MCP server or CLI (list_sources / probe_data /
 // ...), so instead of just "find me an endpoint" it walks the user through
 // the whole setup — including telling them plainly when the plugin has no
-// matching adapter and pointing them at the 脚本处理 CSV route instead. It
+// matching adapter and pointing them at the 本地脚本 CSV route instead. It
 // deliberately names no concrete endpoints — the user's own AI picks one,
 // keeping the plugin a pure data-access framework. The EN translation
 // lives in i18n.ts under this exact string as key; keep the two in sync.
 export const AI_SOURCE_PROMPT = `你将帮我为 Obsidian 插件 StrataBoard 配置一个「自定义数据源」。插件不内置任何数据源，所有数据都来自用户自行配置的 REST/JSON 接口或 vault 内 CSV 文件。你已通过 MCP server 或 CLI 接入该插件（可用工具：list_sources / search_symbols / probe_data / validate_cards / validate_config）。请按以下流程一步步引导我，每步先跟我确认再往下走：
 
-1. 先问清楚我想要什么：想配置哪个平台/来源的数据、具体标的/指标、频率、需要的字段（开高低收还是单值序列）；同时确认该平台是否需要 API key/token——如果需要，先告诉我申请方式，等我把可用的 key 直接发给你之后再带着它继续配置（key 由我自己保管，不要写进任何会分享出去的配置）。
-2. 用 list_sources 查我已配置的自定义源，用 search_symbols 查本地代码库。如果已有源已覆盖我的需求，直接告诉我用哪个源建卡即可，不要新建数据源。
-3. 确需新源时，帮我找一个无需登录、可直接访问的 JSON REST 接口，并用我提供的 key（如有）实际请求验证它能返回数据。优先官方或有公开文档的 API；不要使用未公开文档的抓取端点。
-4. 核对该接口是否落在插件的适配范围内。插件只支持：
-   - GET 请求（所有参数在 URL query 中）或 POST 请求（默认 JSON 请求体，自动带 Content-Type: application/json；配 bodyEncoding: "form" 时按表单编码发送——所有占位符值 URL 编码、自动带 Content-Type: application/x-www-form-urlencoded）；可选一个鉴权 Header（apiKeyHeader），值用 {apiKey} 占位；另有可选的 headers 字段可配任意静态请求头（如 {"Content-Type": "application/x-www-form-urlencoded"}、Referer 等），值同样可用 {apiKey} 占位，与鉴权 Header 并存、同名时鉴权 Header 优先。请求默认 30 秒超时，网络错误/超时会自动重试一次；
-   - 响应为 JSON；常见的按代码返回 K 线的行情格式会被自动识别，其它 JSON 必须能指出「数据行数组的路径 + 每行的日期列与数值列」（日期支持 ISO 日期时间、YYYYMMDD、时间戳、YYYYMM 月频（如 202409，落到当月最后一天）、YYYYQn 季频（如 2024Q4，落到季末最后一天））；
-   - 「列名数组 + 数据行数组」的两段式响应（如 data.fields + data.items）也支持：rowKind 用 "fields"，cols 填列名；
-   - 行容器还有两种：「以日期为键的对象」用 rowKind "map"（rowsPath 指向该对象，cols.date 填 "$key" 取键名，标量值列填 "$value"）；「列式平行数组」用 rowKind "columns"（rowsPath 指向列式对象，cols 每个值填该列数组相对 rowsPath 的路径；标量列视为单行序列，适合快照/单点端点）。rowKind "object" 的列名支持点号路径取嵌套字段（如 "quote.close"）；
-   - 数值列自动清洗千分位、货币符（$€£¥）与首尾空白；尾部 % 按 jsonMap.percentScale 缩放（默认 1 保持字面数，100 使 "1.5%" → 0.015）。close 为 null/空串的行会被跳过——缺失值不会被当作 0；
-   - 接口把业务错误放在 200 响应里时，可以用 errorPath / errorMessagePath 指明错误字段与消息字段（默认该字段值为 0/空/null 视为成功；若接口用 200、"ok" 等表示成功，在 jsonMap 里加 okValues 白名单，如 "okValues": [200]）；
-   - 占位符：{code} 证券代码、{start}/{end} 为 YYYYMMDD 起止日期、{startIso}/{endIso} 为 YYYY-MM-DD 起止日期、{startTs}/{endTs} 为秒级 Unix 时间戳起止、{apiKey} 密钥、{p.<变量名>} 符号级参数（URL 与请求体模板通用，字段映射 cols 的值里也可用）、{offset} 翻页偏移（仅配了 paginate/searchPaginate 的端点用）；{p.*} 的取值顺序：被请求代码在 symbols 代码表里的 params → 该代码 profile 指向的源级档位 profiles →（代码不在代码表时）该代码搜索来源端点声明的 profile 档位（选中搜索结果时插件会把端点声明记进本地代码库，之后取数直接引用）→ 没有声明时才轮到 codeRules 第一条 match 正则命中的档位 → 源级 params 默认 → 都没有则请求在本地直接报错（不会把 {p.*} 字面量发给服务器）；请求体是 JSON 时，取值为空串的 {p.*} 会把该键整个从请求体里删掉（合并源里某个接口要省略范围/可选参数就靠这个，如某接口不能带 start/end 则给它的符号配空串参数），非 JSON 请求体则保持空串。请求体里的占位符一律不 URL 编码；
-   - 搜索接口（可选，但有就强烈建议配置）：GET 搜索接口配 searchUrl（搜索词用 {query} 占位，{apiKey} 等鉴权占位符同样可用）；接口为 POST 时改配 searchBodyTemplate（搜索请求体模板，可用 {query} 与 {apiKey} 占位，URL 取 searchUrl、未配则复用 klineUrl）；接口只能整表返回、不支持按关键词查询时，配一个不含 {query} 的搜索模板即可，插件会拉回整表后本地过滤（结果有缓存，不会每次搜索都重新请求）；整表接口被服务端限制单页行数时（如 Tushare 单接口 8000 行封顶），给该端点配 paginate（{"pageSize": 单页行数, "maxPages": 可选上限，默认 20, "totalPath": 可选，响应里声明总数的点号路径}）并在 URL/请求体模板里放 {offset} 占位符，插件会自动翻页直到某页返回不足 pageSize 行；主搜索端点（searchUrl/searchBodyTemplate）要翻页时配源级 searchPaginate（形状相同）；触顶 maxPages 或实取数少于 totalPath 声明总数时视为截断：validate-config 直接判该源搜索不通过（search.ok=false），确认截断可接受时给对应 paginate/searchPaginate 加 "allowTruncated": true 显式豁免（降级为警告）；某个搜索端点返回的代码都属于同一类别时（如专查行业指数的接口），给该端点声明 profile——主端点配源级 searchProfile、searches 数组里的端点配各自的 profile 字段，声明的档位优先于 codeRules（有声明用声明，没声明才用正则），选中搜索结果时插件会把声明记进本地代码库，之后取数稳定走对应接口。响应格式需与 K 线接口一致（同一 format）。json 格式时在 jsonMap 里加 searchRowsPath（搜索结果数组的点号路径）与 searchCols（{"code":"代码列","name":"名称列","market":"可选"}——rowKind 为 object 填字段名，array 填从 0 开始的列序号，fields 填列名或列序号）；
-   - 固定报表宽表（一个 URL 返回整张表、每列一个序列）也支持：把列名当作代码，字段映射中用 {code} 选列。需要「URL 参数与列名分离」时用复合代码 urlCode@mapCode：@ 前半填进 URL/请求体模板的 {code}，@ 后半只替换字段映射 cols 里的 {code}（如 LPR 宽表配 symbols 代码 "LPR_1Y@1y"：请求不带有效代码，取数时选中 1y 列）；不带 @ 的普通代码同时填两处；
-   - K 线接口单次返回有硬上限时，配源级 paginate（{"pageSize": 单页行数, "maxPages": 可选上限默认 20, "totalPath": 可选，响应里声明总数的点号路径}）并在 URL/请求体模板里放 {offset} 占位符，插件自动翻页直到某页返回不足 pageSize 行；触顶 maxPages 或 totalPath 声明总数大于实取数时视为截断：validate-config 探测直接判失败，确认可接受时给 paginate 加 "allowTruncated": true 显式豁免（降级为警告）；
-   - format "csv" 除了 vault 内文件（filePath）也可以填 klineUrl 指向远程 CSV/TSV（GET 拉回文本，解析与本地 CSV 相同；两者二选一）；
-   - 个别站点在 Obsidian 默认网络栈（Electron HTTP/2）下连接失败时，可以开 transport: "node"（改用 Node https 发送）。已知需要的站点：api.stlouisfed.org（FRED）；接口在 Obsidian 里报 HTTP/2、PROTOCOL_ERROR 类错误时优先怀疑这种情况。node 传输只支持 https——明文 http 的自建/内网服务请改用默认传输（去掉 transport: "node"）；
-5. 如果接口不符合以上任一形态（需要登录 Cookie、返回 HTML/XML、需要多页拼装、请求体不是 JSON 等），插件的自定义数据源无法适配——请明确告诉我「该接口插件不支持」，并建议改用「脚本处理」：写一个 Python 脚本把数据输出为 CSV，插件会自动注册为 CSV 数据源（脚本编写提示词在 插件设置 → AI 辅助 →「提示词：编写数据处理脚本」）。注意 K 线数据量大致使单页返回不全时：优先在 URL/请求体模板里直接指定足够大的 pageSize/页大小参数；接口有页码/偏移参数的，按第 4 点配源级 paginate + {offset} 翻页；都不行的走脚本处理（整表搜索接口另有端点级 paginate 翻页，见第 4 点）。
-6. 适配可行时产出最终配置。如果这个平台能取的数据很多（如 tushare、fred 这类一个密钥覆盖大量指标的），不要只配我当下点名的那一项：把插件适配形态能覆盖的常用数据尽量一次配齐。同一个来源尽量合并为一个数据源条目：能用同一个 URL/请求体模板覆盖的数据全部放进这一个源——即使只是「接口名/指标名」这类请求参数不同（如 Tushare 的 api_name）也不要拆源，把该参数做成符号级参数：模板里写 {p.api_name}，symbols 每条代码带 "params": {"api_name": "对应的接口名"}，取数时按被请求的代码自动填入。列名不同的接口同样能合：cols 的值也支持 {p.*}（如 cols.date 写 "{p.date}"，月频符号带 "date":"month"、季频符号带 "date":"quarter"；外汇符号带 "close":"bid_close"）。多个符号共用同一份参数组合时不要逐条重复：在源级 profiles 里定义「档位」（"profiles": {"档位名": {"变量名":"值", ...}}），symbols 条目带 "profile": "档位名" 引用（取值顺序：符号 params → 档位 → 源级 params，逐键覆盖）。搜索发现、不在代码表里的代码（如用户随手搜到的指数/基金）无法逐条配 params：只要代码形态能用正则区分（如指数代码都以 IDX 开头、转债以 11/12 开头），就配 codeRules（[{"match": "^IDX", "profile": "ind"}]，按序匹配、第一条命中的规则把该档位的参数并入，叠加在源级 params 之上），否则这类代码会拿源级默认接口取数、返回「成功但 0 行」。某接口需要省略请求体里的可选参数（如不能带 start/end 范围参数，带了会被真实过滤）时，给它的符号把对应参数配成空串——JSON 请求体里取值为空串的 {p.*} 会把该键整个删掉。两个兜底规则必须遵守：① 源配了远程搜索时，务必再配一份源级默认 params（如 "params": {"api_name": "daily"}）——搜索挑出来的代码不在代码表里，只能靠源级默认取值；② 平台有多个查代码接口时，用 searches 数组全挂上（[{"bodyTemplate":"..."}]，默认与主 searchUrl/searchBodyTemplate 共享 searchRowsPath/searchCols 映射，结果合并去重；某个接口返回结构不同——比如列名不叫 name——就在该端点里单独配 searchRowsPath/searchCols 覆盖；被服务端限制单页行数的整表接口配 paginate + {offset} 占位符；不需要的接口可标 "enabled": false 跳过），合并源不能以牺牲搜索覆盖面为代价。平台上已知取不到行情的代码（已退市、接口明确不覆盖的族）配 deadCodes 正则列表（如 ["^395"]）：validate-config 跳过它们的探测、不判红，搜索结果里标注「已知无行情」但不剔除——不要假装它们能画，也不要为了过校验把它们塞进 symbols 代码表。名称直接用平台名（如 Tushare、FRED），并用 symbols 代码表把可用代码/指标尽量列全（代码 + 中文名称），让我之后按名称挑选，而不是逐个来问我。另外，如果平台提供查代码/指标的接口（GET 关键词搜索或 POST 基础信息表都算），务必一并配置 searchUrl 或 searchBodyTemplate——没有远程搜索，插卡时的搜索框只能查本地代码表，代码表之外的标的完全搜不到；接口只能整表返回时配不含 {query} 的模板让插件本地过滤，不要用 symbols 塞全量码表代替搜索。只有端点 URL、请求方式（GET/POST）或响应结构确实不同时才拆成多个条目——不要按数据类别随意拆分（如不要拆出「Tushare 股票」「Tushare 指数」一堆源，能合则合）。确实需要拆成多个条目时，给同一平台拆出的所有条目填上相同的 group 字段（用平台名，如 "Tushare"）：插件会把同组的源在插入菜单和搜索框里折叠为一个分组入口，搜索时对组内所有源联合查询，我就不会面对一长串源列表；且同组条目的密钥只需在任意一个条目里填一次，其余条目 apiKey 留空即自动复用组内密钥。最终配置的交付方式二选一：
-   a. 简单情况（单个 GET 接口、格式可自动识别）：给一个完整、可直接访问的 URL（含真实证券代码和起止日期）+ URL 中实际使用的代码。我会把 URL 粘贴到插件「添加数据源」弹窗，插件自动生成模板并检测格式；
-   b. 其它情况（POST、宽表、手工字段映射，或一次配置多个条目）：把完整配置 JSON（一个数组）写入 vault 内的一个 .json 文件（如 vault 根目录下的 数据源配置.json），并把文件路径告诉我，我会在 插件设置 → 数据源设置 → 导入 里选择该文件导入——不要把 JSON 贴在对话里让我复制，手动粘贴容易丢格式。配置字段：name（名称）、group（可选，数据源分组名：同组的源在插入菜单/统一搜索里折叠为一个分组入口并联合搜索，同一平台拆出的多个条目填同一个平台名，且同组只需一个条目填 apiKey）、icon（可选，该源在插入菜单里显示的自定义 SVG 图标源码，留空则用颜色圆点）、format（"tencent"|"eastmoney"|"json"|"csv"——csv 时 filePath 本地文件或 klineUrl 远程 CSV/TSV 二选一）、klineUrl（URL 模板）、method（"GET"|"POST"，默认 GET）、bodyTemplate（POST 请求体模板，支持同一套占位符）、bodyEncoding（可选，"form"：POST 按表单编码发送，占位符值 URL 编码；默认 json）、headers（可选，静态请求头 {"头名":"值"}，值可用 {apiKey} 占位）、transport（"node"，可选）、paginate（可选，K 线翻页 {"pageSize": 正整数, "maxPages": 可选默认 20, "totalPath": 可选, "allowTruncated": 可选，true 表示接受截断、validate-config 降级为警告而非判失败}，模板需含 {offset}）、testCode（示例代码）、searchUrl（可选，GET 搜索 URL 模板，{query} 占位）、searchBodyTemplate（可选，POST 搜索请求体模板，{query} 与 {apiKey} 占位，URL 取 searchUrl、未配则复用 klineUrl；不含 {query} 表示整表返回、插件本地过滤）、jsonMap（{"rowsPath":"数据行数组的点号路径，顶层即数组则空串","rowKind":"object|array|fields|map|columns（map：rowsPath 是以日期为键的对象，cols.date 填 \"$key\"；columns：rowsPath 是列式平行数组对象，cols 填各列数组路径）","fieldsPath":"rowKind 为 fields 时的列名数组路径","cols":{"date":"必填","close":"必填","open/high/low/vol":"没有则空串"},"errorPath":"可选","errorMessagePath":"可选","okValues":"可选，errorPath 的成功值白名单，如 [200]","percentScale":"可选，数值列尾部 % 的缩放，默认 1（100 使 \"1.5%\" → 0.015）","searchRowsPath":"可选，搜索结果数组的点号路径，配了 searchUrl 或 searchBodyTemplate 才需要","searchCols":"可选，{"code","name"，market 可选}，rowKind 为 object 填字段名、array 填列序号、fields 填列名或列序号"}）、symbols（可选，代码表 [{"code","name","profile","params"}]：params 为可选的符号级模板变量 {"变量名":"值"}，取该代码时填充模板与 cols 里的 {p.变量名}，如 {"api_name":"daily"}；profile 为可选的档位名，引用源级 profiles 里的一份共享参数组合；复合代码 "urlCode@mapCode" 用于宽表选列）、params（可选，源级默认模板变量 {"变量名":"值"}，符号条目的 params 优先；模板含 {p.*} 且配了远程搜索时必填——搜索到的代码不在代码表里，靠它兜底）、profiles（可选，符号级参数的共享档位 {"档位名":{"变量名":"值"}}，symbols 条目用 profile 字段引用，取值顺序：符号 params → 档位 → 源级 params）、codeRules（可选，代码形态规则 [{"match":"正则","profile":"档位名"}]：只对【不在 symbols 代码表里】的代码生效——如搜索发现的代码；按序匹配，第一条命中的规则把对应档位并入源级 params 之上；端点声明的 profile 优先于 codeRules——有声明用声明，没声明才用正则；混合表形态不可正则区分时仍用 symbols 逐条 params）、searchPaginate（可选，主搜索端点 searchUrl/searchBodyTemplate 的翻页 {"pageSize": 正整数, "maxPages": 可选默认 20, "totalPath": 可选, "allowTruncated": 可选}，模板需含 {offset}）、searchProfile（可选，主搜索端点 searchUrl/searchBodyTemplate 返回代码的类别档位名：选中搜索结果时记入本地代码库，取数时优先于 codeRules）、deadCodes（可选，已知无行情代码的正则列表，如 ["^395"]：validate-config 跳过探测不判红，搜索结果标注「已知无行情」不剔除）、searches（可选，额外搜索端点数组 [{"url","bodyTemplate","profile","searchRowsPath","searchCols","paginate","enabled"}]：url 缺省复用 klineUrl，有 bodyTemplate 即 POST；profile 可选，声明该端点返回代码的类别档位（选中结果时记入本地代码库，优先于 codeRules）；searchRowsPath/searchCols 可选，覆盖源级 jsonMap 的搜索映射（接口返回结构不同时用）；paginate 可选，{"pageSize": 正整数, "maxPages": 可选, "totalPath": 可选, "allowTruncated": 可选} 配合模板里的 {offset} 占位符自动翻页；enabled 可选，false 跳过该端点；未覆盖的字段与主搜索共享，结果合并去重）。注意 @ 只用于宽表选列（@ 后半替换 cols 里的 {code}，且仅当 cols 含 {code} 时才生效），不要把 @ 当「同码不同参数」的去重后缀用——那种需求用符号级 params/profile 表达。文件里不要包含 apiKey 字段，密钥我在插件里单独填。导入按名称去重：同名条目会覆盖更新（保留原 id 和已填密钥），所以之后修正配置时把整个数组重导一遍即可，不用手动删旧源。
-7. 配置 JSON 写好后、让我导入前，先调用 validate_config（file 传配置文件路径）做导入前验证：它会逐源做结构校验（字段放错层级会给警告），并对每个源的 testCode 与全部 symbols 实发请求探测（默认 400 天窗口，月频/季频接口也能验证，可用 days 参数覆盖；窗口内干净 0 行时会自动加宽到约 10 年复核一次——加宽后有数据说明标的可能已退市/停更而非配置错误，会在 note 字段说明且不算失败；探测计数里的 missingClose（close 为空被跳过的行数）即使探测成功也会升为 warning；truncated（疑似翻页截断）默认直接判探测失败，对应 paginate 配了 allowTruncated: true 才降级为 warning；deadCodes 命中的代码跳过探测，note 注明、不判红），配了搜索模板的源还会发一次搜索（查询词自动取自该源自己的 testCode/symbols，结果里有 query 字段；搜索响应里因缺 code/name 被丢弃的行数会在 skippedRows 字段给出并附警告——skippedRows 很大通常意味着该端点的 searchCols 列名与实际不符；搜索翻页被截断时 search.ok=false、search.truncated 给出实取数/声明总数，配了 allowTruncated: true 才降级为警告）；模板含 {p.*} 的源还会加测一个搜索结果的代码（这类代码不在代码表里，专门覆盖符号级参数缺失的场景，via="search"）；配了 codeRules/searchProfile/searches 端点 profile 的源还会做接线审计（结果在 search.audit）：对搜索到的代码离线统计未命中任何规则的形态清单（unmatchedTop）、同时命中多条规则的重叠（overlaps）、端点声明与规则命中不一致的冲突（conflicts），并按档位抽样 1 个代码实发请求验证——审计给出的警告要逐条处理（补规则/修声明/加 deadCodes），不要无视。交付文件不含密钥也能验证：密钥按 文件内（含同组回落）→ 参数注入 → vault 里同名/同组已配源 的顺序解析，结果里的 apiKeySource 标明每个源的密钥实际来自哪里（self/group/injected/vault/none）；多个平台多把密钥时用 apiKeys 参数按名注入（{"组名或源名": "密钥"}，组名 > 源名 > apiKey 全局兜底；CLI 侧是 --api-key 组名=密钥，可重复，或 --api-key-file 传 JSON 文件）。若有失败条目，按返回的 reason（列名拼错会直接点名是哪个列名、并列出响应实际字段；0 行且代码不在代码表、未命中 codeRules、也没有端点声明的 profile 时 reason 会指明「可能不在默认接口的覆盖范围内」——此时该补 codeRules、端点 profile 声明或符号级 params/profile，而不是改字段映射）与 sample（原始响应片段）分析原因、修正配置后重新验证，全部通过再让我导入。我保存或导入后，用 list_sources 找到新源的 id，再用 probe_data（assetType="custom", sourceId=<id>, code=<示例代码>）做端到端复核（0 行时读 hint / dropped 字段里的原因），把结果告诉我。
+1. 先问清楚需求：哪个平台/来源的数据、具体标的/指标、频率、需要的字段（开高低收还是单值序列）；确认是否需要 API key——需要就先告诉我申请方式，等我把可用的 key 发给你之后再继续（key 由我保管，不要写进任何会分享出去的配置）。
+2. 用 list_sources 查我已配置的源、search_symbols 查本地代码库。已有源能覆盖需求就直接告诉我用哪个源建卡，不要新建。
+3. 确需新源时，找一个无需登录、可直接访问的 JSON REST 接口，用我提供的 key（如有）实际请求验证能返回数据。优先官方或有公开文档的 API，不使用未公开文档的抓取端点。
+4. 核对该接口是否在插件适配范围内。插件只支持：
+   - GET（参数在 URL query）或 POST（默认 JSON 请求体、自动带 Content-Type: application/json；bodyEncoding: "form" 时按表单编码，占位符值 URL 编码）；可选 apiKeyHeader 鉴权头（值用 {apiKey} 占位）与 headers 静态请求头（值同样可用 {apiKey} 占位，同名时 apiKeyHeader 优先）。默认 30 秒超时，网络错误/超时自动重试一次；
+   - JSON 响应。常见行情格式自动识别；其它 JSON 需能指出「数据行数组的路径 + 每行的日期列与数值列」（日期支持 ISO 日期时间、YYYYMMDD、时间戳、YYYYMM 月频、YYYYQn 季频——后两者落到周期末最后一天）。行容器 rowKind 五种：object（每行对象，cols 填字段名，支持点号嵌套如 "quote.close"）/ array（每行数组，cols 填从 0 开始的列序号）/ fields（列名数组 + 数据行数组两段式，列名数组路径填 fieldsPath，cols 填列名）/ map（以日期为键的对象，cols.date 填 "$key"、标量值列填 "$value"）/ columns（列式平行数组，cols 填各列数组相对路径，标量列视为单行序列）；
+   - 数值列自动清洗千分位、货币符（$€£¥）与首尾空白，尾部 % 按 jsonMap.percentScale 缩放（默认 1，100 使 "1.5%" → 0.015）；close 为 null/空串的行跳过，不当作 0；
+   - 业务错误放在 200 响应里时用 errorPath / errorMessagePath 透传（默认该字段 0/空/null 为成功；用 200、"ok" 等表示成功时加 okValues 白名单，如 "okValues": [200]）；
+   - 占位符（URL、请求体模板、cols 值通用）：{code} 代码、{start}/{end} YYYYMMDD 起止、{startIso}/{endIso} YYYY-MM-DD 起止、{startTs}/{endTs} 秒级 Unix 时间戳起止、{apiKey} 密钥、{p.<变量名>} 符号级参数、{offset} 翻页偏移（仅配 paginate/searchPaginate 的端点用）。{p.*} 取值顺序：symbols 代码表中该代码的 params → 该代码 profile 指向的源级档位 →（代码不在代码表时）其搜索来源端点声明的 profile 档位 →（无声明时）codeRules 第一条 match 正则命中的档位 → 源级默认 params → 都没有则本地报错（字面量绝不发给服务器）。请求体里的占位符不 URL 编码；JSON 请求体中取值为空串的 {p.*} 会把该键整个删掉（某接口要省略可选/范围参数就靠它）；
+   - 搜索接口（可选，但有就强烈建议配）：GET 配 searchUrl（{query} 占位，{apiKey} 等也可用）；POST 配 searchBodyTemplate（{query}/{apiKey} 占位，URL 取 searchUrl、未配复用 klineUrl）；模板不含 {query} 表示整表返回、插件拉回本地过滤（结果有缓存）。整表接口被服务端限制单页行数时给该端点配 paginate（{"pageSize": 单页行数, "maxPages": 可选默认 20, "totalPath": 可选，响应里声明总数的点号路径, "allowTruncated": 可选}）并在模板里放 {offset}，自动翻页到某页不足 pageSize 行；主搜索端点（searchUrl/searchBodyTemplate）翻页配源级 searchPaginate（形状相同）；触顶 maxPages 或实取数少于声明总数视为截断，validate-config 判不通过——确认可接受时给对应配置加 "allowTruncated": true 降级为警告。端点返回的代码同属一个类别时声明其 profile（主端点配源级 searchProfile、searches 端点配各自 profile 字段）——声明优先于 codeRules，选中结果时记入本地代码库，之后取数稳定走对应接口。搜索响应格式与 K 线接口一致（同一 format）；json 格式时在 jsonMap 里配 searchRowsPath（结果数组点号路径）与 searchCols（{"code","name","market" 可选}——object 填字段名、array 填列序号、fields 填列名或序号）；
+   - 固定报表宽表（一个 URL 返回整表、每列一个序列）：列名当代码，cols 里用 {code} 选列；URL 参数需与列名分离时用复合代码 urlCode@mapCode（@ 前半进模板的 {code}，@ 后半只替换 cols 里的 {code}，如 "LPR_1Y@1y"；仅当 cols 含 {code} 时生效），普通代码同时填两处；
+   - K 线接口单次返回有硬上限时配源级 paginate（形状同上）+ 模板 {offset}，截断判定与豁免同上；
+   - format "csv"：filePath（vault 内文件）或 klineUrl（远程 CSV/TSV）二选一；
+   - 个别站点在 Obsidian 默认网络栈（Electron HTTP/2）下连接失败时开 transport: "node"（改用 Node https；报 HTTP/2、PROTOCOL_ERROR 类错误时优先怀疑这种情况）。只支持 https，明文 http 服务用默认传输；
+5. 接口不符合以上任一形态（需要登录 Cookie、返回 HTML/XML、需要多页拼装、请求体非 JSON 等）就是插件不支持——直接告诉我，并建议改用「本地脚本」：Python 脚本把数据输出为 CSV，插件自动注册为数据源（脚本编写提示词在 设置 → AI 辅助 →「提示词：编写数据处理脚本」）。K 线数据量大致使单页返回不全时：优先在模板里直接指定足够大的 pageSize 参数，其次按第 4 点配 paginate 翻页，都不行才走脚本。
+6. 适配可行时产出最终配置。原则：
+   - 平台能取的数据很多时（一个密钥覆盖大量指标），不要只配我点名的那一项：插件适配形态能覆盖的常用数据尽量一次配齐；
+   - 同一来源尽量合并为一个源：只是请求参数（接口名/指标名）或列名不同的接口不要拆源，把差异做成符号级参数——模板里写 {p.<变量名>}，symbols 每条代码带 "params": {"变量名": "值"}（cols 的值也支持 {p.*}，如 cols.date 写 "{p.date}"）；多个符号共用同一份参数组合时，在源级 profiles 定义档位（{"档位名": {"变量名":"值"}}），symbols 条目带 "profile": "档位名" 引用（取值顺序：符号 params → 档位 → 源级 params，逐键覆盖）；
+   - 搜索发现、不在代码表里的代码无法逐条配 params：代码形态能用正则区分就配 codeRules（[{"match": "正则", "profile": "档位名"}]，只对不在代码表的代码生效，按序匹配，命中即把该档位并入源级 params 之上），否则这类代码会拿源级默认接口取数、返回「成功但 0 行」；形态不可正则区分时仍用 symbols 逐条 params；
+   - 两个兜底必须遵守：① 配了远程搜索就必须配源级默认 params（搜索挑出的代码不在代码表里，只能靠它取值）；② 平台有多个查代码接口时用 searches 数组全挂上（[{"url","bodyTemplate","profile","searchRowsPath","searchCols","paginate","enabled"}]，url 缺省复用 klineUrl、有 bodyTemplate 即 POST，未覆盖字段与主搜索共享，结果合并去重），合并源不能以牺牲搜索覆盖面为代价；
+   - 平台上已知取不到行情的代码（已退市、接口明确不覆盖的族）配 deadCodes 正则列表（如 ["^395"]）：validate-config 跳过探测不判红，搜索结果标注「已知无行情」不剔除——不要为了过校验把它们塞进 symbols；
+   - 名称直接用平台名；symbols 代码表把可用代码/指标尽量列全（代码 + 中文名称），让我按名称挑选；平台提供查代码/指标的接口就务必配 searchUrl 或 searchBodyTemplate——没有远程搜索，插卡搜索框只能查本地代码表；接口只能整表返回时配不含 {query} 的模板让插件本地过滤，不要用 symbols 塞全量码表代替搜索；
+   - 只有端点 URL、请求方式或响应结构确实不同时才拆成多个条目；同平台拆出的条目填相同 group（平台名）：插入菜单和搜索框折叠为一个分组入口、组内联合搜索，且同组只需任意一个条目填 apiKey；
+   - 交付方式二选一：a. 简单情况（单个 GET 接口、格式可自动识别）：给一个完整、可直接访问的 URL（含真实代码和起止日期）+ URL 中实际使用的代码，我粘贴到「添加数据源」弹窗，插件自动生成模板并检测格式；b. 其它情况：把完整配置 JSON（一个数组）写入 vault 内的一个 .json 文件（如 vault 根目录下的 数据源配置.json）并告诉我文件路径，我在 设置 → 数据源设置 → 导入 里选择该文件导入——不要把 JSON 贴在对话里让我复制。配置字段：name（名称）、group（可选，分组名）、icon（可选，插入菜单里的自定义 SVG 图标源码，留空用颜色圆点）、format（"tencent"|"eastmoney"|"json"|"csv"）、klineUrl（URL 模板）、method（"GET"|"POST"，默认 GET）、bodyTemplate（POST 请求体模板）、bodyEncoding（可选 "form"）、headers（可选，{"头名":"值"}）、transport（可选 "node"）、paginate（可选，K 线翻页 {"pageSize": 正整数, "maxPages": 可选默认 20, "totalPath": 可选, "allowTruncated": 可选}，模板需含 {offset}）、testCode（示例代码）、searchUrl（可选，GET 搜索模板，{query} 占位）、searchBodyTemplate（可选，POST 搜索请求体模板，URL 取 searchUrl、未配复用 klineUrl；不含 {query} 表示整表返回本地过滤）、jsonMap（{"rowsPath":"数据行数组点号路径，顶层即数组则空串","rowKind":"object|array|fields|map|columns","fieldsPath":"rowKind 为 fields 时的列名数组路径","cols":{"date":"必填","close":"必填","open/high/low/vol":"没有则空串"},"errorPath":"可选","errorMessagePath":"可选","okValues":"可选，如 [200]","percentScale":"可选，默认 1","searchRowsPath":"可选","searchCols":"可选，{"code","name"，market 可选}"}）、symbols（可选，代码表 [{"code","name","profile","params"}]）、params（可选，源级默认模板变量；模板含 {p.*} 且配了远程搜索时必填）、profiles（可选，符号级参数共享档位）、codeRules（可选，[{"match":"正则","profile":"档位名"}]）、searchPaginate（可选，主搜索端点翻页）、searchProfile（可选，主搜索端点返回代码的类别档位）、deadCodes（可选，已知无行情代码正则列表）、searches（可选，额外搜索端点数组）。注意 @ 只用于宽表选列，「同码不同参数」用符号级 params/profile 表达，不要拿 @ 当去重后缀。文件里不要包含 apiKey 字段，密钥我在插件里单独填。导入按名称去重：同名条目覆盖更新（保留原 id 和已填密钥），修正配置时把整个数组重导一遍即可。
+7. 配置写好、让我导入前，先调用 validate_config（file 传配置文件路径）做导入前验证：逐源结构校验（字段放错层级会警告）+ 对每个源的 testCode 与全部 symbols 实测取数（默认 400 天窗口，days 参数覆盖；干净 0 行自动加宽到约 10 年复核——加宽后有数据说明标的可能已退市/停更而非配置错误，note 注明、不算失败；missingClose 即使探测成功也升为 warning；truncated 默认判失败，对应 paginate 配了 allowTruncated: true 才降级为 warning；deadCodes 命中的代码跳过探测不判红）+ 搜索模板试发（查询词取自源自己的 testCode/symbols；skippedRows 很大通常说明 searchCols 列名与实际不符；模板含 {p.*} 的源加测一个搜索结果代码，via="search"）+ 接线审计（配了 codeRules/searchProfile/searches 端点 profile 的源，结果在 search.audit：unmatchedTop 未命中形态 / overlaps 规则重叠 / conflicts 声明冲突，并按档位抽样实测——审计警告逐条处理，不要无视）。密钥按 文件内（含同组回落）→ 参数注入 → vault 同名/同组已配源 的顺序解析，apiKeySource 标明来源（self/group/injected/vault/none）；多把密钥用 apiKeys 参数按名注入（{"组名或源名": "密钥"}，组名 > 源名 > apiKey 全局兜底；CLI 侧是 --api-key 名=密钥，可重复，或 --api-key-file 传 JSON 文件）。失败条目按 reason（列名拼错会直接点名并列出响应实际字段；0 行且代码不在代码表、未命中 codeRules、也没有端点声明的 profile 时，reason 会指明「可能不在默认接口的覆盖范围内」——此时该补 codeRules、端点 profile 声明或符号级 params/profile，而不是改字段映射）与 sample（原始响应片段）分析原因、修正后重新验证，全部通过再让我导入。导入后用 list_sources 找到新源 id，再用 probe_data（assetType="custom", sourceId=<id>, code=<示例代码>）端到端复核（0 行时读 hint / dropped 字段），把结果告诉我。
 
 用我使用的语言与我交流，发现插件能力边界时直接说清楚，不要绕弯子。`;
 
@@ -126,7 +133,7 @@ const AI_ERROR_PROMPT = `我在给一个 Obsidian 插件配置自定义行情数
 其中 {code} 会被替换为证券代码，{start}/{end} 为 YYYYMMDD 起止日期，{startIso}/{endIso} 为 YYYY-MM-DD 起止日期，{apiKey} 为密钥占位符。请求方式：{method}。
 用示例代码 {sample} 实际请求时报错：{error}
 
-请分析报错原因，给出修正建议（URL 模板、请求方式、请求体模板、占位符、鉴权方式；个别站点在 Obsidian 默认网络栈下连接失败时——已知如 api.stlouisfed.org——可开启兼容模式 transport: "node" 改用 Node https 发送），并告诉我修改后的配置。用我使用的语言与我交流。`;
+请分析报错原因，给出修正建议（URL 模板、请求方式、请求体模板、占位符、鉴权方式；个别站点在 Obsidian 默认网络栈下连接失败时，可开启兼容模式 transport: "node" 改用 Node https 发送），并告诉我修改后的配置。用我使用的语言与我交流。`;
 
 // How long after the last edit the inline auto-detection fires.
 const DETECT_DEBOUNCE_MS = 800;
@@ -181,7 +188,6 @@ export class CustomSourceModal extends Modal {
   // Probe state for the inline auto-detection.
   private detecting = false;
   private detectError = "";
-  private detectHint = "";
   private sampleJson: any;
   private sampleText = "";
   private detectedRows: OhlcvRow[] = [];
@@ -272,6 +278,8 @@ export class CustomSourceModal extends Modal {
       this.scrollToMapping = false;
       contentEl.querySelector(".fc-mapping-section")?.scrollIntoView({ block: "nearest" });
     }
+
+    applyInfoDescs(contentEl);
   }
 
   // Everything that changes what the probe sends: URL template, sample code,
@@ -323,9 +331,19 @@ export class CustomSourceModal extends Modal {
     const def = this.def;
 
     let nameText: TextComponent | null = null;
-    const klinePreview = container.createDiv({ cls: "fc-field-hint fc-mono fc-template-preview fc-hidden" });
     let sampleCodeText: TextComponent | null = null;
     let apiKeyText: TextComponent | null = null;
+
+    const nameSetting = new Setting(container).setName(t("名称")).setDesc(t("显示在选择器、工具栏和卡片文件名中；粘贴 URL 时自动取域名，可改。")).addText((text) => {
+      nameText = text;
+      text.setPlaceholder(t("如：我的行情源")).setValue(def.name).onChange((value) => {
+        this.nameTouched = true;
+        def.name = value.trim();
+      });
+    });
+    nameSetting.settingEl.addClass("fc-setting-stacked");
+
+    const klinePreview = container.createDiv({ cls: "fc-field-hint fc-mono fc-template-preview fc-hidden" });
     const klineSetting = new Setting(container)
       .setName(t("K线接口地址"))
       .setDesc(t("粘贴一个能直接访问的完整 URL（带真实代码与日期），插件会自动识别代码与日期并生成模板、自动检测数据格式。"))
@@ -373,26 +391,6 @@ export class CustomSourceModal extends Modal {
     };
     updateKlinePreview();
 
-    const nameSetting = new Setting(container).setName(t("名称")).setDesc(t("显示在选择器、工具栏和卡片文件名中；粘贴 URL 时自动取域名，可改。")).addText((text) => {
-      nameText = text;
-      text.setPlaceholder(t("如：我的行情源")).setValue(def.name).onChange((value) => {
-        this.nameTouched = true;
-        def.name = value.trim();
-      });
-    });
-    nameSetting.settingEl.addClass("fc-setting-stacked");
-
-    const iconSetting = new Setting(container)
-      .setName(t("自定义图标（可选）"))
-      .setDesc(t("粘贴 SVG 代码；留空则在「插入图表」菜单中用颜色圆点区分。"));
-    iconSetting.settingEl.addClass("fc-setting-stacked");
-    iconSetting.addTextArea((text) => {
-      text.setValue(def.icon ?? "").onChange((value) => {
-        def.icon = value.trim() || undefined;
-      });
-      text.inputEl.addClass("fc-mono");
-    });
-
     const apiKeySetting = new Setting(container)
       .setName(t("API Key（可选）"))
       .setDesc(
@@ -408,6 +406,17 @@ export class CustomSourceModal extends Modal {
         text.inputEl.addClass("fc-mono");
       });
     apiKeySetting.settingEl.addClass("fc-setting-stacked");
+
+    const iconSetting = new Setting(container)
+      .setName(t("自定义图标（可选）"))
+      .setDesc(t("粘贴 SVG 代码；留空则在「插入图表」菜单中用颜色圆点区分。"));
+    iconSetting.settingEl.addClass("fc-setting-stacked");
+    iconSetting.addTextArea((text) => {
+      text.setValue(def.icon ?? "").onChange((value) => {
+        def.icon = value.trim() || undefined;
+      });
+      text.inputEl.addClass("fc-mono");
+    });
 
     // Inline probe status: detecting / error / parsed-row preview, plus the
     // explicit 检测连接 button.
@@ -487,7 +496,7 @@ export class CustomSourceModal extends Modal {
 
     new Setting(advanced)
       .setName(t("兼容模式（Node https）"))
-      .setDesc(t("个别站点（如 api.stlouisfed.org）在 Obsidian 默认网络栈下连接失败时开启；请求改用 Node https（HTTP/1.1）发送。"))
+      .setDesc(t("个别站点在 Obsidian 默认网络栈（HTTP/2）下连接失败时开启；请求改用 Node https（HTTP/1.1）发送。"))
       .addToggle((toggle) =>
         toggle.setValue(def.transport === "node").onChange((value) => {
           def.transport = value ? "node" : undefined;
@@ -576,7 +585,7 @@ export class CustomSourceModal extends Modal {
     });
     symbolHelp.createDiv({
       cls: "fc-field-hint",
-      text: t("符号级参数（params/profile，如 Tushare 每个接口的 api_name）请通过 JSON 配置导入维护；此处编辑会按代码保留已有参数与档位。"),
+      text: t("符号级参数（params/profile，如各接口的接口名/列名参数）请通过 JSON 配置导入维护；此处编辑会按代码保留已有参数与档位。"),
     });
 
     if (def.format === "json") this.renderMappingSection(container);
@@ -627,9 +636,6 @@ export class CustomSourceModal extends Modal {
     }
     if (this.detectError) {
       statusEl.createDiv({ cls: "fc-field-hint fc-detect-error", text: t("检测失败：{msg}", { msg: this.detectError }) });
-      if (this.detectHint) {
-        statusEl.createDiv({ cls: "fc-field-hint fc-detect-error", text: this.detectHint });
-      }
       testBtn();
       const copyBtn = statusEl.createEl("button", { text: t("复制报错（发给 AI）") });
       copyBtn.addEventListener("click", () => {
@@ -748,12 +754,8 @@ export class CustomSourceModal extends Modal {
       this.sampleText = "";
       this.detectedRows = [];
       this.candidates = [];
-      // Hosts that reset Electron's HTTP/2 stack fail exactly like this —
-      // point at the escape hatch when the source has not taken it yet.
-      this.detectHint =
-        /HTTP2|PROTOCOL_ERROR|ERR_HTTP/i.test(this.detectError) && !this.def.transport
-          ? t("检测到 HTTP/2 协议错误：该站点可能不兼容 Obsidian 默认网络栈，可在「高级选项」中开启兼容模式（node 传输）后重试。")
-          : "";
+      // Diagnosis hints (HTML interstitial / HTTP/2 transport) ride the error
+      // message itself — see sendSourceRequest in custom-quote-client.
     } finally {
       this.detecting = false;
       this.render();

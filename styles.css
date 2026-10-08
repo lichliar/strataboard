@@ -64,6 +64,7 @@ body.theme-dark {
   /* Card chrome reads several Obsidian variables directly; pin them to the
      hermes values inside the scope so the two variable families agree. */
   --background-primary: #10141a;
+  --background-primary-alt: #1a2029;
   --background-secondary: #161c24;
   --background-modifier-border: #272e38;
   --text-normal: #d7dbe0;
@@ -295,6 +296,54 @@ body.theme-dark {
   color: var(--fc-muted);
 }
 
+/* Field description icon (src/ui/info-desc.ts): ⓘ at the right of the
+   setting name, sized to match the title text (1em). Hover (short delay) and
+   click pop up the same floating tooltip; a clicked tooltip stays pinned
+   until another click or an outside click. */
+.fc-info-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  vertical-align: -0.125em;
+  color: var(--fc-muted);
+  cursor: pointer;
+}
+
+.fc-info-icon svg {
+  width: 1em;
+  height: 1em;
+}
+
+.fc-info-icon:hover {
+  color: var(--fc-fg);
+}
+
+/* The description tooltip, styled after Obsidian's native .tooltip. It lives
+   on document.body with fixed positioning (see src/ui/info-desc.ts); top/left
+   are set inline from the owner icon's bounding rect. */
+.fc-info-tip {
+  position: fixed;
+  /* Above modals (same layer as Obsidian's native tooltips); the popover
+     layer (30) sits below the modal layer (50) and the tip would paint
+     behind the settings/card modals. */
+  z-index: var(--layer-tooltip, 70);
+  width: max-content;
+  max-width: 300px;
+  padding: 4px 8px;
+  border-radius: var(--fc-radius-sm);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  box-shadow: var(--fc-shadow-md);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  cursor: text;
+}
+
 /* 数据源设置: source-group header row and its indented member rows. */
 .fc-source-group-header {
   margin-top: 12px;
@@ -380,7 +429,7 @@ body.theme-dark {
 
 /* ===== Unified card edit modal (wireframe #screen-unified) ===== */
 
-/* Sub-page tabs (基础设置 / 显示设置 / 均线系统). */
+/* Sub-page tabs (基础设置 / 显示设置 / 技术指标). */
 .fc-subtabs {
   display: flex;
   gap: 0;
@@ -456,39 +505,6 @@ body.theme-dark {
   font-weight: 600;
   color: var(--fc-fg);
   margin-bottom: 8px;
-}
-
-/* MA preview box on the 均线系统 sub-page; chip border colors come inline
-   from the chart's MA palette. */
-.fc-ma-preview {
-  margin-top: 8px;
-  padding: 12px;
-  background: var(--fc-empty);
-  border: 1px solid var(--fc-border);
-  border-radius: var(--fc-radius-sm);
-}
-
-.fc-ma-preview-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fc-fg);
-  margin-bottom: 6px;
-}
-
-.fc-ma-preview-chips {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.fc-ma-chip {
-  padding: 3px 10px;
-  font-size: 11px;
-  border-radius: 10px;
-  background: var(--fc-surface);
-  border: 1px solid var(--fc-border);
-  color: var(--fc-fg);
-  font-variant-numeric: tabular-nums;
 }
 
 /* Modal footer with right-aligned 取消 / 保存. */
@@ -688,6 +704,166 @@ body.theme-dark {
   cursor: pointer;
   padding: 6px 0;
   color: var(--fc-fg);
+}
+
+/* Collapsible indicator (技术指标 tab): the summary carries the title plus an
+   enable switch. Flex layout hides the native disclosure marker, so the
+   triangle is drawn by hand. */
+.fc-indicator > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fc-indicator > summary::before {
+  content: "";
+  flex: none;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--fc-muted);
+  transition: transform 0.1s;
+}
+
+.fc-indicator[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.fc-indicator-title {
+  flex: 1 1 auto;
+}
+
+.fc-indicator > summary .checkbox-container {
+  flex: none;
+  margin: 0;
+}
+
+.fc-indicator-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 6px;
+}
+
+/* Keep the add row's controls on one baseline: same height for the dropdown
+   and the button. */
+.fc-indicator-controls select,
+.fc-indicator-controls input[type="text"] {
+  flex: 1 1 140px;
+  min-width: 0;
+  height: 32px;
+  box-sizing: border-box;
+}
+
+.fc-indicator-controls button {
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 16px;
+}
+
+/* One indicator instance block (技术指标 tab): a collapsible <details> whose
+   summary carries the name + parameter summary + 删除; the auto-generated
+   parameter form folds away. The triangle is drawn by hand, same convention
+   as .fc-indicator (flex on summary hides the native disclosure marker). */
+.fc-indicator-instance {
+  border-top: 1px dashed var(--fc-border);
+  margin-top: 6px;
+}
+
+.fc-indicator-instance:first-of-type {
+  border-top: none;
+  margin-top: 0;
+}
+
+.fc-indicator-instance > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+/* Fixed-width triangle cell (12px) + the summary gap (6px) put the header
+   text at a deterministic 18px offset; .fc-indicator-instance-body pads to
+   the same edge so parameter labels line up exactly with the header text. */
+.fc-indicator-tri {
+  flex: none;
+  width: 12px;
+  align-self: stretch;
+  position: relative;
+}
+
+.fc-indicator-tri::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--fc-muted);
+  transition: transform 0.1s;
+}
+
+.fc-indicator-instance[open] .fc-indicator-tri::after {
+  transform: translateY(-50%) rotate(90deg);
+}
+
+/* The header Setting row inside the summary fills the remaining width and
+   drops its default padding/border so the header stays one compact line;
+   name and the control buttons share a single vertical centerline. */
+.fc-indicator-instance > summary > .setting-item {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 0;
+  border: none;
+  align-items: center;
+}
+
+.fc-indicator-instance > summary .setting-item-control {
+  align-items: center;
+  gap: 2px;
+}
+
+.fc-indicator-instance > summary .setting-item-name {
+  letter-spacing: 0.02em;
+}
+
+/* Hidden instances stay in the list but read as muted. */
+.fc-indicator-hidden > summary .setting-item-name,
+.fc-indicator-hidden > summary .setting-item-description {
+  opacity: 0.5;
+}
+
+.fc-indicator-instance-body {
+  padding-left: 18px;
+  padding-bottom: 4px;
+}
+
+/* Compact parameter rows under an instance: no row border; the body padding
+   aligns labels with the header text; label and control vertically centered
+   on one line. */
+.fc-indicator-input.setting-item {
+  padding: 4px 0;
+  border: none;
+  align-items: center;
+}
+
+.fc-indicator-input .setting-item-info {
+  padding: 2px 0;
+}
+
+.fc-indicator-input .setting-item-name {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: var(--fc-muted);
+}
+
+.fc-indicator-input .setting-item-control {
+  align-items: center;
 }
 
 /* Stacked setting rows (数据源设置 token fields, source setup modals):
@@ -1110,6 +1286,17 @@ body.theme-dark {
   font-size: var(--font-ui-smaller);
 }
 
+/* Native-frequency badge in the card title (日频/周频/月频/季频/年频). */
+.strataboard-header-freq {
+  color: var(--text-faint);
+  font-weight: 400;
+  font-size: var(--font-ui-smaller);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 1.4;
+}
+
 .strataboard-header-code {
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
@@ -1153,6 +1340,24 @@ body.theme-dark {
   align-items: baseline;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* 本地脚本 provenance line under the quote row (script-produced sources). */
+.strataboard-header-script {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 2px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strataboard-header-script-stale {
+  color: var(--text-warning, #e5b567);
 }
 
 .strataboard-header-price {
@@ -1221,6 +1426,15 @@ body.theme-dark {
   font-weight: 600;
 }
 
+/* Frozen: period finer than the source's native granularity. */
+.strataboard-period-tabs button.is-disabled,
+.strataboard-period-tabs button.is-disabled:hover {
+  background: transparent;
+  color: var(--text-faint);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Card footer (wireframe #screen-card): freq tabs left, SVG tool buttons right. */
 .strataboard-card-footer {
   display: flex;
@@ -1234,6 +1448,12 @@ body.theme-dark {
 
 .strataboard-card-note .strataboard-card-footer {
   padding: 4px 6px;
+}
+
+/* Series cards (overlay/spread) have no period tabs on the left — pin the
+   tool buttons to the right edge. */
+.financial-series-chart .strataboard-card-footer {
+  justify-content: flex-end;
 }
 
 .strataboard-card-tools {
@@ -1318,6 +1538,45 @@ body.theme-dark {
   height: 100%;
   position: relative;
   box-sizing: border-box;
+}
+
+/* Signal hover readout: full-text chip near the crosshair for bars carrying
+   signal events (markers only show 12 truncated chars). Fixed dark chip on
+   both themes, matching the fc-hermes card surface; pointer-events none so
+   it never blocks pan/zoom. */
+.fc-signal-tip {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  max-width: 260px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(24, 28, 36, 0.94);
+  color: #e5e7eb;
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.fc-signal-tip-row {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.fc-signal-tip-side {
+  font-weight: 600;
+  flex: none;
+}
+.fc-signal-tip-side.is-buy {
+  color: #f87171;
+}
+.fc-signal-tip-side.is-sell {
+  color: #4ade80;
+}
+.fc-signal-tip-series {
+  color: #9ca3af;
+}
+.fc-signal-tip-text {
+  word-break: break-all;
 }
 
 /* Crosshair legend: readout of the hovered (or latest) bar, overlaid on the
@@ -1408,6 +1667,16 @@ body.theme-dark {
 /* Subtitle under the title, e.g. the normalization base date. */
 .financial-series-chart-subtitle {
   color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 本地脚本 provenance note (overlay/spread cards with script series). */
+.financial-series-chart-script-note {
+  color: var(--text-faint);
   font-size: var(--font-ui-smaller);
   line-height: 1.3;
   overflow: hidden;
@@ -2066,6 +2335,21 @@ body.theme-dark {
   gap: 8px;
 }
 
+/* 升级卡片引用 report modal (settings.ts CardRefMigrationReportModal). */
+.fc-migration-report {
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 8px 0;
+}
+
+.fc-migration-report-row {
+  padding: 6px 8px;
+}
+
+.fc-migration-report-row + .fc-migration-report-row {
+  border-top: 1px solid var(--background-modifier-border);
+}
+
 /* Review-compliance helpers: dynamic canvas bleed via CSS var + classes. */
 .fc-canvas-bleed {
   padding: var(--fc-bleed) !important;
@@ -2130,4 +2414,52 @@ body.theme-dark {
   user-select: text;
   max-height: 360px;
   overflow: auto;
+}
+
+/* ==========================================================================
+   Print (Obsidian 导出为 PDF). The live lightweight-charts DOM is swapped
+   for the static snapshot <img> rendered after the initial load (see
+   forcePaint in the chart renderers): a monolithic bitmap the paginator can
+   never slice mid-chart, immune to the canvas sizing races of the hidden
+   print render pass. Cards also lose their screen-only chrome (period tabs,
+   tool/run/retry buttons) and revert to plain auto-height blocks — the
+   screen styles (display: flex + overflow: hidden) would make the card an
+   unsplittable box that Chromium clips at the page boundary.
+   ========================================================================== */
+.strataboard-print-snapshot {
+  display: none;
+}
+
+@media print {
+  .strataboard-card .strataboard-card-footer,
+  .strataboard-card .strataboard-header-actions,
+  .strataboard-card .strataboard-retry-btn {
+    display: none;
+  }
+  .strataboard-card {
+    display: block;
+    overflow: visible;
+    height: auto;
+    min-height: 0;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  /* Hide the live chart widget; show the snapshot in its place. The stack
+     and container drop their JS/percentage heights so the image's intrinsic
+     aspect ratio drives the printed size (width: 100% of the card). */
+  .strataboard-card .strataboard-chart-stack {
+    display: block;
+    height: auto !important;
+  }
+  .strataboard-card .strataboard-chart-container {
+    height: auto;
+  }
+  .strataboard-chart-container .tv-lightweight-charts {
+    display: none;
+  }
+  .strataboard-print-snapshot {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
 }

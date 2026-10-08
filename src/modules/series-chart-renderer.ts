@@ -1,8 +1,12 @@
 import { MarkdownRenderChild, setIcon, setTooltip } from "obsidian";
 import {
   createChart,
+  createSeriesMarkers,
+  AreaSeries,
+  BaselineSeries,
   LineSeries,
   LineStyle,
+  LineType,
   type BusinessDay,
   type ChartOptions,
   type DeepPartial,
@@ -12,16 +16,23 @@ import {
   type Time,
   type LineWidth,
 } from "lightweight-charts";
-import type { ChartTheme, SeriesPoint } from "../types";
+import type { ChartTheme, SeriesLineType, SeriesPoint, SignalEvent } from "../types";
 import { onAttached, resolveEffectiveTheme, toLayoutPoint, installZoomEventFix } from "../utils/dom";
-import { buildChartOptions, exportChartPng, floorIndex, suppressMarkdownChrome } from "./chart-renderer";
+import { addTitleWatermark, buildChartOptions, exportChartPng, floorIndex, suppressMarkdownChrome, DETACHED_CHART_WIDTH, renderChartSnapshot, upsertPrintSnapshot, type ChartPngHeader } from "./chart-renderer";
 import { ChartSizeGuard } from "./chart-size-guard";
+import { SIGNAL_BUY_COLOR, SIGNAL_SELL_COLOR, eventToMarker, snapEventsToBars } from "./signal-markers";
+import { SignalTooltip, type SignalTipEntry } from "./signal-tooltip";
 import { t } from "../i18n";
 
 export interface SeriesChartLine {
   name: string;
   color?: string;
   lineWidth?: number; // px, 1–4 (lightweight-charts LineWidth), default 2
+  lineType?: SeriesLineType; // default "simple" straight segments
+  // "baseline" (spread cards): 0-axis baseline area series shaded in the
+  // 红涨绿跌 defaults; `color` is then unused (legend/guide follow the sign
+  // of the latest value). "area" (spread cards): gradient fill under the line.
+  style?: "baseline" | "area";
   points: SeriesPoint[];
 }
 
@@ -34,7 +45,12 @@ interface SeriesChartRendererOptions {
   theme?: ChartTheme;  // default "auto" (follow Obsidian; only then is the theme watcher attached)
   freezeWidth?: boolean; // canvas only: pin the first-layout width (quote spec 宽度自适应 off)
   initialVisibleRange?: { from: string; to: string };  // YYYY-MM-DD, from the card YAML
-  onEdit?: () => void; // pencil button in the header (only rendered when a title is present)
+  onEdit?: () => void; // pencil button in the footer tools
+  // 本地脚本 provenance (when any series is script-produced): muted note
+  // line under the title (script names + last-run stamps) plus a run button
+  // in the header actions that reruns the producing script(s).
+  scriptNote?: string;
+  onRunScript?: () => Promise<void>;
   // Overlay 独立纵轴 mode: every line gets its own invisible overlay price
   // scale (auto-fitted to its own range); the shared right axis is hidden.
   independentScales?: boolean;
@@ -48,6 +64,11 @@ interface SeriesChartRendererOptions {
   // settings). Independent of showLatestValue, which keeps the axis label /
   // dashed guide line.
   showPointMarkers: boolean;
+  // Signal markers per line (parallel to `lines`; undefined = no signals on
+  // that line). Overlay matches each entry to the quote line with the same
+  // code; spread merges every entry onto the single line. Fixed colors —
+  // series lines have no rise/fall color concept.
+  signals?: (SignalEvent[] | undefined)[];
   showGrid: boolean;
   gridOpacity: number;
 }
@@ -61,6 +82,25 @@ export const SERIES_LINE_COLORS = [
   "#2563eb", "#dc2626", "#f59e0b", "#8b5cf6", "#14b8a6",
   "#ec4899", "#0ea5e9", "#84cc16", "#f97316", "#6366f1",
 ];
+
+// Baseline (spread style: baseline) colors: the 红涨绿跌 defaults the quote
+// cards use, with gradient fills fading toward the 0 axis.
+const BASELINE_TOP = { line: "#ef4444", fill1: "rgba(239, 68, 68, 0.28)", fill2: "rgba(239, 68, 68, 0.04)" };
+const BASELINE_BOTTOM = { line: "#22c55e", fill1: "rgba(34, 197, 94, 0.28)", fill2: "rgba(34, 197, 94, 0.04)" };
+
+const LINE_TYPE_MAP: Record<SeriesLineType, LineType> = {
+  simple: LineType.Simple,
+  curved: LineType.Curved,
+  steps: LineType.WithSteps,
+};
+
+// Alpha-blended variant of a #rrggbb line color for the area-style gradient.
+// Non-hex colors fall back to the raw color / fully transparent.
+function withAlpha(color: string, alpha: number): string {
+  const m = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(color);
+  if (!m) return alpha >= 0.5 ? color : "transparent";
+  return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${alpha})`;
+}
 
 function formatValue(n: number | undefined, suffix: string): string {
   if (n == null || Number.isNaN(n)) return "--";
@@ -93,6 +133,10 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
   private latestDate = "";
   private initialVisibleRange: IRange<Time> | null = null;
   private stackEl: HTMLElement | null = null;
+  // 信号标注 hover readout: full-text tooltip entries per chart time
+  // (markers only carry 12 truncated chars).
+  private signalEventsByTime = new Map<string, SignalTipEntry[]>();
+  private signalTip: SignalTooltip | null = null;
   // Price-scale ids carrying a line each — ["right"] normally, one overlay
   // scale per line in 独立纵轴 mode (drives the legend-clearance margins).
   private scaleIds: string[] = ["right"];
@@ -118,6 +162,12 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     onAttached(this.containerEl, () => suppressMarkdownChrome(this.containerEl));
 
     const lines = this.options.lines.filter((line) => line.points.length > 0);
+    // Signals arrive parallel to options.lines; re-derive the pairing after
+    // the empty-line filter above drops entries.
+    const lineSignals = this.options.lines
+      .map((line, i) => ({ line, events: this.options.signals?.[i] }))
+      .filter(({ line }) => line.points.length > 0)
+      .map(({ events }) => events);
     if (lines.length === 0) {
       this.containerEl.createDiv({
         cls: "strataboard-empty",
@@ -127,9 +177,9 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     }
 
     // Header row with the card title (and optional subtitle, e.g. the
-    // normalization base date) plus action buttons on the right (edit opens
-    // the card's edit modal; export screenshots the chart to a PNG). Skipped
-    // when no title is given.
+    // normalization base date) plus the 运行本地脚本 button on the right.
+    // 编辑参数/导出图片 live in the footer (same layout as the quote card).
+    // Skipped when no title is given.
     if (this.options.title) {
       const headerEl = this.containerEl.createDiv({ cls: "financial-series-chart-header" });
       const mainEl = headerEl.createDiv({ cls: "financial-series-chart-header-main" });
@@ -142,26 +192,22 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
         const subtitleEl = mainEl.createDiv({ cls: "financial-series-chart-subtitle", text: this.options.subtitle });
         setTooltip(subtitleEl, this.options.subtitle);
       }
-      const actions = headerEl.createDiv({ cls: "strataboard-header-actions" });
-      if (this.options.onEdit) {
-        const editBtn = actions.createEl("button", { cls: "strataboard-header-btn" });
-        setIcon(editBtn, "pencil");
-        setTooltip(editBtn, t("编辑参数"));
-        editBtn.addEventListener("click", () => this.options.onEdit?.());
+      if (this.options.scriptNote) {
+        const noteEl = mainEl.createDiv({ cls: "financial-series-chart-script-note", text: this.options.scriptNote });
+        setTooltip(noteEl, this.options.scriptNote);
       }
-      const exportBtn = actions.createEl("button", { cls: "strataboard-header-btn" });
-      setIcon(exportBtn, "image");
-      setTooltip(exportBtn, t("导出图片"));
-      exportBtn.addEventListener("click", () => {
-        if (this.chart) {
-          void exportChartPng(
-            this.chart,
-            this.options.title ?? "chart",
-            { title: this.options.title ?? "", subtitle: this.options.subtitle },
-            this.containerEl
-          );
-        }
-      });
+      if (this.options.onRunScript) {
+        const actions = headerEl.createDiv({ cls: "strataboard-header-actions" });
+        const runBtn = actions.createEl("button", { cls: "strataboard-header-btn" });
+        setIcon(runBtn, "play");
+        setTooltip(runBtn, t("运行本地脚本"));
+        runBtn.addEventListener("click", () => {
+          runBtn.disabled = true;
+          void this.options.onRunScript!().finally(() => {
+            runBtn.disabled = false;
+          });
+        });
+      }
     }
 
     // Chart stack: the inline height acts as the flex basis (same sizing
@@ -170,6 +216,30 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     this.stackEl = stackEl;
     stackEl.style.height = `${this.options.height ?? DEFAULT_HEIGHT}px`;
     this.chartContainerEl = stackEl.createDiv({ cls: "strataboard-chart-container" });
+
+    // Footer: tool buttons pinned to the bottom-right (same style as the
+    // quote card footer — series cards have no period tabs on the left).
+    const footerEl = this.containerEl.createDiv({ cls: "strataboard-card-footer" });
+    const tools = footerEl.createDiv({ cls: "strataboard-card-tools" });
+    if (this.options.onEdit) {
+      const editBtn = tools.createEl("button", { cls: "strataboard-tool-btn" });
+      setIcon(editBtn, "pencil");
+      setTooltip(editBtn, t("编辑参数"));
+      editBtn.addEventListener("click", () => this.options.onEdit?.());
+    }
+    const exportBtn = tools.createEl("button", { cls: "strataboard-tool-btn" });
+    setIcon(exportBtn, "image");
+    setTooltip(exportBtn, t("导出图片"));
+    exportBtn.addEventListener("click", () => {
+      if (this.chart) {
+        void exportChartPng(
+          this.chart,
+          this.options.title ?? "chart",
+          { title: this.options.title ?? "", subtitle: this.options.subtitle, legend: this.buildExportLegend() },
+          this.containerEl
+        );
+      }
+    });
 
     const theme = this.options.theme ?? "auto";
     const isDark = resolveEffectiveTheme(theme) === "dark";
@@ -185,42 +255,101 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
       // All series live on their own overlay scales; hide the empty shared axis.
       chartOptions.rightPriceScale = { ...(chartOptions.rightPriceScale ?? {}), visible: false };
     }
-    // Seed the size from the container's current layout size (0x0 while
-    // still detached — the ChartSizeGuard fixes it on attach).
-    chartOptions.width = this.chartContainerEl.clientWidth;
-    chartOptions.height = this.chartContainerEl.clientHeight;
+    // Seed the size from the container's current layout size, falling back to
+    // DETACHED_CHART_WIDTH/the configured height when there is no layout yet
+    // (detached mount, or Obsidian's hidden PDF-export render pass — the
+    // ChartSizeGuard only fixes sizing on attach/resize, which never happens
+    // there, and a 0x0 chart prints as a blank canvas).
+    chartOptions.width = this.chartContainerEl.clientWidth || DETACHED_CHART_WIDTH;
+    chartOptions.height = this.chartContainerEl.clientHeight || (this.options.height ?? DEFAULT_HEIGHT);
     this.chart = createChart(this.chartContainerEl, chartOptions);
     // Zoom-correct mouse coordinates before the library sees them (Obsidian
     // canvas scales node content with a CSS transform).
     this.uninstallZoomFix = installZoomEventFix(this.chartContainerEl);
+    addTitleWatermark(this.chart, this.options.title, isDark);
 
     this.scaleIds = this.options.independentScales ? lines.map((_, i) => `s${i}`) : ["right"];
     lines.forEach((line, i) => {
-      const color = line.color ?? SERIES_LINE_COLORS[i % SERIES_LINE_COLORS.length];
       const data: LineData[] = line.points.map((p) => ({ time: p.date, value: p.value }));
+      // Baseline lines (spread 基线 style) ignore the palette color: the
+      // legend dot and latest-value guide line follow the sign of the latest
+      // value instead (red above / green below the 0 axis).
+      const color =
+        line.style === "baseline"
+          ? line.points[line.points.length - 1].value >= 0
+            ? BASELINE_TOP.line
+            : BASELINE_BOTTOM.line
+          : line.color ?? SERIES_LINE_COLORS[i % SERIES_LINE_COLORS.length];
       // When every line is percent-ish the legend carries a "%" suffix; put
       // the same suffix on the price-axis ticks via a custom price format.
       const suffix = this.options.valueSuffix ?? "";
-      const series = this.chart!.addSeries(
-        LineSeries,
-        {
-          color,
-          lineWidth: (line.lineWidth ?? 2) as LineWidth,
-          priceLineVisible: false,
-          ...(this.options.independentScales ? { priceScaleId: this.scaleIds[i] } : {}),
-          // Latest-value label on the price axis (colored with the line) —
-          // the series-chart equivalent of the quote card's latest-price
-          // line (global 系列图最新值标记 setting). Vertex dots are a separate
-          // setting (折线图数据点标记, default off).
-          lastValueVisible: this.options.showLatestValue,
-          pointMarkersVisible: this.options.showPointMarkers,
-          priceFormat: suffix
-            ? { type: "custom", formatter: (price: number) => `${price.toFixed(2)}${suffix}`, minMove: 0.01 }
-            : { type: "price", precision: 2, minMove: 0.01 },
-        },
-        0
-      );
+      const sharedOptions = {
+        lineWidth: (line.lineWidth ?? 2) as LineWidth,
+        lineType: LINE_TYPE_MAP[line.lineType ?? "simple"],
+        priceLineVisible: false,
+        ...(this.options.independentScales ? { priceScaleId: this.scaleIds[i] } : {}),
+        // Latest-value label on the price axis (colored with the line) —
+        // the series-chart equivalent of the quote card's latest-price
+        // line (global 系列图最新值标记 setting). Vertex dots are a separate
+        // setting (折线图数据点标记, default off).
+        lastValueVisible: this.options.showLatestValue,
+        pointMarkersVisible: this.options.showPointMarkers,
+        priceFormat: suffix
+          ? { type: "custom" as const, formatter: (price: number) => `${price.toFixed(2)}${suffix}`, minMove: 0.01 }
+          : { type: "price" as const, precision: 2, minMove: 0.01 },
+      };
+      const series =
+        line.style === "baseline"
+          ? this.chart!.addSeries(
+              BaselineSeries,
+              {
+                ...sharedOptions,
+                baseValue: { type: "price", price: 0 },
+                topLineColor: BASELINE_TOP.line,
+                topFillColor1: BASELINE_TOP.fill1,
+                topFillColor2: BASELINE_TOP.fill2,
+                bottomLineColor: BASELINE_BOTTOM.line,
+                bottomFillColor1: BASELINE_BOTTOM.fill1,
+                bottomFillColor2: BASELINE_BOTTOM.fill2,
+              },
+              0
+            )
+          : line.style === "area"
+            ? this.chart!.addSeries(
+                AreaSeries,
+                {
+                  ...sharedOptions,
+                  lineColor: color,
+                  topColor: withAlpha(color, 0.35),
+                  bottomColor: withAlpha(color, 0.02),
+                },
+                0
+              )
+            : this.chart!.addSeries(LineSeries, { ...sharedOptions, color }, 0);
       series.setData(data);
+      const events = lineSignals[i];
+      if (events && events.length > 0) {
+        // Event dates are YYYYMMDD; the points' dates are already the
+        // YYYY-MM-DD chart time, so markers take them verbatim.
+        const snapped = snapEventsToBars(events, line.points.map((p) => p.date.replace(/-/g, "")));
+        const markers = [...snapped.entries()].flatMap(([index, evs]) =>
+          evs.map((ev) =>
+            eventToMarker(ev, line.points[index].date as Time, { buy: SIGNAL_BUY_COLOR, sell: SIGNAL_SELL_COLOR })
+          )
+        );
+        if (markers.length > 0) {
+          createSeriesMarkers(series, markers);
+        }
+        // Hover readout with the full signal text near the crosshair.
+        for (const [index, evs] of snapped) {
+          const key = line.points[index].date;
+          const list = this.signalEventsByTime.get(key) ?? [];
+          for (const event of evs) {
+            list.push({ seriesName: line.name, seriesColor: color, event });
+          }
+          this.signalEventsByTime.set(key, list);
+        }
+      }
       line.color = color;
       // Single-line cards (spread, or a one-line overlay) also get a dashed
       // guide line at the latest value; axisLabelVisible stays off so it
@@ -259,7 +388,56 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     if (this.options.showLegend) {
       this.addLegend(lines);
     }
+
+    // Signal hover readout works with or without the legend.
+    if (this.signalEventsByTime.size > 0) {
+      this.signalTip = new SignalTooltip(this.chartContainerEl!);
+      this.chart.subscribeCrosshairMove((param) => {
+        const entries = param.time != null ? this.signalEventsByTime.get(String(param.time)) : undefined;
+        if (!entries || !param.point) {
+          this.signalTip?.hide();
+          return;
+        }
+        this.signalTip?.show(param.point.x, param.point.y, entries);
+      });
+    }
     this.setupSizeGuard();
+  }
+
+  // takeScreenshot() forces a synchronous full repaint — used after the
+  // initial render so the canvas bitmap is populated even when the library's
+  // rAF-batched paint never runs (hidden PDF-export render pass). Also
+  // refreshes the print snapshot: in @media print the live chart DOM is
+  // hidden and this static image is what lands in the PDF (a monolithic
+  // bitmap the paginator can never slice mid-chart).
+  forcePaint(): void {
+    if (!this.chart || !this.chartContainerEl) return;
+    upsertPrintSnapshot(this.chartContainerEl, renderChartSnapshot(this.chart, this.containerEl));
+  }
+
+  // Legend snapshot for PNG exports. Recomputed from the series data at the
+  // LATEST date — never read from the DOM legend, which may be showing a
+  // crosshair-hovered date or not exist at all (显示图例 off). Colors come
+  // from the render pass, which writes the resolved color back onto each line.
+  private buildExportLegend(): ChartPngHeader["legend"] {
+    const lines = this.options.lines.filter((line) => line.points.length > 0);
+    if (lines.length === 0) return undefined;
+    const date = lines.reduce(
+      (max, line) => (line.points[line.points.length - 1].date > max ? line.points[line.points.length - 1].date : max),
+      lines[0].points[lines[0].points.length - 1].date
+    );
+    const suffix = this.options.valueSuffix ?? "";
+    return {
+      date,
+      items: lines.map((line) => {
+        const index = floorIndex(line.points, date, (p) => p.date);
+        return {
+          label: line.name,
+          color: line.color ?? "#868e99",
+          value: formatValue(index >= 0 ? line.points[index].value : undefined, suffix),
+        };
+      }),
+    };
   }
 
   private cleanup() {
@@ -276,6 +454,8 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     this.latestDate = "";
     this.initialVisibleRange = null;
     this.scaleIds = ["right"];
+    this.signalEventsByTime.clear();
+    this.signalTip = null;
   }
 
   // Current visible time range as YYYY-MM-DD, or null when no chart/range.

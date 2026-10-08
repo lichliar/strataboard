@@ -1,4 +1,4 @@
-import { httpRequest } from "./http";
+import { httpRequest, looksLikeHtmlInterstitial, type HttpRequestOptions } from "./http";
 import type { CustomSourceDef, JsonSourceMap, OhlcvRow, SearchEndpoint, SymbolItem } from "../types";
 import { searchProbeQuery } from "../types";
 import { compileDeadCodes, resolveSymbolParams } from "../utils/symbol-list";
@@ -149,7 +149,7 @@ export class CustomQuoteClient {
       const body = endpoint.bodyTemplate
         ? fillTemplate(endpoint.bodyTemplate, { apiKey: def.apiKey ?? "", query, offset })
         : undefined;
-      const response = await httpRequest({
+      const response = await sendSourceRequest(def, {
         url,
         method: body !== undefined ? "POST" : "GET",
         ...(headers ? { headers } : {}),
@@ -525,6 +525,41 @@ function buildRequestHeaders(def: CustomSourceDef): Record<string, string> | und
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
+// Both request choke points of this client (authedRequest below for kline /
+// probe / remote-CSV fetches, searchOne above) go through this wrapper, which
+// adds source-aware diagnosis on top of the transport: a 200 whose body is an
+// HTML page is a WAF/gateway interstitial or a dead domain — never data — so
+// it fails with the cause named instead of letting the parsers report "0
+// rows"; and a PROTOCOL_ERROR-class network failure points at the transport
+// escape hatch (hosts resetting Electron's HTTP/2 stack) when the source has
+// not taken it yet. Hints ride the error message, so the probe UI, card error
+// bodies, search Notices and the CLI all surface them.
+async function sendSourceRequest(def: CustomSourceDef, params: HttpRequestOptions) {
+  let response;
+  try {
+    response = await httpRequest(params);
+  } catch (e) {
+    throw enrichRequestError(def, e);
+  }
+  throwOnHtmlInterstitial(response);
+  return response;
+}
+
+function throwOnHtmlInterstitial(response: { json: unknown; text: string }): void {
+  if (response.json === undefined && looksLikeHtmlInterstitial(response.text)) {
+    throw new Error(t("接口返回了 HTML 页面而非数据（疑似 WAF/网关拦截或域名失效）——请检查或更换该接口地址。"));
+  }
+}
+
+const HTTP2_FAILURE_RE = /HTTP2|PROTOCOL_ERROR|ERR_HTTP/i;
+function enrichRequestError(def: CustomSourceDef, e: unknown): Error {
+  const message = e instanceof Error ? e.message : String(e);
+  if (!def.transport && HTTP2_FAILURE_RE.test(message)) {
+    return new Error(`${message} —— ${t("疑似站点不兼容 Obsidian 默认网络栈（HTTP/2），可在该数据源「高级选项」开启兼容模式（transport: \"node\"）后重试。")}`);
+  }
+  return e instanceof Error ? e : new Error(message);
+}
+
 // Sends a source request through the global throttle with the source's auth
 // headers attached. Honors def.method (default GET), def.transport and — for
 // POST — def.bodyTemplate with def.bodyEncoding: "json" (default) fills
@@ -550,7 +585,7 @@ function authedRequest(
       ? fillTemplate(def.bodyTemplate, { apiKey: encodeURIComponent(def.apiKey ?? ""), ...extraValues })
       : fillBodyTemplate(def.bodyTemplate, { apiKey: def.apiKey ?? "", ...extraValues, ...rawValues });
   }
-  return httpRequest({
+  return sendSourceRequest(def, {
     url,
     method,
     ...(Object.keys(headers).length > 0 ? { headers } : {}),

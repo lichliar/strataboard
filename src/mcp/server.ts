@@ -19,6 +19,8 @@ import {
   type VaultContext,
 } from "../cli/commands";
 import { renderAiGuide } from "../modules/ai-guide";
+import { AI_SCRIPT_PROMPT } from "../modules/script-prompt";
+import { AI_INDICATOR_PROMPT } from "../modules/indicator-prompt";
 import { ASSET_TYPES, type AssetType } from "../types";
 
 // --vault flag > STRATABOARD_VAULT env > walk up from cwd (createVaultContext).
@@ -151,6 +153,34 @@ async function main(): Promise<void> {
         },
       ],
     })
+  );
+
+  server.registerTool(
+    "get_script_guide",
+    {
+      description:
+        "返回 StrataBoard「本地脚本」功能的编写指南：CSV 产物契约（宽表 / 单序列 OHLCV / 信号表 date,code,side,text）与合规规则。用户要写数据处理脚本（含产生买卖信号）时先读它；脚本放进 scriptFolderPath，产物写到其 output/ 子目录、文件名与脚本同名，插件会自动注册为数据源（信号表注册为信号源，供卡片 YAML 的 信号/signals 字段引用）。",
+    },
+    async () =>
+      jsonResult({
+        vault: ctx.vault,
+        scriptFolderPath: ctx.settings.scriptFolderPath ?? "金融卡片/脚本",
+        guide: AI_SCRIPT_PROMPT,
+      })
+  );
+
+  server.registerTool(
+    "get_indicator_guide",
+    {
+      description:
+        "返回 StrataBoard「自定义指标」功能的编写指南：指标文件的 module.exports 契约（metadata/inputConfig/defaultInputs/plotConfig/calculate）、注入的 oak API（oakscriptjs 精选表面）与合规红线（纯计算，禁 require/网络/DOM）。用户要写或修改技术指标（含移植 TradingView Pine Script）时先读它；指标文件放进 indicatorFolderPath，文件名 slug 即指标 id，插件自动注册进指标系统（内置 15 个指标的 id 不可占用）。",
+    },
+    async () =>
+      jsonResult({
+        vault: ctx.vault,
+        indicatorFolderPath: ctx.settings.indicatorFolderPath ?? "指标",
+        guide: AI_INDICATOR_PROMPT,
+      })
   );
 
   await server.connect(new StdioServerTransport());

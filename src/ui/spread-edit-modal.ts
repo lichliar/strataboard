@@ -1,6 +1,6 @@
-import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
-import type { ChartTheme, CustomSourceDef, DisplayOverrides, SeriesPeriod, SeriesRef, SpreadSpec } from "../types";
-import { SeriesRefEditor, type OpenSymbolPicker } from "./series-ref-editor";
+import { App, Modal, Notice, Setting, type ColorComponent, type TextComponent } from "obsidian";
+import type { ChartTheme, CustomSourceDef, DisplayOverrides, SeriesPeriod, SeriesRef, SignalRef, SpreadSpec } from "../types";
+import { SeriesRefEditor, SignalRefEditor, type OpenSymbolPicker } from "./series-ref-editor";
 import { parseExpression } from "../modules/expression";
 import { appendSvg } from "../utils/dom";
 import { addStepper } from "./stepper";
@@ -10,9 +10,9 @@ import { t } from "../i18n";
 
 // 数据计算卡 editor (wireframe #screen-calc, IMPLEMENTATION.md phase 3):
 // an arithmetic expression over lettered series (A/B/C… assigned by row
-// order). Three sub-pages aligned with the unified card modal — 基础设置
-// (expression + series list + range/period/height), 显示设置 (theme, fixed
-// line type, width, color), Canvas 逻辑 (宽度/高度自适应, 出血). The
+// order). Two sub-pages aligned with the unified card modal — 基础设置
+// (expression + series list + range/period), 显示设置 (fixed line type /
+// 线宽 / 线条颜色 + the Canvas 设置 and 图表设置 collapsibles). The
 // expression validates on every keystroke: red outline + inline warning hint
 // + disabled save button (all three together).
 //
@@ -48,12 +48,11 @@ const DEFAULT_LINE_COLOR = "#2563eb";
 
 const MAX_SERIES = 26; // single letters A–Z
 
-type SubPage = "basic" | "display" | "canvas";
+type SubPage = "basic" | "display";
 
 const SUB_PAGES: { id: SubPage; label: string }[] = [
   { id: "basic", label: "基础设置" },
   { id: "display", label: "显示设置" },
-  { id: "canvas", label: "Canvas 逻辑" },
 ];
 
 // Warning triangle from the wireframe's error hint.
@@ -73,10 +72,12 @@ export class SpreadEditModal extends Modal {
   private theme: ChartTheme;
   private lineWidth: string;
   private lineColor: string;
+  private style: "line" | "baseline" | "area";
+  private lineType: "simple" | "curved" | "steps";
   private widthAuto: boolean;
   private heightAuto: boolean;
   private bleed: number;
-  // Per-card 图表显示 overrides (undefined = follow the plugin-wide 显示设置).
+  // Per-card 图表设置 overrides (undefined = follow the plugin-wide 显示设置).
   private displayOverrides: DisplayOverrides;
 
   private editors: SeriesRefEditor[] = [];
@@ -91,17 +92,28 @@ export class SpreadEditModal extends Modal {
   private onSubmit: (spec: SpreadSpec) => void;
   private openSymbolPicker: OpenSymbolPicker;
   private customSources: CustomSourceDef[];
+  private signalSources: CustomSourceDef[];
+  private initialSignals: SignalRef[];
+  private signalEditors: SignalRefEditor[] = [];
+  private signalRowsEl: HTMLElement | null = null;
+  // The card's stable id is not edited here but must survive save()
+  // rebuilding the spec object.
+  private cardId?: string;
 
-  constructor(app: App, spec: SpreadSpec, onSubmit: (spec: SpreadSpec) => void, openSymbolPicker: OpenSymbolPicker, title?: string, customSources?: CustomSourceDef[]) {
+  constructor(app: App, spec: SpreadSpec, onSubmit: (spec: SpreadSpec) => void, openSymbolPicker: OpenSymbolPicker, title?: string, customSources?: CustomSourceDef[], signalSources?: CustomSourceDef[]) {
     super(app);
+    this.cardId = spec.id;
     this.expression = spec.expression;
     this.refs = spec.series.map((ref) => ({ ...ref }));
+    this.initialSignals = spec.signals ?? [];
     this.range = RANGE_OPTIONS.some((o) => o.value === spec.range) ? spec.range : "10y";
     this.period = spec.period ?? "D";
     this.height = spec.height ? String(spec.height) : "";
     this.theme = spec.theme ?? "auto";
     this.lineWidth = String(spec.lineWidth ?? 2);
     this.lineColor = spec.lineColor ?? DEFAULT_LINE_COLOR;
+    this.style = spec.style ?? "line";
+    this.lineType = spec.lineType ?? "simple";
     this.widthAuto = spec.widthAuto ?? true;
     this.heightAuto = spec.heightAuto ?? true;
     this.bleed = spec.bleed ?? DEFAULT_CARD_BLEED;
@@ -117,6 +129,7 @@ export class SpreadEditModal extends Modal {
     this.onSubmit = onSubmit;
     this.openSymbolPicker = openSymbolPicker;
     this.customSources = customSources ?? [];
+    this.signalSources = signalSources ?? [];
     this.setTitle(title ?? t("编辑数据计算卡"));
   }
 
@@ -133,7 +146,6 @@ export class SpreadEditModal extends Modal {
     const pages: Record<SubPage, HTMLElement> = {
       basic: pagesEl.createDiv(),
       display: pagesEl.createDiv(),
-      canvas: pagesEl.createDiv(),
     };
     const applyActive = () => {
       for (const tab of SUB_PAGES) {
@@ -154,7 +166,6 @@ export class SpreadEditModal extends Modal {
 
     this.renderBasicPage(pages.basic);
     this.renderDisplayPage(pages.display);
-    this.renderCanvasPage(pages.canvas);
 
     const footer = contentEl.createDiv("fc-modal-footer");
     const cancelBtn = footer.createEl("button", { text: t("取消") });
@@ -224,6 +235,29 @@ export class SpreadEditModal extends Modal {
       text: t("系列代号按字母顺序自动分配，删除后自动重排"),
     });
 
+    // 信号标注: script-produced signal tables; every entry's events merge
+    // onto the card's single line.
+    const signalGroup = pageEl.createDiv("fc-canvas-logic-group");
+    signalGroup.createDiv({ cls: "fc-canvas-logic-title", text: t("信号标注") });
+    signalGroup.createDiv({
+      cls: "fc-field-hint fc-hint-mb",
+      text: this.signalSources.length > 0
+        ? t("把脚本产物信号表的买卖点标到图上；所有条目的信号合并标注在计算线上。")
+        : t("暂无信号源：脚本产物信号表（date,code,side,text）会先注册为信号源。"),
+    });
+    this.signalRowsEl = signalGroup.createDiv({ cls: "fc-calc-series-rows" });
+    this.signalEditors = [];
+    for (const ref of this.initialSignals) {
+      this.addSignalRow(ref);
+    }
+    const addSignalBtn = signalGroup.createEl("button", {
+      cls: "fc-add-row",
+      text: t("+ 添加信号"),
+      attr: { type: "button" },
+    });
+    addSignalBtn.disabled = this.signalSources.length === 0;
+    addSignalBtn.addEventListener("click", () => this.addSignalRow());
+
     new Setting(pageEl).setName(t("数据范围")).addDropdown((dropdown) => {
       for (const option of RANGE_OPTIONS) {
         dropdown.addOption(option.value, t(option.label));
@@ -241,21 +275,6 @@ export class SpreadEditModal extends Modal {
         this.period = value as SeriesPeriod;
       });
     });
-
-    new Setting(pageEl)
-      .setName(t("高度"))
-      .setDesc(t("可选，单位 px（200–1600，默认 400）；开启「Canvas 逻辑 → 高度自适应」后此字段失效。"))
-      .addText((text) => {
-        text
-          .setPlaceholder(t("如 400"))
-          .setValue(this.height)
-          .setDisabled(this.heightAuto)
-          .onChange((value) => {
-            this.height = value.trim();
-          });
-        text.inputEl.addClass("fc-mono");
-        this.heightText = text;
-      });
   }
 
   // Rebuilds the series rows; letters follow row order (A/B/C…).
@@ -292,6 +311,19 @@ export class SpreadEditModal extends Modal {
     this.addRowEl.disabled = full;
   }
 
+  private addSignalRow(initial?: SignalRef) {
+    const editor = new SignalRefEditor(
+      this.signalRowsEl!,
+      initial,
+      this.signalSources,
+      () => {
+        this.signalEditors = this.signalEditors.filter((e) => e !== editor);
+        editor.el.remove();
+      }
+    );
+    this.signalEditors.push(editor);
+  }
+
   // Live validation: red outline + inline hint + disabled save (三件套).
   private revalidateExpression() {
     const result = parseExpression(this.expression, this.refs.length);
@@ -316,22 +348,32 @@ export class SpreadEditModal extends Modal {
   // ==================== 显示设置 ====================
 
   private renderDisplayPage(pageEl: HTMLElement) {
-    new Setting(pageEl).setName(t("主题")).addDropdown((dropdown) => {
-      for (const option of THEME_OPTIONS) {
-        dropdown.addOption(option.value, t(option.label));
-      }
-      dropdown.setValue(this.theme).onChange((value) => {
-        this.theme = value as ChartTheme;
-      });
-    });
-
+    let colorPicker: ColorComponent | null = null;
     new Setting(pageEl)
       .setName(t("图表类型"))
-      .setDesc(t("计算结果固定为折线图。"))
+      .setDesc(t("折线为默认样式；基线以 0 轴为界，上方为涨色、下方为跌色的渐变面积；面积为线条颜色向下的渐变填充。"))
       .addDropdown((dropdown) => {
         dropdown.addOption("line", t("折线 (Line)"));
-        dropdown.setValue("line");
-        dropdown.setDisabled(true);
+        dropdown.addOption("baseline", t("基线 (Baseline)"));
+        dropdown.addOption("area", t("面积 (Area)"));
+        dropdown.setValue(this.style);
+        dropdown.onChange((value) => {
+          this.style = value === "baseline" || value === "area" ? value : "line";
+          colorPicker?.setDisabled(this.style === "baseline");
+        });
+      });
+
+    new Setting(pageEl)
+      .setName(t("线型"))
+      .setDesc(t("直线为默认；平滑曲线做平滑过渡；阶梯适合利率等离散跳变数据。"))
+      .addDropdown((dropdown) => {
+        dropdown.addOption("simple", t("直线（默认）"));
+        dropdown.addOption("curved", t("平滑曲线"));
+        dropdown.addOption("steps", t("阶梯"));
+        dropdown.setValue(this.lineType);
+        dropdown.onChange((value) => {
+          this.lineType = value === "curved" || value === "steps" ? value : "simple";
+        });
       });
 
     new Setting(pageEl)
@@ -347,20 +389,31 @@ export class SpreadEditModal extends Modal {
         text.inputEl.addClass("fc-mono");
       });
 
-    new Setting(pageEl).setName(t("线条颜色")).setDesc(t("默认为蓝色。")).addColorPicker((picker) =>
-      picker.setValue(this.lineColor).onChange((value) => {
-        this.lineColor = value;
-      })
-    );
-
-    // Per-card overrides of the plugin-wide 显示设置.
-    renderDisplayOverrideSettings(pageEl, this.displayOverrides, { series: true });
-  }
-
-  // ==================== Canvas 逻辑 ====================
-
-  private renderCanvasPage(pageEl: HTMLElement) {
     new Setting(pageEl)
+      .setName(t("线条颜色"))
+      .setDesc(t("默认为蓝色；基线样式下不生效（固定为涨/跌色）。"))
+      .addColorPicker((picker) => {
+        colorPicker = picker;
+        picker.setValue(this.lineColor).onChange((value) => {
+          this.lineColor = value;
+        });
+        picker.setDisabled(this.style === "baseline");
+      });
+
+    // Canvas 设置 collapsible (mirrors the unified edit modal).
+    const canvasDetails = pageEl.createEl("details", { cls: "fc-settings-sub" });
+    canvasDetails.createEl("summary", { text: t("Canvas 设置") });
+
+    new Setting(canvasDetails).setName(t("主题")).addDropdown((dropdown) => {
+      for (const option of THEME_OPTIONS) {
+        dropdown.addOption(option.value, t(option.label));
+      }
+      dropdown.setValue(this.theme).onChange((value) => {
+        this.theme = value as ChartTheme;
+      });
+    });
+
+    new Setting(canvasDetails)
       .setName(t("宽度自适应"))
       .setDesc(t("卡片宽度跟随 Canvas 节点宽度缩放。"))
       .addToggle((toggle) =>
@@ -369,9 +422,24 @@ export class SpreadEditModal extends Modal {
         })
       );
 
-    new Setting(pageEl)
+    new Setting(canvasDetails)
+      .setName(t("高度"))
+      .setDesc(t("可选，单位 px（200–1600，默认 400）；开启「高度自适应」后此字段失效。"))
+      .addText((text) => {
+        text
+          .setPlaceholder(t("如 400"))
+          .setValue(this.height)
+          .setDisabled(this.heightAuto)
+          .onChange((value) => {
+            this.height = value.trim();
+          });
+        text.inputEl.addClass("fc-mono");
+        this.heightText = text;
+      });
+
+    new Setting(canvasDetails)
       .setName(t("高度自适应"))
-      .setDesc(t("开启后跟随节点高度，「基础设置」的高度字段失效。"))
+      .setDesc(t("开启后跟随节点高度，「高度」字段失效。"))
       .addToggle((toggle) =>
         toggle.setValue(this.heightAuto).onChange((value) => {
           this.heightAuto = value;
@@ -379,7 +447,7 @@ export class SpreadEditModal extends Modal {
         })
       );
 
-    const bleedSetting = new Setting(pageEl)
+    const bleedSetting = new Setting(canvasDetails)
       .setName(t("出血尺寸"))
       .setDesc(t("卡片内容与 Canvas 节点边缘的留白。"));
     addStepper(bleedSetting.controlEl, {
@@ -391,6 +459,11 @@ export class SpreadEditModal extends Modal {
       max: MAX_CARD_BLEED,
       unit: "px",
     });
+
+    // 图表设置 collapsible: per-card overrides of the plugin-wide 显示设置.
+    const chartDetails = pageEl.createEl("details", { cls: "fc-settings-sub" });
+    chartDetails.createEl("summary", { text: t("图表设置（覆盖全局）") });
+    renderDisplayOverrideSettings(chartDetails, this.displayOverrides, { series: true });
   }
 
   // ==================== Save ====================
@@ -426,20 +499,34 @@ export class SpreadEditModal extends Modal {
       return;
     }
 
+    const signals: SignalRef[] = [];
+    for (const editor of this.signalEditors) {
+      const error = editor.validate();
+      if (error) {
+        new Notice(error);
+        return;
+      }
+      signals.push(editor.toRef());
+    }
+
     this.close();
     this.onSubmit({
+      ...(this.cardId ? { id: this.cardId } : {}),
       series: this.editors.map((editor) => editor.toRef()),
       expression: this.expression.trim(),
       range: this.range,
       period: this.period,
+      ...(signals.length ? { signals } : {}),
       ...(height !== undefined ? { height } : {}),
       ...(this.theme !== "auto" ? { theme: this.theme } : {}),
       ...(lineWidth !== 2 ? { lineWidth } : {}),
       ...(this.lineColor !== DEFAULT_LINE_COLOR ? { lineColor: this.lineColor } : {}),
+      ...(this.lineType !== "simple" ? { lineType: this.lineType } : {}),
+      ...(this.style !== "line" ? { style: this.style } : {}),
       ...(this.widthAuto ? {} : { widthAuto: false }),
       ...(this.heightAuto ? {} : { heightAuto: false }),
       ...(this.bleed === DEFAULT_CARD_BLEED ? {} : { bleed: this.bleed }),
-      // 图表显示 overrides: undefined fields are dropped by the serializer.
+      // 图表设置 overrides: undefined fields are dropped by the serializer.
       ...this.displayOverrides,
     });
   }

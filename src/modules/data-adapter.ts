@@ -1,11 +1,12 @@
 import { Notice } from "obsidian";
-import type { CustomSourceDef, OhlcvRow, ParsedCardSpec, SymbolItem } from "../types";
+import type { CustomSourceDef, OhlcvRow, ParsedCardSpec, SignalEvent, SymbolItem } from "../types";
 import { cacheAssetKey, isWholeTableSearchSource, resolveGroupApiKey } from "../types";
 import { resolveDateRange, formatDate, parseDateYmd, nextTradingDate, prevTradingDate } from "../utils/date";
 import { matchSymbolEntry } from "../utils/symbol-list";
 import { SqliteCache } from "./sqlite-cache";
 import { CustomQuoteClient } from "./custom-quote-client";
-import { CsvQuoteClient } from "./csv-quote-client";
+import { CsvQuoteClient, parseSignalTable } from "./csv-quote-client";
+import { canAttempt, isRateLimitError, recordFailure, recordSuccess, sleep, TRIP_COOLDOWN_MS } from "./fetch-guard";
 import { t } from "../i18n";
 
 // Whole-table remote search (search template without {query}): the endpoint
@@ -47,13 +48,35 @@ export class DataAdapter {
 
   // Resolves the enabled CustomSourceDef behind a sourceId, or throws the
   // guidance every custom-source path shares. The returned def carries the
-  // group-fallback apiKey (runtime-only, never persisted).
+  // group-fallback apiKey (runtime-only, never persisted). Signal sources
+  // (purpose "signals") are annotation sources and rejected here — they serve
+  // loadSignalEvents only.
   private resolveCustomSource(sourceId: string | undefined): CustomSourceDef {
     const def = this.customSources.find((s) => s.id === sourceId && s.enabled);
     if (!def) {
       throw new Error(t("自定义数据源「{id}」不存在或已停用，请在设置页检查。", { id: sourceId ?? "" }));
     }
+    if (def.purpose === "signals") {
+      throw new Error(t("「{name}」是信号源，不能作为行情数据源。", { name: def.name }));
+    }
     return { ...def, apiKey: resolveGroupApiKey(def, this.customSources) };
+  }
+
+  // Loads signal events (date/code/side/text) from a signals-purpose csv
+  // source. No SQLite cache: files are small, re-reads are cheap, and the
+  // script-output watcher already re-renders every chart card on change.
+  async loadSignalEvents(sourceId: string): Promise<SignalEvent[]> {
+    const def = this.customSources.find(
+      (s) => s.id === sourceId && s.enabled && s.purpose === "signals"
+    );
+    if (!def) {
+      throw new Error(t("信号源「{id}」不存在或已停用，请在设置页检查。", { id: sourceId }));
+    }
+    if (def.format !== "csv" || !def.filePath) {
+      throw new Error(t("信号源「{name}」缺少 CSV 文件配置。", { name: def.name }));
+    }
+    const text = await this.readVaultFile(def.filePath);
+    return parseSignalTable(text).events;
   }
 
   // Server-side quote search for a custom source, used by the unified search
@@ -78,8 +101,8 @@ export class DataAdapter {
       .slice(0, REMOTE_SEARCH_LIMIT);
   }
 
-  // Every source is cached as daily rows and resampled to W/M at read time.
-  // Caching resampled rows broke incremental refresh: the trailing partial
+  // Every source is cached as its raw (usually daily) rows and resampled to
+  // W/M/Q/Y at read time. Caching resampled rows broke incremental refresh: the trailing partial
   // week/month re-fetched from "last cached date + 1" would overwrite the
   // complete period row with an incomplete one.
   private toKey(spec: ParsedCardSpec) {
@@ -107,30 +130,24 @@ export class DataAdapter {
     const { start, end } = resolveDateRange(spec.range);
     const key = this.toKey(spec);
 
+    // Per-source circuit breaker (fetch-guard): a source that keeps failing
+    // (rate-limited, down, bad key) is paused after a few consecutive
+    // failures, and every card on it silently serves cache instead of each
+    // firing its own request and Notice. format "csv" reads a vault-local
+    // file — no rate limiting exists there, so it bypasses the guard.
+    const breakerKey = this.guardKey(spec);
+    if (breakerKey && !canAttempt(breakerKey)) {
+      const cachedRows = await this.cache.loadOhlcvRange(key, start, end);
+      if (cachedRows.length > 0) return this.maybeResample(spec, cachedRows);
+      throw new Error(t("数据源请求连续失败，已暂停自动重试，请稍后再试。"));
+    }
+
     const extent = await this.cache.getOhlcvExtent(key);
 
     try {
-      const fetchedRows: OhlcvRow[] = [];
-
-      if (!extent) {
-        fetchedRows.push(...(await this.fetchOhlcv(spec, start, end)));
-      } else {
-        // Fetch earlier missing data
-        if (start < extent.minDate) {
-          const earlierEnd = prevTradingDate(extent.minDate);
-          if (earlierEnd >= start) {
-            fetchedRows.push(...(await this.fetchOhlcv(spec, start, earlierEnd)));
-          }
-        }
-
-        // Fetch later missing data
-        if (end > extent.maxDate) {
-          const laterStart = nextTradingDate(extent.maxDate);
-          if (laterStart <= end) {
-            fetchedRows.push(...(await this.fetchOhlcv(spec, laterStart, end)));
-          }
-        }
-      }
+      const fetchedRows = breakerKey
+        ? await this.fetchGuarding(spec, start, end, extent, breakerKey)
+        : await this.fetchMissingRanges(spec, start, end, extent);
 
       if (fetchedRows.length > 0) {
         await this.cache.mergeOhlcvRows(key, fetchedRows);
@@ -140,11 +157,89 @@ export class DataAdapter {
     } catch (e) {
       const cachedRows = await this.cache.loadOhlcvRange(key, start, end);
       if (cachedRows.length > 0) {
-        new Notice(`StrataBoard: failed to refresh data, showing cached data. ${e instanceof Error ? e.message : ""}`);
+        // Silent on purpose: the single trip Notice from fetchGuarding is the
+        // only user-facing signal — per-card Notices here flooded the UI
+        // whenever a source got rate-limited.
         return this.maybeResample(spec, cachedRows);
       }
       throw e;
     }
+  }
+
+  // Circuit key for remote custom sources; null for csv (local file) sources.
+  private guardKey(spec: ParsedCardSpec): string | null {
+    const def = this.customSources.find((s) => s.id === spec.sourceId && s.enabled);
+    return def && def.format !== "csv" ? def.id : null;
+  }
+
+  // Incremental fetch wrapped in the rate-limit guard: rate-limit-style
+  // failures retry up to 3 attempts with backoff (2s, 5s), and every failure
+  // feeds the source's circuit breaker — the Notice fires only on the trip
+  // transition, so a struggling source produces one toast, not one per card.
+  private async fetchGuarding(
+    spec: ParsedCardSpec,
+    start: string,
+    end: string,
+    extent: { minDate: string; maxDate: string } | null,
+    breakerKey: string,
+  ): Promise<OhlcvRow[]> {
+    const backoffs = [2000, 5000];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const rows = await this.fetchMissingRanges(spec, start, end, extent);
+        recordSuccess(breakerKey);
+        return rows;
+      } catch (e) {
+        if (recordFailure(breakerKey)) {
+          // The breaker trips on ANY repeated failure (rate limit, WAF block,
+          // dead domain alike) — name no cause here, carry the real one.
+          new Notice(t("数据源「{name}」请求连续失败，已暂停 {min} 分钟，期间展示缓存数据。最近错误：{msg}", {
+            name: this.sourceName(spec.sourceId),
+            min: String(Math.round(TRIP_COOLDOWN_MS / 60000)),
+            msg: e instanceof Error ? e.message : String(e),
+          }));
+        }
+        if (!isRateLimitError(e) || attempt >= backoffs.length || !canAttempt(breakerKey)) throw e;
+        await sleep(backoffs[attempt]);
+      }
+    }
+  }
+
+  private sourceName(sourceId: string | undefined): string {
+    return this.customSources.find((s) => s.id === sourceId)?.name ?? sourceId ?? "";
+  }
+
+  // Fetches only the ranges the cache does not cover yet (the whole window on
+  // a cold cache, otherwise the missing head/tail around the cached extent).
+  private async fetchMissingRanges(
+    spec: ParsedCardSpec,
+    start: string,
+    end: string,
+    extent: { minDate: string; maxDate: string } | null,
+  ): Promise<OhlcvRow[]> {
+    const fetchedRows: OhlcvRow[] = [];
+
+    if (!extent) {
+      fetchedRows.push(...(await this.fetchOhlcv(spec, start, end)));
+    } else {
+      // Fetch earlier missing data
+      if (start < extent.minDate) {
+        const earlierEnd = prevTradingDate(extent.minDate);
+        if (earlierEnd >= start) {
+          fetchedRows.push(...(await this.fetchOhlcv(spec, start, earlierEnd)));
+        }
+      }
+
+      // Fetch later missing data
+      if (end > extent.maxDate) {
+        const laterStart = nextTradingDate(extent.maxDate);
+        if (laterStart <= end) {
+          fetchedRows.push(...(await this.fetchOhlcv(spec, laterStart, end)));
+        }
+      }
+    }
+
+    return fetchedRows;
   }
 
   private async fetchOhlcv(spec: ParsedCardSpec, start: string, end: string): Promise<OhlcvRow[]> {
@@ -165,7 +260,7 @@ export class DataAdapter {
     return new CustomQuoteClient(def).fetchKline(spec.symbol, start, end, undefined, declaredProfile);
   }
 
-  private resample(rows: OhlcvRow[], freq: "W" | "M"): OhlcvRow[] {
+  private resample(rows: OhlcvRow[], freq: "W" | "M" | "Q" | "Y"): OhlcvRow[] {
     if (rows.length === 0) return [];
 
     const sorted = [...rows].sort((a, b) => a.tradeDate.localeCompare(b.tradeDate));
@@ -181,7 +276,7 @@ export class DataAdapter {
     for (const group of groups.values()) {
       result.push({
         // Period-end trading date (the weekly/monthly trade_date convention),
-        // so daily-based MAs can be fitted onto resampled W/M bars.
+        // so daily-based MAs can be fitted onto resampled W/M/Q/Y bars.
         tradeDate: group[group.length - 1].tradeDate,
         open: group[0].open,
         high: Math.max(...group.map((r) => r.high)),
@@ -195,11 +290,18 @@ export class DataAdapter {
     return result.sort((a, b) => a.tradeDate.localeCompare(b.tradeDate));
   }
 
-  private getPeriodKey(ymd: string, freq: "W" | "M"): string {
+  private getPeriodKey(ymd: string, freq: "W" | "M" | "Q" | "Y"): string {
     const date = parseDateYmd(ymd);
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, "0");
 
+    if (freq === "Y") {
+      return `${y}0101`;
+    }
+    if (freq === "Q") {
+      const q = Math.floor(date.getMonth() / 3) + 1;
+      return `${y}Q${q}`;
+    }
     if (freq === "M") {
       return `${y}${m}01`;
     }

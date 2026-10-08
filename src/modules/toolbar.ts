@@ -131,7 +131,7 @@ export class CanvasToolbar {
         menu: [
           { text: "数据叠加", icon: "layers", onClick: () => this.insertOverlay() },
           { text: "数据计算", icon: "calculator", onClick: () => this.insertSpread() },
-          { text: "脚本处理", icon: "file-code-corner", onClick: () => this.plugin.openScriptManager() },
+          { text: "本地脚本", icon: "file-code-corner", onClick: () => this.plugin.openScriptManager() },
         ],
       },
       tradingview: {

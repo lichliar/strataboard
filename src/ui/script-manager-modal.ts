@@ -1,12 +1,12 @@
 import { App, Modal, Notice, Setting, TFile } from "obsidian";
 import type StrataBoardPlugin from "../main";
 import { ensureFolder } from "../modules/daily-notes";
-import { runScript } from "../modules/script-runner";
-import { AI_SCRIPT_PROMPT, syncScriptSources } from "../modules/script-sources";
+import { syncScriptSources } from "../modules/script-sources";
+import { openSettingsTab } from "../settings";
 import { normalizePath } from "../utils/slug";
 import { t } from "../i18n";
 
-// 脚本处理 manager (toolbar 数据处理 menu / command 打开脚本管理): lists the
+// 本地脚本 manager (toolbar 数据处理 menu / command 打开本地脚本管理): lists the
 // Python scripts in the script folder RECURSIVELY, grouped by subfolder so
 // users can organize large script collections with folders. Each row has an
 // enable toggle (writes settings.disabledScripts, keyed by folder-relative
@@ -15,8 +15,8 @@ import { t } from "../i18n";
 // 部署为数据源 button (force-registers it via syncScriptSources). Scripts are
 // created outside the plugin (by the user or their AI) — there is no 新建
 // 脚本 button. The log area shows stdout/stderr of manual runs verbatim. The
-//「AI 辅助」section is a copyable prompt (the plugin has no built-in
-// assistant) carrying the CSV contract and the compliance rules.
+//「AI 辅助」entry is just a jump button to the settings tab holding the
+// copyable script-writing prompt (single source of truth).
 
 export class ScriptManagerModal extends Modal {
   private logEl: HTMLElement | null = null;
@@ -29,7 +29,7 @@ export class ScriptManagerModal extends Modal {
   }
 
   onOpen() {
-    this.setTitle(t("脚本处理"));
+    this.setTitle(t("本地脚本"));
     this.render();
   }
 
@@ -69,7 +69,7 @@ export class ScriptManagerModal extends Modal {
     if (scripts.length === 0) {
       contentEl.createDiv({
         cls: "fc-field-hint",
-        text: t("脚本文件夹中还没有 Python 脚本：自行编写或用 AI 编写（下方有提示词）后放入该文件夹即可，支持用子文件夹归类；脚本把结果 CSV 写入 output/ 子目录即可在卡片中使用。"),
+        text: t("脚本文件夹中还没有 Python 脚本：自行编写或用 AI 编写（提示词在设置页「AI 辅助」）后放入该文件夹即可，支持用子文件夹归类；脚本把结果 CSV 写入 output/ 子目录即可在卡片中使用。"),
       });
     }
     // Group by subfolder: root scripts first, then one section per subfolder.
@@ -150,24 +150,18 @@ export class ScriptManagerModal extends Modal {
     this.render();
   }
 
-  // ===== AI 辅助 (copyable prompt; the plugin has no built-in assistant) =====
+  // ===== AI 辅助 (jump button; the copyable prompt lives in settings) =====
 
   private renderAiSection(containerEl: HTMLElement) {
-    const details = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    details.createEl("summary", { text: t("AI 辅助") });
-    details.createDiv({
-      cls: "fc-field-hint",
-      text: t("复制下方提示词（已附产物契约与合规规则），连同你的脚本或报错一起发给你自己的 AI（如 Codex / Claude Code / Kimi）。"),
-    });
-    const promptArea = details.createEl("textarea", { cls: "fc-mono fc-prompt-area", attr: { readonly: "true" } });
-    promptArea.value = t(AI_SCRIPT_PROMPT);
-    const copyBtn = details.createEl("button", { text: t("复制提示词") });
-    copyBtn.addEventListener("click", () => {
-      void navigator.clipboard.writeText(promptArea.value).then(
-        () => new Notice(t("提示词已复制到剪贴板，去发给你的 AI 吧。")),
-        () => new Notice(t("复制失败，请手动选中提示词复制。")),
+    new Setting(containerEl)
+      .setName(t("AI 辅助"))
+      .setDesc(t("编写/修改脚本的提示词（含产物契约与合规规则）在设置页「AI 辅助」tab。"))
+      .addButton((btn) =>
+        btn.setButtonText(t("前往 AI 辅助")).onClick(() => {
+          this.close();
+          openSettingsTab(this.app, "external-ai");
+        })
       );
-    });
   }
 
   private appendLog(text: string) {
@@ -177,11 +171,8 @@ export class ScriptManagerModal extends Modal {
   }
 
   private async runNow(file: TFile) {
-    const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
-    const basePath = adapter.getBasePath?.() ?? "";
-    const rel = this.relPath(file);
-    this.appendLog(`$ python3 ${rel}`);
-    const result = await runScript(`${basePath}/${this.folder()}`, rel);
+    this.appendLog(`$ python3 ${this.relPath(file)}`);
+    const result = await this.plugin.runScriptFile(file);
     if (result.stdout.trim()) this.appendLog(result.stdout.trimEnd());
     if (result.stderr.trim()) this.appendLog(result.stderr.trimEnd());
     this.appendLog(
@@ -191,12 +182,6 @@ export class ScriptManagerModal extends Modal {
           ? t("运行完成（退出码 0）")
           : t("运行失败（退出码 {code}）", { code: result.code })
     );
-    if (result.code === 0 && !result.timedOut) {
-      // A successful manual run takes the same invalidation path as the
-      // watcher, without waiting for it: register the output if it is new,
-      // clear its source's cache keys, re-render every chart card.
-      await this.plugin.invalidateScriptOutput(`${this.folder()}/output/${file.basename}.csv`);
-    }
     this.render();
   }
 

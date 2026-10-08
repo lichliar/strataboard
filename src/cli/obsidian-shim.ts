@@ -36,11 +36,11 @@ export async function requestUrl(param: RequestUrlParam): Promise<RequestUrlResp
   });
   const arrayBuffer = await res.arrayBuffer();
   const text = new TextDecoder("utf-8").decode(arrayBuffer);
-  let json: any = null;
+  let json: any = undefined;
   try {
     json = JSON.parse(text);
   } catch {
-    // Non-JSON body: callers that expect JSON will fail on the null below.
+    // Non-JSON body: match real requestUrl, which leaves .json undefined.
   }
   const responseHeaders: Record<string, string> = {};
   res.headers.forEach((value, key) => {

@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
-import type { ChartTheme, CustomSourceDef, DisplayOverrides, OverlayCompareMode, OverlaySpec, SeriesPeriod, SeriesRef } from "../types";
+import type { ChartTheme, CustomSourceDef, DisplayOverrides, OverlayCompareMode, OverlaySpec, SeriesLineType, SeriesPeriod, SeriesRef } from "../types";
 import { SeriesRefEditor, type ListReferenceableCards, type OpenSymbolPicker } from "./series-ref-editor";
 import { SeriesAdapter } from "../modules/series-adapter";
 import { addStepper } from "./stepper";
@@ -10,10 +10,10 @@ import { t } from "../i18n";
 
 // Overlay (资产叠加) card editor (wireframe #screen-overlay). Three sub-pages
 // matching the unified/calc modals: 系列编辑 (dynamic series rows), 数据设置
-// (range / period / 叠加方式 compare mode + per-series 缩放系数 / height),
-// 显示设置 (主题 / fixed line type + the Canvas 显示逻辑 group). No expression
-// input, so no error states — invalid rows are reported via Notice at save
-// time.
+// (range / period / 叠加方式 compare mode + per-series 缩放系数),
+// 显示设置 (fixed line type / 线型 + the Canvas 设置 and 图表设置
+// collapsibles). No expression input, so no error states — invalid rows are
+// reported via Notice at save time.
 
 const RANGE_OPTIONS: { value: string; label: string }[] = [
   { value: "1y", label: "近1年" },
@@ -57,6 +57,7 @@ export class OverlayEditModal extends Modal {
   private range: string;
   private period: SeriesPeriod;
   private compareMode: OverlayCompareMode;
+  private lineType: SeriesLineType;
   // Raw text of the per-series 缩放系数 inputs (indexed like the series rows);
   // empty = 1. Parsed and validated at save time.
   private scaleInputs: string[];
@@ -65,7 +66,7 @@ export class OverlayEditModal extends Modal {
   private widthAuto: boolean;
   private heightAuto: boolean;
   private bleed: number;
-  // Per-card 图表显示 overrides (undefined = follow the plugin-wide 显示设置).
+  // Per-card 图表设置 overrides (undefined = follow the plugin-wide 显示设置).
   private displayOverrides: DisplayOverrides;
   private editors: SeriesRefEditor[] = [];
   private rowsEl: HTMLElement | null = null;
@@ -77,6 +78,9 @@ export class OverlayEditModal extends Modal {
   private openSymbolPicker: OpenSymbolPicker;
   private listReferenceableCards: ListReferenceableCards;
   private customSources: CustomSourceDef[];
+  // Sync display-name resolver for series refs (card refs resolve through the
+  // card index's warm map). Defaults to label-or-code when not provided.
+  private resolveSeriesName: (ref: SeriesRef) => string;
 
   constructor(
     app: App,
@@ -85,13 +89,15 @@ export class OverlayEditModal extends Modal {
     openSymbolPicker: OpenSymbolPicker,
     listReferenceableCards: ListReferenceableCards,
     title?: string,
-    customSources?: CustomSourceDef[]
+    customSources?: CustomSourceDef[],
+    resolveSeriesName?: (ref: SeriesRef) => string
   ) {
     super(app);
     this.initialSeries = spec.series;
     this.range = RANGE_OPTIONS.some((o) => o.value === spec.range) ? spec.range : "10y";
     this.period = spec.period ?? "D";
     this.compareMode = spec.normalize ?? "percent";
+    this.lineType = spec.lineType ?? "simple";
     this.scaleInputs = spec.series.map((ref) => (ref.scale !== undefined ? String(ref.scale) : ""));
     this.height = spec.height ? String(spec.height) : "";
     this.theme = spec.theme ?? "auto";
@@ -111,6 +117,7 @@ export class OverlayEditModal extends Modal {
     this.openSymbolPicker = openSymbolPicker;
     this.listReferenceableCards = listReferenceableCards;
     this.customSources = customSources ?? [];
+    this.resolveSeriesName = resolveSeriesName ?? ((ref) => ref.label || SeriesAdapter.defaultLabel(ref));
     this.setTitle(title ?? t("编辑资产叠加卡"));
   }
 
@@ -258,21 +265,6 @@ export class OverlayEditModal extends Modal {
     // the data tab is activated, so series-row edits are reflected.
     this.scaleRowsEl = pageEl.createDiv();
     this.renderScaleRows();
-
-    new Setting(pageEl)
-      .setName(t("高度"))
-      .setDesc(t("可选，单位 px（200–1600，默认 400）；开启「显示设置 → 高度自适应」后此字段失效。"))
-      .addText((text) => {
-        text
-          .setPlaceholder(t("如 400"))
-          .setValue(this.height)
-          .setDisabled(this.heightAuto)
-          .onChange((value) => {
-            this.height = value.trim();
-          });
-        text.inputEl.addClass("fc-mono");
-        this.heightText = text;
-      });
   }
 
   // One coefficient input per series row, labeled with the row's current
@@ -295,7 +287,7 @@ export class OverlayEditModal extends Modal {
     });
     this.editors.forEach((editor, i) => {
       const ref = editor.toRef();
-      const name = ref.label || SeriesAdapter.defaultLabel(ref) || `${i + 1}`;
+      const name = this.resolveSeriesName(ref) || `${i + 1}`;
       new Setting(group).setName(`${i + 1}. ${name}`).addText((text) => {
         text
           .setPlaceholder("1")
@@ -312,15 +304,6 @@ export class OverlayEditModal extends Modal {
   // ==================== 显示设置 ====================
 
   private renderDisplayPage(pageEl: HTMLElement) {
-    new Setting(pageEl).setName(t("主题")).addDropdown((dropdown) => {
-      for (const option of THEME_OPTIONS) {
-        dropdown.addOption(option.value, t(option.label));
-      }
-      dropdown.setValue(this.theme).onChange((value) => {
-        this.theme = value as ChartTheme;
-      });
-    });
-
     new Setting(pageEl)
       .setName(t("图表类型"))
       .setDesc(t("叠加对比固定为折线图。"))
@@ -330,11 +313,33 @@ export class OverlayEditModal extends Modal {
         dropdown.setDisabled(true);
       });
 
-    // Canvas 显示逻辑 group (same pattern as the unified edit modal).
-    const group = pageEl.createDiv("fc-canvas-logic-group");
-    group.createDiv({ cls: "fc-canvas-logic-title", text: t("Canvas 显示逻辑") });
+    new Setting(pageEl)
+      .setName(t("线型"))
+      .setDesc(t("直线为默认；平滑曲线做平滑过渡；阶梯适合利率等离散跳变数据。作用于卡内所有折线。"))
+      .addDropdown((dropdown) => {
+        dropdown.addOption("simple", t("直线（默认）"));
+        dropdown.addOption("curved", t("平滑曲线"));
+        dropdown.addOption("steps", t("阶梯"));
+        dropdown.setValue(this.lineType);
+        dropdown.onChange((value) => {
+          this.lineType = value === "curved" || value === "steps" ? value : "simple";
+        });
+      });
 
-    new Setting(group)
+    // Canvas 设置 collapsible (mirrors the unified edit modal).
+    const canvasDetails = pageEl.createEl("details", { cls: "fc-settings-sub" });
+    canvasDetails.createEl("summary", { text: t("Canvas 设置") });
+
+    new Setting(canvasDetails).setName(t("主题")).addDropdown((dropdown) => {
+      for (const option of THEME_OPTIONS) {
+        dropdown.addOption(option.value, t(option.label));
+      }
+      dropdown.setValue(this.theme).onChange((value) => {
+        this.theme = value as ChartTheme;
+      });
+    });
+
+    new Setting(canvasDetails)
       .setName(t("宽度自适应"))
       .setDesc(t("卡片宽度跟随 Canvas 节点宽度缩放。"))
       .addToggle((toggle) =>
@@ -343,9 +348,24 @@ export class OverlayEditModal extends Modal {
         })
       );
 
-    new Setting(group)
+    new Setting(canvasDetails)
+      .setName(t("高度"))
+      .setDesc(t("可选，单位 px（200–1600，默认 400）；开启「高度自适应」后此字段失效。"))
+      .addText((text) => {
+        text
+          .setPlaceholder(t("如 400"))
+          .setValue(this.height)
+          .setDisabled(this.heightAuto)
+          .onChange((value) => {
+            this.height = value.trim();
+          });
+        text.inputEl.addClass("fc-mono");
+        this.heightText = text;
+      });
+
+    new Setting(canvasDetails)
       .setName(t("高度自适应"))
-      .setDesc(t("开启后跟随节点高度，「数据设置」的高度字段失效。"))
+      .setDesc(t("开启后跟随节点高度，「高度」字段失效。"))
       .addToggle((toggle) =>
         toggle.setValue(this.heightAuto).onChange((value) => {
           this.heightAuto = value;
@@ -353,7 +373,7 @@ export class OverlayEditModal extends Modal {
         })
       );
 
-    const bleedSetting = new Setting(group)
+    const bleedSetting = new Setting(canvasDetails)
       .setName(t("出血尺寸"))
       .setDesc(t("卡片内容与 Canvas 节点边缘的留白。"));
     addStepper(bleedSetting.controlEl, {
@@ -366,8 +386,10 @@ export class OverlayEditModal extends Modal {
       unit: "px",
     });
 
-    // Per-card overrides of the plugin-wide 显示设置.
-    renderDisplayOverrideSettings(pageEl, this.displayOverrides, { series: true });
+    // 图表设置 collapsible: per-card overrides of the plugin-wide 显示设置.
+    const chartDetails = pageEl.createEl("details", { cls: "fc-settings-sub" });
+    chartDetails.createEl("summary", { text: t("图表设置（覆盖全局）") });
+    renderDisplayOverrideSettings(chartDetails, this.displayOverrides, { series: true });
   }
 
   // ==================== Save ====================
@@ -384,7 +406,7 @@ export class OverlayEditModal extends Modal {
       const ref = editor.toRef();
       const rawScale = (this.scaleInputs[i] ?? "").trim();
       if (rawScale) {
-        const name = ref.label || SeriesAdapter.defaultLabel(ref) || `${i + 1}`;
+        const name = this.resolveSeriesName(ref) || `${i + 1}`;
         const scale = Number(rawScale);
         if (!Number.isFinite(scale) || scale === 0) {
           new Notice(t("缩放系数「{name}」应为非零数字。", { name }));
@@ -417,12 +439,13 @@ export class OverlayEditModal extends Modal {
       range: this.range,
       period: this.period,
       normalize: this.compareMode,
+      ...(this.lineType !== "simple" ? { lineType: this.lineType } : {}),
       ...(height !== undefined ? { height } : {}),
       ...(this.theme !== "auto" ? { theme: this.theme } : {}),
       ...(this.widthAuto ? {} : { widthAuto: false }),
       ...(this.heightAuto ? {} : { heightAuto: false }),
       ...(this.bleed === DEFAULT_CARD_BLEED ? {} : { bleed: this.bleed }),
-      // 图表显示 overrides: undefined fields are dropped by the serializer.
+      // 图表设置 overrides: undefined fields are dropped by the serializer.
       ...this.displayOverrides,
     });
   }

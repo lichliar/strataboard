@@ -1,8 +1,8 @@
 import { parse, stringify } from "yaml";
-import { cacheAssetKey, type AssetType, type Freq, type ParsedCardSpec, type RangePreset, type VisibleRangePreset, type WidgetType } from "../types";
+import { cacheAssetKey, type AssetType, type Freq, type IndicatorInstance, type ParsedCardSpec, type PriceLineSpec, type RangePreset, type SignalRef, type VisibleRangePreset, type WidgetType } from "../types";
 import { isDateRangeString } from "../utils/date";
 
-const VALID_FREQS: Freq[] = ["D", "W", "M"];const VALID_RANGES: RangePreset[] = ["1y", "3y", "5y", "ytd", "max"];
+const VALID_FREQS: Freq[] = ["D", "W", "M", "Q", "Y"];const VALID_RANGES: RangePreset[] = ["1y", "3y", "5y", "ytd", "max"];
 const VALID_VISIBLE_RANGES: VisibleRangePreset[] = ["1m", "3m", "6m", "1y", "ytd", "max"];
 const VALID_WIDGET_TYPES: WidgetType[] = ["iframe", "html"];
 
@@ -94,14 +94,24 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
     return { ok: false, error: { message: visibleEnd.message } };
   }
   const logScale = extractBoolean(map, "对数坐标");
-  const maPeriods = extractPositiveIntegerArray(map, "均线");
+  const indicators = extractIndicators(map);
+  if (indicators instanceof Error) {
+    return { ok: false, error: { message: indicators.message } };
+  }
+  const signal = extractSignalRef(map);
+  if (signal instanceof Error) {
+    return { ok: false, error: { message: signal.message } };
+  }
+  const priceLines = extractPriceLines(map);
+  if (priceLines instanceof Error) {
+    return { ok: false, error: { message: priceLines.message } };
+  }
   const widthAuto = extractBoolean(map, "宽度自适应");
   const heightAuto = extractBoolean(map, "高度自适应");
   const bleed = extractBleed(map);
   const showLegend = extractBoolean(map, "显示图例");
   const legendFrosted = extractBoolean(map, "图例半透明");
   const legendOpacity = extractOpacity(map, "图例透明度");
-  const showMA = extractBoolean(map, "显示均线");
   const showGrid = extractBoolean(map, "显示网格");
   const gridOpacity = extractOpacity(map, "网格透明度");
 
@@ -126,14 +136,15 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
       visibleStart,
       visibleEnd,
       logScale,
-      maPeriods,
+      indicators,
+      signal,
+      priceLines,
       widthAuto,
       heightAuto,
       bleed,
       showLegend,
       legendFrosted,
       legendOpacity,
-      showMA,
       showGrid,
       gridOpacity,
     },
@@ -287,8 +298,24 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
   if (spec.logScale === true) {
     obj.对数坐标 = true;
   }
-  if (spec.maPeriods != null && spec.maPeriods.length > 0) {
-    obj.均线 = spec.maPeriods;
+  if (spec.signal != null) {
+    obj.信号 = spec.signal.code
+      ? { 源: spec.signal.sourceId, 代码: spec.signal.code }
+      : spec.signal.sourceId;
+  }
+  if (spec.indicators !== undefined) {
+    obj.indicators = spec.indicators;
+  }
+  if (spec.priceLines != null && spec.priceLines.length > 0) {
+    obj.价位线 = spec.priceLines.map((line) =>
+      line.title == null && line.color == null
+        ? line.price
+        : {
+            价格: line.price,
+            ...(line.title ? { 名称: line.title } : {}),
+            ...(line.color ? { 颜色: line.color } : {}),
+          }
+    );
   }
   // Canvas display fields are only written when they differ from the defaults
   // (widthAuto/heightAuto default true, bleed defaults to DEFAULT_CARD_BLEED),
@@ -312,9 +339,6 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
   }
   if (spec.legendOpacity != null) {
     obj.图例透明度 = spec.legendOpacity;
-  }
-  if (spec.showMA != null) {
-    obj.显示均线 = spec.showMA;
   }
   if (spec.showGrid != null) {
     obj.显示网格 = spec.showGrid;
@@ -378,6 +402,93 @@ function extractBoolean(map: Record<string, unknown>, key: string): boolean | un
   return undefined;
 }
 
+// 信号: a signal-source id string, or a {源: id, 代码: code} map. 代码 is
+// optional and defaults to the card's own symbol at render time.
+function extractSignalRef(map: Record<string, unknown>): SignalRef | Error | undefined {
+  const raw = map["信号"];
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (typeof raw === "string") {
+    const sourceId = raw.trim();
+    return sourceId ? { sourceId } : undefined;
+  }
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    const m = raw as Record<string, unknown>;
+    const sourceId = String(m["源"] ?? "").trim();
+    if (!sourceId) return new Error("Invalid 信号: 缺少 源（信号源 id）。");
+    const code = String(m["代码"] ?? "").trim();
+    return { sourceId, ...(code ? { code } : {}) };
+  }
+  return new Error("Invalid 信号: 应为信号源 id 字符串或 {源, 代码} 映射。");
+}
+
+// indicators: a list of indicator instances, each a {id, inputs?, hidden?}
+// map. id is the indicator registry id; inputs are parameter overrides
+// (values pass through unvalidated); hidden: true keeps the instance but
+// skips drawing it. An empty list is meaningful — explicitly no indicators,
+// overriding the global default.
+function extractIndicators(map: Record<string, unknown>): IndicatorInstance[] | Error | undefined {
+  const raw = map["indicators"];
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    return new Error("Invalid indicators: 应为指标实例列表（每项为 {id, inputs?} 对象）。");
+  }
+  const indicators: IndicatorInstance[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const entry = raw[i];
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return new Error(`indicators[${i}] 必须是一个 YAML 对象。`);
+    }
+    const m = entry as Record<string, unknown>;
+    const id = typeof m.id === "string" ? m.id.trim() : "";
+    if (!id) {
+      return new Error(`indicators[${i}] 缺少有效的 id。`);
+    }
+    const inputs = m.inputs;
+    if (inputs !== undefined && (inputs === null || typeof inputs !== "object" || Array.isArray(inputs))) {
+      return new Error(`indicators[${i}] 的 inputs 必须是对象。`);
+    }
+    if (m.hidden !== undefined && typeof m.hidden !== "boolean") {
+      return new Error(`indicators[${i}] 的 hidden 必须是布尔值。`);
+    }
+    indicators.push({
+      id,
+      ...(inputs !== undefined ? { inputs: inputs as Record<string, unknown> } : {}),
+      ...(m.hidden === true ? { hidden: true } : {}),
+    });
+  }
+  return indicators;
+}
+
+// 价位线: a list of entries, each either a bare price number or a
+// {价格, 名称?, 颜色?} map (成本线/关注价位 horizontal reference lines).
+function extractPriceLines(map: Record<string, unknown>): PriceLineSpec[] | Error | undefined {
+  const raw = map["价位线"];
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (!Array.isArray(raw)) {
+    return new Error("Invalid 价位线: 应为价格数字或 {价格, 名称, 颜色} 映射的列表。");
+  }
+  const lines: PriceLineSpec[] = [];
+  for (const item of raw) {
+    if (typeof item === "number" && Number.isFinite(item)) {
+      lines.push({ price: item });
+      continue;
+    }
+    if (item !== null && typeof item === "object" && !Array.isArray(item)) {
+      const m = item as Record<string, unknown>;
+      const price = Number(m["价格"]);
+      if (!Number.isFinite(price)) {
+        return new Error("Invalid 价位线: 缺少有效的 价格 数值。");
+      }
+      const title = String(m["名称"] ?? "").trim();
+      const color = String(m["颜色"] ?? "").trim();
+      lines.push({ price, ...(title ? { title } : {}), ...(color ? { color } : {}) });
+      continue;
+    }
+    return new Error("Invalid 价位线: 条目应为价格数字或 {价格, 名称, 颜色} 映射。");
+  }
+  return lines.length > 0 ? lines : undefined;
+}
+
 function extractLiteral<T extends string>(
   map: Record<string, unknown>,
   key: string,
@@ -410,20 +521,6 @@ function extractPositiveNumberArray(
     .map((item) => (typeof item === "number" && Number.isFinite(item) && item > 0 ? item : null))
     .filter((item): item is number => item !== null);
   return values.length > 0 ? values : undefined;
-}
-
-// Like extractPositiveNumberArray, but keeps only positive integers,
-// dedupes, sorts ascending, and caps the count — used for 均线 (MA periods).
-const MAX_MA_PERIODS = 8;
-
-function extractPositiveIntegerArray(
-  map: Record<string, unknown>,
-  key: string
-): number[] | undefined {
-  const raw = extractPositiveNumberArray(map, key);
-  if (!raw) return undefined;
-  const values = [...new Set(raw.filter((n) => Number.isInteger(n)))].sort((a, b) => a - b);
-  return values.length > 0 ? values.slice(0, MAX_MA_PERIODS) : undefined;
 }
 
 function extractHeight(map: Record<string, unknown>, defaultValue?: number): number {

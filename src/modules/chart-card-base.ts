@@ -1,5 +1,5 @@
 import { MarkdownRenderChild, type App } from "obsidian";
-import { onAttached } from "../utils/dom";
+import { nextFrameBounded, onAttached } from "../utils/dom";
 
 // Minimal slice of the plugin the base class needs; keeps this module free
 // of the main.ts import cycle. The full plugin satisfies it structurally.
@@ -16,7 +16,7 @@ export interface ChartCardRefreshHandle {
   refreshCard(): void;
 }
 
-/** The card spec's Canvas 显示逻辑 fields, resolved against defaults. */
+/** The card spec's Canvas 设置 fields, resolved against defaults. */
 export interface CanvasDisplayOptions {
   widthAuto: boolean;
   heightAuto: boolean;
@@ -24,7 +24,7 @@ export interface CanvasDisplayOptions {
 }
 
 /**
- * Applies the Canvas 显示逻辑 spec fields (统合编辑弹窗) to a rendered card.
+ * Applies the Canvas 设置 spec fields (统合编辑弹窗) to a rendered card.
  * Canvas-only: outside a canvas node the card keeps its regular note styling.
  * Both rules are CSS-level — the bleed goes through a --fc-bleed custom
  * property and the .fc-canvas-bleed / .fc-canvas-height-auto classes carry
@@ -75,6 +75,9 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
   // Protected so subclasses can tell user-driven chart interactions (which
   // only happen in chart mode) from programmatic ones.
   protected chartActive = false;
+  // The initial render's promise (renderBody handles its own errors, so it
+  // never rejects). whenReady() exposes it to the code-block processor.
+  private initialRender: Promise<void> = Promise.resolve();
 
   constructor(plugin: ChartCardPluginHost, containerEl: HTMLElement, source: string, sourcePath: string) {
     super(containerEl);
@@ -94,7 +97,7 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
     this.containerEl.addClass("interactive-child");
     onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
 
-    void this.renderBody();
+    this.initialRender = Promise.resolve(this.renderBody());
 
     // The dblclick listener sits on DOCUMENT (capture), not on the card:
     // while inactive the card is covered by Obsidian's content blocker,
@@ -205,6 +208,23 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
 
   // Subclass renders the chart (or the error + retry state) into containerEl.
   protected abstract renderBody(): void | Promise<void>;
+
+  // Resolves when the INITIAL render settled and the chart canvas holds a
+  // painted frame. The code-block processor returns this promise so Obsidian
+  // awaits the chart before capturing the page (导出为 PDF renders the note
+  // in a hidden pass and snapshots whatever the DOM holds at that point).
+  // Never rejects: renderBody renders its own error state, and the trailing
+  // frame wait is bounded in case rAF never fires in the hidden pass.
+  whenReady(): Promise<void> {
+    return this.initialRender
+      .then(() => this.forcePaint())
+      .then(() => nextFrameBounded());
+  }
+
+  // Subclasses whose chart lives in a child renderer forward to its
+  // forcePaint() (a discarded takeScreenshot: a synchronous full repaint).
+  // Default no-op.
+  protected forcePaint(): void {}
 
   // Public re-render entry for the plugin-level registry (script-output
   // invalidation refreshes every chart card): same render path as the header

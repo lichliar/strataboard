@@ -1,7 +1,7 @@
-import { App, Notice, PluginSettingTab, Setting, TFile } from "obsidian";
+import { App, Modal, Notice, PluginSettingTab, Setting, TFile } from "obsidian";
 import type StrataBoardPlugin from "./main";
-import type { CustomSourceDef, ToolbarEntryId, ToolbarPosition, ToolbarSourceId, ToolbarStyle } from "./types";
-import { isWholeTableSearchSource, resolveApiKeySource, sourceNeedsApiKey } from "./types";
+import type { CustomSourceDef, IndicatorInstance, ToolbarEntryId, ToolbarPosition, ToolbarSourceId, ToolbarStyle } from "./types";
+import { isWholeTableSearchSource, resolveApiKeySource, sourceNeedsApiKey, cacheAssetKey } from "./types";
 import { t, setLanguage, type Language } from "./i18n";
 import { FolderPathSelect } from "./ui/folder-suggester";
 import { CleanupConfirmModal } from "./ui/cleanup-modal";
@@ -9,16 +9,30 @@ import { ConfirmModal } from "./ui/confirm-modal";
 import { TextInputModal } from "./ui/text-input-modal";
 import { AI_SOURCE_PROMPT, CUSTOM_FORMAT_LABELS, CustomSourceImportModal, CustomSourceModal, mergeImportedSources } from "./ui/custom-source-modal";
 import { CsvSourceModal } from "./ui/csv-source-modal";
+import { BuiltinIndicatorEditModal } from "./ui/builtin-indicator-edit-modal";
 import { MIN_REQUEST_INTERVAL_MS } from "./modules/http";
 import {
   collectUsedCacheKeys,
   deleteStaleCacheEntry,
+  findMissingIndicatorRefs,
   findOrphanCardFiles,
   findStaleCacheEntries,
+  type MissingIndicatorRef,
 } from "./modules/maintenance";
-import { syncScriptSources, AI_SCRIPT_PROMPT } from "./modules/script-sources";
+import { getScriptProvenance, isScriptSource, syncScriptSources } from "./modules/script-sources";
+import { AI_SCRIPT_PROMPT } from "./modules/script-prompt";
+import { AI_INDICATOR_PROMPT } from "./modules/indicator-prompt";
+import { ScriptDatasetsModal } from "./ui/script-datasets-modal";
+import { runCardRefMigration, type CardRefMigrationReport } from "./modules/card-ref-migration";
+import { runMaMigration, type MaMigrationReport } from "./modules/card-ma-migration";
+import { syncIndicatorFiles, getIndicatorLoadErrors } from "./modules/indicators/loader";
+import { indicatorRegistry } from "./modules/indicators/registry";
+import { ensureFolder } from "./modules/daily-notes";
 import { renderAiGuide } from "./modules/ai-guide";
+import { applyInfoDescs } from "./ui/info-desc";
 import { openPluginSettings } from "./utils/obsidian-internals";
+import { normalizePath, sanitizeFileNamePart } from "./utils/slug";
+import { formatDateTime } from "./utils/date";
 
 // One-click MCP/CLI setup prompt (AI 辅助 tab): the user pastes it into
 // their own AI agent, which locates the vault itself and registers the MCP
@@ -31,12 +45,16 @@ export const MCP_SETUP_PROMPT = `请帮我把 Obsidian 插件 StrataBoard 的 MC
 
 请按以下步骤操作：
 1. 确定我的 vault 根目录：如果当前工作目录在某个 Obsidian vault 内（向上查找包含 .obsidian 目录的位置）就直接用它；找不到就问我，不要猜。
-2. 按你的客户端注册名为 strataboard 的 MCP server：command 为 node，args 为 ["<vault根目录>/.obsidian/plugins/strataboard/mcp-server.js", "--vault", "<vault根目录>"]（也可以用环境变量 STRATABOARD_VAULT 传 vault 路径）。
+2. 确认 mcp-server.js 已就位：检查 <vault根目录>/.obsidian/plugins/strataboard/ 下是否存在 mcp-server.js 和 cli.js。从 Obsidian 第三方插件市场安装的插件只包含 main.js / manifest.json / styles.css，这两个文件由插件在启动时从 GitHub release 自动补齐，所以：
+   - 文件不存在时，先让我重启 Obsidian（或在插件设置里把 StrataBoard 禁用再启用），等插件自动下载完成后重新检查；
+   - 重启后仍不存在（自动下载失败）时，打开 https://github.com/lichliar/strataboard/releases ，找到与插件版本号完全一致的 release（版本号见 Obsidian 设置 → StrataBoard → 通用设置顶部的「插件版本」），从该 release 下载 mcp-server.js 和 cli.js，手动放进插件目录。
+   两个文件确认就位之前不要继续下一步。
+3. 按你的客户端注册名为 strataboard 的 MCP server：command 为 node，args 为 ["<vault根目录>/.obsidian/plugins/strataboard/mcp-server.js", "--vault", "<vault根目录>"]（也可以用环境变量 STRATABOARD_VAULT 传 vault 路径）。
    - Codex：写入 ~/.codex/config.toml 的 [mcp_servers.strataboard]；
    - Claude Code：执行 claude mcp add，或编辑对应的配置文件；
    - 其它客户端：用它自己的 MCP 配置方式写入等价的 JSON。
-3. 写完后把最终配置内容给我看一遍，并告诉我是否需要重启或重载客户端才能生效。
-4. 如果 MCP 始终不可用，改用插件附带的 CLI：node "<vault根目录>/.obsidian/plugins/strataboard/cli.js" <命令> --vault "<vault根目录>"，命令有 search / sources / validate / probe。
+4. 写完后把最终配置内容给我看一遍，并告诉我是否需要重启或重载客户端才能生效。
+5. 如果 MCP 始终不可用，改用插件附带的 CLI：node "<vault根目录>/.obsidian/plugins/strataboard/cli.js" <命令> --vault "<vault根目录>"，命令有 search / sources / validate / probe。
 
 用我使用的语言与我交流，遇到拿不准的地方先问我再动手。`;
 
@@ -64,16 +82,37 @@ export interface StrataBoardSettings {
   cardLibraryPath: string;
   widgetCardPath: string;
   componentCardPath: string;
-  // 脚本处理: folder holding user Python scripts; their CSV outputs land in
+  // 本地脚本: folder holding user Python scripts; their CSV outputs land in
   // its output/ subfolder and are auto-registered as csv custom sources.
   scriptFolderPath: string;
-  // 脚本处理: script paths (relative to scriptFolderPath, e.g.
+  // 本地脚本: script paths (relative to scriptFolderPath, e.g.
   // "macro/cpi.py") the user disabled in the script manager.
   disabledScripts: string[];
-  // 脚本处理: output CSV filePaths already processed by syncScriptSources —
+  // 本地脚本: output CSV filePaths already processed by syncScriptSources —
   // a file is registered at most once, so a source the user deleted is never
   // rebuilt.
   seenScriptOutputs: string[];
+  // 指标管理: folder holding user custom-indicator .js files (oakscriptjs
+  // contract); synced into the indicator registry on load and on changes.
+  indicatorFolderPath: string;
+  // 指标管理: indicator file paths (relative to indicatorFolderPath) the user
+  // disabled in the 指标管理 tab.
+  disabledIndicators: string[];
+  // 指标管理: user overrides of built-in indicator default parameters, keyed
+  // by indicator id. Merge order at compute time is def.defaultInputs <
+  // builtinIndicatorInputs[id] < card-instance inputs.
+  builtinIndicatorInputs: Record<string, Record<string, unknown>>;
+  // 新卡默认指标 (卡片与组件 tab): instances applied to quote cards whose
+  // YAML has no `indicators` key. Default: ma 5/10/20/60.
+  defaultIndicators: IndicatorInstance[];
+  // One-shot latch for the 均线/显示均线 → indicators card migration: false
+  // until the startup scan proves the vault clean or the user runs
+  // 升级均线指标 in 清理维护. While false, that section shows a hint.
+  maMigrationDone: boolean;
+  // One-shot flag for the cardPath→cardId reference upgrade: false until the
+  // startup scan proves the vault clean (then set silently) or the user runs
+  // 升级卡片引用 in 清理维护. While false, that section shows a hint.
+  cardRefsUpgraded: boolean;
   dataCachePath: string;
   symbolCachePath: string;
   autoRefreshOnOpen: boolean;
@@ -102,8 +141,6 @@ export interface StrataBoardSettings {
   // Vertex dots on every line-chart data point; off by default (noisy on
   // long series).
   showSeriesPointMarkers: boolean;
-  // Moving-average lines on K-line cards; off by default.
-  showChartMA: boolean;
   showChartGrid: boolean;
   // Grid line opacity (percent 0-100); only applies when showChartGrid is on.
   gridOpacity: number;
@@ -124,6 +161,17 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   scriptFolderPath: "金融卡片/脚本",
   disabledScripts: [],
   seenScriptOutputs: [],
+  indicatorFolderPath: "指标",
+  disabledIndicators: [],
+  builtinIndicatorInputs: {},
+  defaultIndicators: [
+    { id: "ma", inputs: { length: 5 } },
+    { id: "ma", inputs: { length: 10 } },
+    { id: "ma", inputs: { length: 20 } },
+    { id: "ma", inputs: { length: 60 } },
+  ],
+  maMigrationDone: false,
+  cardRefsUpgraded: false,
   dataCachePath: "金融卡片/数据缓存",
   symbolCachePath: "金融卡片/股票代码缓存",
   autoRefreshOnOpen: true,
@@ -145,7 +193,6 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   legendBackgroundOpacity: 72,
   showSeriesLatestValue: true,
   showSeriesPointMarkers: false,
-  showChartMA: false,
   showChartGrid: true,
   gridOpacity: 20,
 };
@@ -163,11 +210,12 @@ const TOOLBAR_ENTRY_LABELS: Record<ToolbarEntryId, string> = {
   components: "组件",
 };
 
-type SettingsTabId = "general" | "data-source" | "external-ai" | "paths" | "cards" | "toolbar";
+type SettingsTabId = "general" | "data-source" | "indicators" | "external-ai" | "paths" | "cards" | "toolbar";
 
 const SETTINGS_TABS: { id: SettingsTabId; label: string }[] = [
   { id: "general", label: "通用设置" },
   { id: "data-source", label: "数据源设置" },
+  { id: "indicators", label: "指标管理" },
   { id: "external-ai", label: "AI 辅助" },
   { id: "paths", label: "路径设置" },
   { id: "cards", label: "卡片与组件" },
@@ -226,6 +274,9 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       case "data-source":
         this.renderDataSourceSettings(contentEl);
         break;
+      case "indicators":
+        this.renderIndicatorSettings(contentEl);
+        break;
       case "external-ai":
         this.renderExternalAiSettings(contentEl);
         break;
@@ -239,14 +290,20 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         this.renderToolbarSettings(contentEl);
         break;
     }
+
+    // Field explanations collapse to hover-only info icons (说明文字悬停才
+    // 显示); content rows opt out via .fc-keep-desc / .fc-source-group-header.
+    applyInfoDescs(containerEl);
   }
 
   private renderGeneralSettings(containerEl: HTMLElement): void {
     // Plugin version from manifest.json; release.mjs tags GitHub releases with
-    // exactly this version, so the two always match.
+    // exactly this version, so the two always match. The version number is
+    // content, not an explanation — keep it visible (fc-keep-desc).
     new Setting(containerEl)
       .setName(t("插件版本"))
-      .setDesc(this.plugin.manifest.version);
+      .setDesc(this.plugin.manifest.version)
+      .settingEl.addClass("fc-keep-desc");
 
     // Language switch; applies immediately except command-palette names
     // (registered at plugin load).
@@ -304,6 +361,214 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       );
   }
 
+  // 指标管理 tab: builtins are a read-only reference list; customs are
+  // per-file rows (the loader only registers ENABLED files, so rows are
+  // enumerated from the indicator folder itself and cross-referenced with the
+  // registry by file-name slug) plus the load errors of the last sync.
+  private renderIndicatorSettings(containerEl: HTMLElement): void {
+    containerEl.createDiv({
+      cls: "fc-field-hint",
+      text: t("自定义指标文件是拥有完整插件权限的可信代码（与本地脚本同理）：只添加来源可信的文件。"),
+    });
+
+    const builtinDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    builtinDetails.createEl("summary", { text: t("内置指标") });
+    for (const def of indicatorRegistry.list().filter((d) => d.origin === "builtin")) {
+      const overrides = this.plugin.pluginSettings.builtinIndicatorInputs[def.id] ?? {};
+      const changed = def.inputConfig
+        .filter((cfg) => overrides[cfg.id] !== undefined)
+        .map((cfg) => `${cfg.title ?? cfg.id}=${String(overrides[cfg.id])}`);
+      const row = new Setting(builtinDetails)
+        .setName(`${t(def.name)} · ${def.id}`)
+        .setDesc(
+          [
+            `${t(def.category)} · ${def.metadata.overlay ? t("主图") : t("副图")}`,
+            changed.length > 0 ? t("已改：{list}", { list: changed.join(" · ") }) : null,
+          ]
+            .filter((part): part is string => !!part)
+            .join(" · ")
+        );
+      // The row desc carries identifying content, not an explanation.
+      row.settingEl.addClass("fc-keep-desc");
+      row.addButton((btn) =>
+        btn.setButtonText(t("编辑")).onClick(() => {
+          new BuiltinIndicatorEditModal(this.app, def, overrides, (next) => {
+            void (async () => {
+              const all = this.plugin.pluginSettings.builtinIndicatorInputs;
+              if (Object.keys(next).length > 0) {
+                all[def.id] = next;
+              } else {
+                delete all[def.id];
+              }
+              await this.plugin.saveSettings();
+              // Existing cards pick up the new defaults immediately.
+              for (const renderer of this.plugin.chartRenderers) renderer.refreshCard();
+              this.display();
+            })();
+          }).open();
+        })
+      );
+    }
+
+    const folder = normalizePath(this.plugin.pluginSettings.indicatorFolderPath);
+    const customDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    customDetails.createEl("summary", { text: t("自定义指标") });
+
+    new Setting(customDetails)
+      .setName(t("指标文件夹"))
+      .setDesc(t("{folder}（在设置页「路径设置」中修改）", { folder }))
+      .addButton((btn) => btn.setButtonText(t("打开文件夹")).onClick(() => void this.openIndicatorFolder()))
+      .addButton((btn) => btn.setButtonText(t("从文件导入")).onClick(() => this.importIndicatorFile(customDetails)));
+
+    const prefix = `${folder}/`;
+    const files = this.app.vault
+      .getFiles()
+      .filter((file) => file.extension === "js" && file.path.startsWith(prefix))
+      .sort((a, b) => a.path.localeCompare(b.path, "zh-CN"));
+    if (files.length === 0) {
+      customDetails.createDiv({
+        cls: "fc-field-hint",
+        text: t("指标文件夹中还没有自定义指标（.js 文件）：自行编写或用 AI 编写后放入该文件夹，或用上方「从文件导入」添加。"),
+      });
+    }
+    for (const file of files) {
+      this.renderCustomIndicatorRow(customDetails, file, folder);
+    }
+
+    const { errors, conflicts } = getIndicatorLoadErrors();
+    for (const entry of [...errors, ...conflicts]) {
+      customDetails.createDiv({
+        cls: "fc-detect-error",
+        text: t("{path} — {error}", { path: entry.path, error: entry.error }),
+      });
+    }
+
+    new Setting(containerEl)
+      .setName(t("AI 辅助"))
+      .setDesc(t("编写自定义指标的提示词在设置页「AI 辅助」tab。"))
+      .addButton((btn) =>
+        btn.setButtonText(t("前往 AI 辅助")).onClick(() => openSettingsTab(this.app, "external-ai"))
+      );
+  }
+
+  // One custom-indicator file row: enable toggle (keyed by folder-relative
+  // path), 编辑 (system editor), 删除 (confirm; referencing cards lose the
+  // indicator).
+  private renderCustomIndicatorRow(containerEl: HTMLElement, file: TFile, folder: string): void {
+    const rel = file.path.slice(folder.length + 1);
+    const def = indicatorRegistry.resolve(sanitizeFileNamePart(file.basename));
+    const disabled = this.plugin.pluginSettings.disabledIndicators.includes(rel);
+    const setting = new Setting(containerEl)
+      .setName(def && !disabled ? t(def.name) : file.name)
+      .setDesc(
+        [
+          rel,
+          def && !disabled ? `${t(def.category)} · ${def.metadata.overlay ? t("主图") : t("副图")}` : null,
+          disabled ? t("已禁用") : !def ? t("未加载") : null,
+        ]
+          .filter((part): part is string => !!part)
+          .join(" · ")
+      );
+    setting.settingEl.addClass("fc-keep-desc");
+    setting.addToggle((toggle) =>
+      toggle
+        .setTooltip(t("启用/禁用指标"))
+        .setValue(!disabled)
+        .onChange(async (value) => {
+          const list = this.plugin.pluginSettings.disabledIndicators.filter((p) => p !== rel);
+          if (!value) list.push(rel);
+          this.plugin.pluginSettings.disabledIndicators = list;
+          await this.plugin.saveSettings();
+          await syncIndicatorFiles(this.plugin);
+          this.display();
+        })
+    );
+    setting.addButton((btn) => btn.setButtonText(t("编辑")).onClick(() => this.openIndicatorFile(file)));
+    setting.addButton((btn) =>
+      btn
+        .setButtonText(t("删除"))
+        .setWarning()
+        .onClick(() => {
+          new ConfirmModal(
+            this.app,
+            t("删除指标文件「{name}」？引用它的卡片将失去该指标。", { name: file.name }),
+            () => {
+              void (async () => {
+                await this.app.vault.delete(file);
+                this.plugin.pluginSettings.disabledIndicators =
+                  this.plugin.pluginSettings.disabledIndicators.filter((p) => p !== rel);
+                await syncIndicatorFiles(this.plugin);
+                await this.plugin.saveSettings();
+                this.display();
+              })();
+            }
+          ).open();
+        })
+    );
+  }
+
+  // 从文件导入: pick a local .js file and copy it into the indicator folder;
+  // a name collision asks before overwriting.
+  private importIndicatorFile(containerEl: HTMLElement): void {
+    const folder = normalizePath(this.plugin.pluginSettings.indicatorFolderPath);
+    const input = containerEl.createEl("input", {
+      cls: "fc-hidden",
+      attr: { type: "file", accept: ".js" },
+    });
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      input.remove();
+      if (!file) return;
+      void (async () => {
+        const body = await file.text();
+        await ensureFolder(this.app, folder);
+        const path = `${folder}/${file.name}`;
+        const existing = this.app.vault.getAbstractFileByPath(path);
+        const finish = async () => {
+          if (existing instanceof TFile) {
+            await this.app.vault.modify(existing, body);
+          } else {
+            await this.app.vault.create(path, body);
+          }
+          await syncIndicatorFiles(this.plugin);
+          new Notice(t("已导入指标：{name}", { name: file.name }));
+          this.display();
+        };
+        if (existing instanceof TFile) {
+          new ConfirmModal(this.app, t("指标文件「{name}」已存在，覆盖？", { name: file.name }), () => void finish()).open();
+        } else {
+          await finish();
+        }
+      })();
+    });
+    input.click();
+  }
+
+  // Desktop-only plugin, so electron is reachable via window.require; no
+  // static import (the build keeps electron external).
+  private openPathInSystem(path: string): void {
+    const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
+    const abs = `${adapter.getBasePath?.() ?? ""}/${path}`;
+    const electron = (
+      window as unknown as { require?: (mod: string) => { shell?: { openPath?: (path: string) => Promise<string> } } }
+    ).require?.("electron");
+    if (electron?.shell?.openPath) {
+      void electron.shell.openPath(abs);
+    } else {
+      new Notice(t("无法打开文件夹：当前环境不支持。"));
+    }
+  }
+
+  private async openIndicatorFolder(): Promise<void> {
+    const folder = normalizePath(this.plugin.pluginSettings.indicatorFolderPath);
+    await ensureFolder(this.app, folder);
+    this.openPathInSystem(folder);
+  }
+
+  private openIndicatorFile(file: TFile): void {
+    this.openPathInSystem(file.path);
+  }
+
   // Full legal text, rendered inside the collapsed 免责声明 block at the
   // bottom of 通用设置.
   private renderDisclaimerSettings(containerEl: HTMLElement): void {
@@ -327,7 +592,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     );
 
     section(
-      "脚本处理",
+      "本地脚本",
       "脚本由您自行编写与运行（包括借助 AI 生成的脚本），本插件不审查、不担保脚本的行为。脚本的数据获取行为及其与数据来源之间的授权关系由您自行负责，您须遵守数据来源平台的服务条款；本插件仅读取脚本产出的本地 CSV 文件。脚本功能不适合高频数据，不得作为批量下载工具使用。"
     );
 
@@ -357,18 +622,13 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   // prompt lets the user's AI agent locate the vault and register the server
   // itself.
   private renderExternalAiSettings(containerEl: HTMLElement): void {
-    containerEl.createDiv({
-      cls: "fc-field-hint",
-      text: t("本插件不内置 AI 助手，由你自己的 AI agent（Codex、Claude Code 等）配合提示词操作插件。流程：先接入 AI（只需一次），之后按场景复制对应提示词发给它。"),
-    });
-
     // Placeholder standing in for the vault root everywhere a snippet would
     // otherwise embed the real (private) absolute path. The plugin id itself
     // is public, so only the vault part is masked.
     const pluginDir = `<vault路径>/.obsidian/plugins/${this.plugin.manifest.id}`;
 
     const accessDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    accessDetails.createEl("summary", { text: t("接入你的 AI（MCP / CLI，只需一次）") });
+    accessDetails.createEl("summary", { text: t("接入 StrataBoard MCP / CLI") });
     accessDetails.createDiv({
       cls: "fc-field-hint",
       text: t("最省事的方式：复制「一键配置提示词」发给你的 AI agent，它会自动定位 vault 路径并完成注册；下方配置片段供手动配置，把 <vault路径> 换成你的 vault 根目录。"),
@@ -406,7 +666,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     sourceDetails.createEl("summary", { text: t("提示词：添加数据源") });
     sourceDetails.createDiv({
       cls: "fc-field-hint",
-      text: t("想让 AI 帮你找接口、生成数据源配置时使用（需先完成上方接入）。AI 会引导你确认需求、检查已有数据源是否已覆盖，再找接口并核对插件适配范围，能配的数据尽量一次配齐，产出可直接粘贴的 URL 或写入 vault 的配置 JSON（在 数据源设置 → 导入 中选择导入），并自行验证；插件不支持的接口形态会明确告知，并建议改用脚本处理。"),
+      text: t("想让 AI 帮你找接口、生成数据源配置时使用（需先完成上方接入）。AI 会引导你确认需求、检查已有数据源是否已覆盖，再找接口并核对插件适配范围，能配的数据尽量一次配齐，产出可直接粘贴的 URL 或写入 vault 的配置 JSON（在 数据源设置 → 导入 中选择导入），并自行验证；插件不支持的接口形态会明确告知，并建议改用本地脚本。"),
     });
     this.addCodeSnippet(sourceDetails, t("引导提示词（复制给你的 AI）"), t(AI_SOURCE_PROMPT));
 
@@ -422,11 +682,21 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     scriptDetails.createEl("summary", { text: t("提示词：编写数据处理脚本") });
     scriptDetails.createDiv({
       cls: "fc-field-hint",
-      text: t("接口形态插件不支持（需要登录、返回 HTML/XML 等）、或想自己抓取 / 加工数据时使用。在「{folder}」中放置 Python 脚本，脚本把结果 CSV 写入其 output/ 子目录，插件会自动把它注册为自定义数据源（之后可建独立卡、叠加卡、计算卡）；画布工具栏「数据处理 → 脚本管理」（或命令「打开脚本管理」）里可立即运行、查看日志。复制下方提示词（已附产物契约与合规规则），连同你的需求或报错一起发给你的 AI。", {
+      text: t("接口形态插件不支持（需要登录、返回 HTML/XML 等）、或想自己抓取 / 加工数据时使用。在「{folder}」中放置 Python 脚本，脚本把结果 CSV 写入其 output/ 子目录，插件会自动把它注册为自定义数据源（之后可建独立卡、叠加卡、计算卡）；画布工具栏「数据处理 → 本地脚本」（或命令「打开本地脚本管理」）里可立即运行、查看日志。复制下方提示词（已附产物契约与合规规则），连同你的需求或报错一起发给你的 AI。", {
         folder: this.plugin.pluginSettings.scriptFolderPath,
       }),
     });
     this.addCodeSnippet(scriptDetails, t("脚本编写提示词（复制给你的 AI）"), t(AI_SCRIPT_PROMPT));
+
+    const indicatorDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    indicatorDetails.createEl("summary", { text: t("提示词：编写技术指标") });
+    indicatorDetails.createDiv({
+      cls: "fc-field-hint",
+      text: t("想在 K 线卡上加自定义技术指标时使用。把 .js 指标文件放进「{folder}」，插件会自动注册进指标系统（管理见设置页「指标管理」tab：逐行启用/编辑/删除/从文件导入，加载失败会红字列出原因）。复制下方提示词（已附文件契约、注入的 oak API 与合规红线），连同你的需求或报错一起发给你的 AI。", {
+        folder: this.plugin.pluginSettings.indicatorFolderPath,
+      }),
+    });
+    this.addCodeSnippet(indicatorDetails, t("指标编写提示词（复制给你的 AI）"), t(AI_INDICATOR_PROMPT));
   }
 
   // Monospace snippet block with a copy button (MCP/CLI config fragments).
@@ -451,11 +721,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   // source breaks cards that reference it (they render the missing-source
   // error).
   private renderCustomSourceSettings(containerEl: HTMLElement): void {
-    containerEl.createDiv({
-      cls: "fc-field-hint",
-      text: t("自行配置任意 RESTful / JSON 数据接口或 vault 内的 CSV 文件：粘贴完整 URL 即可自动生成模板（支持 {code} {start} {end} {startIso} {endIso} 占位符），K 线行情、单值序列、固定报表均可接入，响应格式自动识别。"),
-    });
-
     new Setting(containerEl)
       .addButton((btn) =>
         btn
@@ -498,7 +763,9 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         })
       );
 
-    const sources = this.plugin.pluginSettings.customSources;
+    // Script-produced sources render in their own 本地脚本 section below —
+    // they are maintained by the scripts, not by the source wizard.
+    const sources = this.plugin.pluginSettings.customSources.filter((s) => !isScriptSource(s));
     // Group labels in first-appearance order; ungrouped sources render last.
     const groupNames = [
       ...new Set(sources.map((s) => s.group).filter((g): g is string => !!g)),
@@ -586,6 +853,89 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     for (const def of sources.filter((s) => !s.group)) {
       this.renderCustomSourceRow(containerEl, def, groupNames, false);
     }
+
+    this.renderScriptSourceSettings(containerEl);
+  }
+
+  // 本地脚本 sources (auto-registered from script outputs): kept apart from
+  // the hand-configured list above — they are maintained by the scripts, not
+  // by the source wizard. Each row carries provenance (script · output ·
+  // last run) and offers 命名 (rename the source and each of its datasets —
+  // one script can emit several series), 运行 (rerun the script), 编辑/删除.
+  private renderScriptSourceSettings(containerEl: HTMLElement): void {
+    const folder = normalizePath(this.plugin.pluginSettings.scriptFolderPath);
+    const scriptSources = this.plugin.pluginSettings.customSources.filter((s) => isScriptSource(s));
+    const details = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    details.createEl("summary", { text: t("本地脚本") });
+    if (scriptSources.length === 0) {
+      details.createDiv({
+        cls: "fc-field-hint",
+        text: t("脚本产物（{folder}/output/*.csv）会自动注册为数据源并显示在这里；脚本管理见画布工具栏「数据处理 → 本地脚本」。", { folder }),
+      });
+      return;
+    }
+    for (const def of scriptSources) {
+      const prov = getScriptProvenance(this.plugin, def.id);
+      const scriptRel = prov?.scriptFile ? prov.scriptFile.path.slice(folder.length + 1) : null;
+      const outputRel = def.filePath?.startsWith(`${folder}/`) ? def.filePath.slice(folder.length + 1) : def.filePath;
+      const lastRun = prov?.outputFile ? formatDateTime(prov.outputFile.stat.mtime) : null;
+      const setting = new Setting(details)
+        .setName(def.purpose === "signals" ? t("{name}（信号源）", { name: def.name }) : def.name)
+        .setDesc(
+          [
+            scriptRel ? t("脚本：{path}", { path: scriptRel }) : t("脚本文件缺失"),
+            outputRel ? t("产物：{path}", { path: outputRel }) : null,
+            t("最近运行：{time}", { time: lastRun ?? t("从未") }),
+          ]
+            .filter((part): part is string => !!part)
+            .join(" · ")
+        );
+      // The row desc carries identifying content, not an explanation — keep
+      // it visible instead of an info-icon tooltip.
+      setting.settingEl.addClass("fc-keep-desc");
+      setting.addButton((btn) => btn.setButtonText(t("命名")).onClick(() => this.openScriptDatasetsModal(def)));
+      setting.addButton((btn) =>
+        btn.setButtonText(t("运行")).onClick(() => void this.plugin.runScriptForSource(def.id).then(() => this.display()))
+      );
+      setting.addButton((btn) => btn.setButtonText(t("编辑")).onClick(() => this.openCsvSourceModal(def)));
+      setting.addButton((btn) =>
+        btn
+          .setButtonText(t("删除"))
+          .setWarning()
+          .onClick(() => {
+            new ConfirmModal(this.app, t("删除数据源「{name}」？脚本下次运行时会重新注册；引用它的卡片将无法加载。", { name: def.name }), () => {
+              this.plugin.pluginSettings.customSources = this.plugin.pluginSettings.customSources.filter(
+                (s) => s.id !== def.id
+              );
+              void this.plugin.saveSettings().then(() => this.display());
+            }).open();
+          })
+      );
+    }
+  }
+
+  // 命名 entry of a 本地脚本 source row: renames the source and each of its
+  // datasets (wide-table columns), then propagates the new names into the
+  // symbol cache so existing card headers pick them up.
+  private openScriptDatasetsModal(def: CustomSourceDef): void {
+    new ScriptDatasetsModal(this.app, def, (name, renames) => {
+      def.name = name;
+      for (const symbol of def.symbols ?? []) {
+        const renamed = renames.get(symbol.code);
+        if (renamed) symbol.name = renamed;
+      }
+      void this.plugin.saveSettings().then(async () => {
+        const assetKey = cacheAssetKey("custom", def.id);
+        for (const symbol of def.symbols ?? []) {
+          const existing = await this.plugin.sqliteCache.lookupSymbol(symbol.code, assetKey).catch(() => undefined);
+          if (existing) {
+            void this.plugin.sqliteCache.upsertSymbols([{ ...existing, name: symbol.name }]);
+          }
+        }
+        for (const renderer of this.plugin.chartRenderers) renderer.refreshCard();
+        this.display();
+      });
+    }).open();
   }
 
   private renderCustomSourceRow(
@@ -605,6 +955,9 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           .join(" · ")
       );
     if (indented) setting.setClass("fc-source-group-member");
+    // The row desc carries identifying content (format · URL · key source),
+    // not an explanation — keep it visible instead of an info-icon tooltip.
+    setting.settingEl.addClass("fc-keep-desc");
     setting.addDropdown((dropdown) => {
       dropdown.addOption("", t("未分组"));
       for (const name of groupNames) {
@@ -706,11 +1059,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
   }
 
   private renderPathSettings(containerEl: HTMLElement): void {
-    containerEl.createDiv({
-      cls: "fc-field-hint",
-      text: t("从仓库已有文件夹中选择，也可在菜单底部手动输入新路径。"),
-    });
-
     // 卡片路径: the three card folders, folded like 缓存路径 below.
     const cardDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
     cardDetails.createEl("summary", { text: t("卡片路径") });
@@ -761,6 +1109,19 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       },
     });
 
+    this.addFolderPathSetting(cardDetails, {
+      name: t("指标文件夹"),
+      desc: t("存放自定义指标文件（.js）的文件夹；插件自动把其中的指标注册进指标系统。"),
+      value: this.plugin.pluginSettings.indicatorFolderPath,
+      defaultValue: DEFAULT_SETTINGS.indicatorFolderPath,
+      onChange: async (value) => {
+        this.plugin.pluginSettings.indicatorFolderPath = value;
+        await this.plugin.saveSettings();
+        // Pick up indicator files already sitting in the new folder.
+        void syncIndicatorFiles(this.plugin);
+      },
+    });
+
     const cacheDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
     cacheDetails.createEl("summary", { text: t("缓存路径（高级）") });
 
@@ -799,6 +1160,47 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       text: t("扫描后先列出清单，勾选确认后再执行删除。"),
     });
 
+    // Shown until the startup scan proves the vault clean (or the upgrade has
+    // run): legacy cardPath references no longer resolve and need the
+    // one-click upgrade below.
+    if (!this.plugin.pluginSettings.cardRefsUpgraded) {
+      details.createDiv({
+        cls: "fc-field-hint",
+        text: t("⚠ 本库可能仍存在旧格式（cardPath）的卡片引用——旧引用已无法解析，请运行下方「升级卡片引用」。"),
+      });
+    }
+
+    new Setting(details)
+      .setName(t("升级卡片引用"))
+      .setDesc(t("把旧格式（cardPath 文件路径）的卡片引用批量升级为稳定 id 引用：给计算卡补 id、把指向资产卡的引用改写为直接数据引用。升级后卡片改名、移动都不再断引用。目标文件已丢失的引用不会改动，会在报告中列出。"))
+      .addButton((btn) =>
+        btn.setButtonText(t("升级卡片引用")).onClick(() => void this.runCardRefUpgrade())
+      );
+
+    // Shown until the startup scan proves the vault clean (or the upgrade has
+    // run): legacy 均线/显示均线 keys no longer render and need the one-click
+    // upgrade below.
+    if (!this.plugin.pluginSettings.maMigrationDone) {
+      details.createDiv({
+        cls: "fc-field-hint",
+        text: t("⚠ 本库可能仍存在旧格式（均线/显示均线）的卡片设置——旧键已不再生效，请运行下方「升级均线指标」。"),
+      });
+    }
+
+    new Setting(details)
+      .setName(t("升级均线指标"))
+      .setDesc(t("把资产卡 YAML 里的旧均线设置（均线 / 显示均线）批量改写为统一的 indicators 指标列表：均线周期列表转为对应数量的 ma 指标，显示均线: false 转为空指标列表，显示均线: true 直接删键（跟随全局默认）。无法解析的卡片不会改动，会在报告中列出。"))
+      .addButton((btn) =>
+        btn.setButtonText(t("升级均线指标")).onClick(() => void this.runMaMigrationUpgrade())
+      );
+
+    new Setting(details)
+      .setName(t("检查失效指标引用"))
+      .setDesc(t("扫描卡片库中资产卡的指标列表，找出引用了不存在（已删除/改名或拼写错误）指标的卡片。"))
+      .addButton((btn) =>
+        btn.setButtonText(t("扫描失效引用")).onClick(() => void this.runIndicatorRefCheck())
+      );
+
     new Setting(details)
       .setName(t("清理孤立卡片文件"))
       .setDesc(t("清理卡片路径下没有被任何画布、笔记链接或数据计算卡片引用的卡片文件（删除后进入回收站）。"))
@@ -812,6 +1214,54 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       .addButton((btn) =>
         btn.setButtonText(t("扫描闲置缓存")).onClick(() => void this.runStaleCacheCleanup())
       );
+  }
+
+  private async runCardRefUpgrade(): Promise<void> {
+    new Notice(t("正在升级卡片引用…"));
+    const report = await runCardRefMigration(this.app, this.plugin.pluginSettings.cardLibraryPath);
+    this.plugin.pluginSettings.cardRefsUpgraded = true;
+    await this.plugin.saveSettings();
+    new Notice(
+      t("升级完成：补 id {ids} 张计算卡，改写引用 {refs} 条，失败 {fails} 条。", {
+        ids: report.idsAssigned,
+        refs: report.refsRewritten,
+        fails: report.failures.length,
+      })
+    );
+    if (report.failures.length > 0) {
+      new CardRefMigrationReportModal(this.app, report).open();
+    }
+    this.display(); // refresh the ⚠ hint line
+  }
+
+  private async runMaMigrationUpgrade(): Promise<void> {
+    new Notice(t("正在升级均线指标…"));
+    const report = await runMaMigration(this.app, this.plugin.pluginSettings.cardLibraryPath);
+    this.plugin.pluginSettings.maMigrationDone = true;
+    await this.plugin.saveSettings();
+    new Notice(
+      t("升级完成：改写 {cards} 张卡片，涉及 {files} 个文件，失败 {fails} 个。", {
+        cards: report.cardsRewritten,
+        files: report.filesChanged,
+        fails: report.failures.length,
+      })
+    );
+    if (report.failures.length > 0) {
+      new MaMigrationReportModal(this.app, report).open();
+    }
+    this.display(); // refresh the ⚠ hint line
+  }
+
+  // Read-only scan: quote cards referencing an indicator id the registry no
+  // longer resolves (custom indicator deleted/renamed, or a typo).
+  private async runIndicatorRefCheck(): Promise<void> {
+    new Notice(t("正在扫描失效指标引用…"));
+    const missing = await findMissingIndicatorRefs(this.app, [this.plugin.pluginSettings.cardLibraryPath]);
+    if (missing.length === 0) {
+      new Notice(t("没有发现失效的指标引用。"));
+      return;
+    }
+    new MissingIndicatorRefsModal(this.app, missing).open();
   }
 
   private async runOrphanFileCleanup(): Promise<void> {
@@ -843,7 +1293,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
 
   private async runStaleCacheCleanup(): Promise<void> {
     new Notice(t("正在扫描闲置数据缓存…"));
-    const used = await collectUsedCacheKeys(this.app);
+    const used = await collectUsedCacheKeys(this.app, this.plugin.cardIndex);
     const stale = await findStaleCacheEntries(this.plugin.sqliteCache, used);
     if (stale.length === 0) {
       new Notice(t("没有发现闲置的数据缓存。"));
@@ -1061,11 +1511,20 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       );
 
     new Setting(chartDetails)
-      .setName(t("显示均线（MA）"))
-      .setDesc(t("K 线卡的移动平均线（周期以交易日为单位），默认关闭；每张卡片可在编辑弹窗中单独覆盖。"))
+      .setName(t("新卡默认显示均线（5/10/20/60）"))
+      .setDesc(t("新建 K 线卡默认叠加的四条均线指标；关闭后新卡不叠加任何指标。每张卡片可在编辑弹窗的「技术指标」中自定义，自定义后不再跟随此处。"))
       .addToggle((toggle) =>
-        toggle.setValue(this.plugin.pluginSettings.showChartMA).onChange(async (value) => {
-          this.plugin.pluginSettings.showChartMA = value;
+        toggle.setValue(this.plugin.pluginSettings.defaultIndicators.length > 0).onChange(async (value) => {
+          // Fresh array each time: the toggle only ever produces the two
+          // canonical states (four ma instances / none).
+          this.plugin.pluginSettings.defaultIndicators = value
+            ? [
+                { id: "ma", inputs: { length: 5 } },
+                { id: "ma", inputs: { length: 10 } },
+                { id: "ma", inputs: { length: 20 } },
+                { id: "ma", inputs: { length: 60 } },
+              ]
+            : [];
           await this.plugin.saveSettings();
         })
       );
@@ -1205,5 +1664,104 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           })
       );
     });
+  }
+}
+
+// Read-only report after 升级卡片引用: lists the legacy refs that could not
+// be rewritten (target file gone / target not a valid card). Those YAML
+// entries are intentionally left untouched as the only clue to what was
+// referenced.
+class CardRefMigrationReportModal extends Modal {
+  private report: CardRefMigrationReport;
+
+  constructor(app: App, report: CardRefMigrationReport) {
+    super(app);
+    this.report = report;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: t("卡片引用升级报告") });
+    contentEl.createDiv({
+      cls: "fc-field-hint",
+      text: t("已补 id {ids} 张计算卡，改写引用 {refs} 条，涉及 {files} 个文件。", {
+        ids: this.report.idsAssigned,
+        refs: this.report.refsRewritten,
+        files: this.report.filesChanged.length,
+      }),
+    });
+    contentEl.createEl("h4", { text: t("未能升级的引用（{n} 条，已原样保留）", { n: this.report.failures.length }) });
+    const list = contentEl.createDiv({ cls: "fc-migration-report" });
+    for (const failure of this.report.failures) {
+      const row = list.createDiv({ cls: "fc-migration-report-row" });
+      row.createDiv({ text: failure.ref, cls: "fc-mono" });
+      row.createDiv({ cls: "fc-field-hint", text: t("{file} — {reason}", { file: failure.file, reason: failure.reason }) });
+    }
+    new Setting(contentEl).addButton((btn) =>
+      btn.setButtonText(t("知道了")).setCta().onClick(() => this.close())
+    );
+  }
+}
+
+// Read-only report after 升级均线指标: lists the quote blocks whose legacy MA
+// keys could not be rewritten (broken YAML / unusable 均线 value). Those
+// blocks are intentionally left untouched.
+class MaMigrationReportModal extends Modal {
+  private report: MaMigrationReport;
+
+  constructor(app: App, report: MaMigrationReport) {
+    super(app);
+    this.report = report;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: t("均线指标升级报告") });
+    contentEl.createDiv({
+      cls: "fc-field-hint",
+      text: t("已改写 {cards} 张卡片，涉及 {files} 个文件。", {
+        cards: this.report.cardsRewritten,
+        files: this.report.filesChanged,
+      }),
+    });
+    contentEl.createEl("h4", { text: t("未能升级的卡片（{n} 个，已原样保留）", { n: this.report.failures.length }) });
+    const list = contentEl.createDiv({ cls: "fc-migration-report" });
+    for (const failure of this.report.failures) {
+      const row = list.createDiv({ cls: "fc-migration-report-row" });
+      row.createDiv({ text: failure.file, cls: "fc-mono" });
+      row.createDiv({ cls: "fc-field-hint", text: failure.reason });
+    }
+    new Setting(contentEl).addButton((btn) =>
+      btn.setButtonText(t("知道了")).setCta().onClick(() => this.close())
+    );
+  }
+}
+
+// Read-only list of quote cards referencing an indicator id the registry
+// cannot resolve (custom indicator deleted/renamed, or a typo in YAML).
+class MissingIndicatorRefsModal extends Modal {
+  private missing: MissingIndicatorRef[];
+
+  constructor(app: App, missing: MissingIndicatorRef[]) {
+    super(app);
+    this.missing = missing;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: t("失效指标引用（{n} 处）", { n: this.missing.length }) });
+    contentEl.createDiv({
+      cls: "fc-field-hint",
+      text: t("以下卡片的 indicators 列表引用了不存在的指标 id；请编辑卡片修正，或检查指标文件是否被删除/改名。"),
+    });
+    const list = contentEl.createDiv({ cls: "fc-migration-report" });
+    for (const entry of this.missing) {
+      const row = list.createDiv({ cls: "fc-migration-report-row" });
+      row.createDiv({ text: entry.id, cls: "fc-mono" });
+      row.createDiv({ cls: "fc-field-hint", text: entry.file });
+    }
+    new Setting(contentEl).addButton((btn) =>
+      btn.setButtonText(t("知道了")).setCta().onClick(() => this.close())
+    );
   }
 }

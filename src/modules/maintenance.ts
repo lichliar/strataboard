@@ -5,6 +5,8 @@ import {
   parseOverlaySpec,
   parseSpreadSpec,
 } from "./series-spec";
+import { extractSpreadId, type CardIndex } from "./card-index";
+import { indicatorRegistry } from "./indicators/registry";
 import type { SqliteCache } from "./sqlite-cache";
 import { t } from "../i18n";
 
@@ -40,14 +42,17 @@ function extractPluginBlocks(content: string): PluginBlock[] {
 // ==================== Orphan card files ====================
 
 // A card file under one of the card folders is orphaned when nothing links to
-// it: no canvas file node, no wikilink from any note, and no SeriesRef.cardPath
-// from any overlay/spread spec. Anything unparseable is treated as "still
+// it: no canvas file node, no wikilink from any note, and (spread cards only)
+// no SeriesRef.cardId from any overlay/spread spec. Quote cards are never
+// referenced by other cards (quote refs carry their own coordinates), so they
+// don't get that exemption. Anything unparseable is treated as "still
 // referenced" — better to keep a file than to delete a live one.
 export async function findOrphanCardFiles(app: App, cardFolders: string[]): Promise<TFile[]> {
   const folders = cardFolders.map((f) => f.trim()).filter((f) => f.length > 0);
   if (folders.length === 0) return [];
 
   const referenced = new Set<string>();
+  const referencedIds = new Set<string>();
 
   // 1. Canvas file nodes.
   for (const file of app.vault.getFiles()) {
@@ -73,9 +78,10 @@ export async function findOrphanCardFiles(app: App, cardFolders: string[]): Prom
     }
   }
 
-  // 3. SeriesRef.cardPath from overlay/spread blocks in any note. Scanning
+  // 3. SeriesRef.cardId from overlay/spread blocks in any note. Scanning
   // every md file (not just linked ones) keeps whole reference chains alive.
   const candidates: TFile[] = [];
+  const candidateSpreadIds = new Map<string, string>();
   for (const file of app.vault.getMarkdownFiles()) {
     const content = await app.vault.cachedRead(file);
     const blocks = extractPluginBlocks(content);
@@ -84,15 +90,21 @@ export async function findOrphanCardFiles(app: App, cardFolders: string[]): Prom
       const result =
         block.type === "overlay" ? parseOverlaySpec(block.body) : parseSpreadSpec(block.body);
       for (const ref of result.spec?.series ?? []) {
-        if (ref.source === "card" && ref.cardPath) referenced.add(ref.cardPath);
+        if (ref.source === "card" && ref.cardId) referencedIds.add(ref.cardId);
       }
     }
     if (isUnderFolders(file.path, folders) && isPluginCardFile(file, blocks, content)) {
       candidates.push(file);
+      const spreadId = extractSpreadId(content);
+      if (spreadId) candidateSpreadIds.set(file.path, spreadId);
     }
   }
 
-  return candidates.filter((file) => !referenced.has(file.path));
+  return candidates.filter((file) => {
+    if (referenced.has(file.path)) return false;
+    const spreadId = candidateSpreadIds.get(file.path);
+    return !spreadId || !referencedIds.has(spreadId);
+  });
 }
 
 function isUnderFolders(path: string, folders: string[]): boolean {
@@ -108,6 +120,37 @@ function isPluginCardFile(file: TFile, blocks: PluginBlock[], content: string): 
   return frontmatter.includes("fc-key:");
 }
 
+// ==================== Missing indicator references ====================
+
+export interface MissingIndicatorRef {
+  file: string; // md file containing the quote card
+  id: string;   // indicator id with no registry entry
+}
+
+// Quote cards under the card folders whose indicators[] reference an id the
+// registry cannot resolve (custom indicator deleted / renamed, or a typo).
+// Cards with no indicators key (following the global default) never match —
+// the default list is maintained in settings.
+export async function findMissingIndicatorRefs(app: App, cardFolders: string[]): Promise<MissingIndicatorRef[]> {
+  const folders = cardFolders.map((f) => f.trim()).filter((f) => f.length > 0);
+  const missing: MissingIndicatorRef[] = [];
+  for (const file of app.vault.getMarkdownFiles()) {
+    if (!isUnderFolders(file.path, folders)) continue;
+    const content = await app.vault.cachedRead(file);
+    for (const block of extractPluginBlocks(content)) {
+      if (block.type !== "quote") continue;
+      const result = parseCardSpec(block.body);
+      if (!result.ok) continue;
+      for (const instance of result.spec.indicators ?? []) {
+        if (!indicatorRegistry.resolve(instance.id)) {
+          missing.push({ file: file.path, id: instance.id });
+        }
+      }
+    }
+  }
+  return missing;
+}
+
 // ==================== Stale cache entries ====================
 
 export interface UsedCacheKeys {
@@ -115,14 +158,15 @@ export interface UsedCacheKeys {
 }
 
 // Scans every markdown file in the vault (cards may also live inline in any
-// note via insertCardIntoMd) and collects the cache keys its cards use.
-export async function collectUsedCacheKeys(app: App): Promise<UsedCacheKeys> {
+// note via insertCardIntoMd) and collects the cache keys its cards use. Card
+// refs are followed through the card index (cardId → file).
+export async function collectUsedCacheKeys(app: App, cardIndex: CardIndex): Promise<UsedCacheKeys> {
   const keys: UsedCacheKeys = { quotes: new Set() };
   const visitedCards = new Set<string>();
   for (const file of app.vault.getMarkdownFiles()) {
     const content = await app.vault.cachedRead(file);
     for (const block of extractPluginBlocks(content)) {
-      await collectBlockKeys(app, block, keys, visitedCards);
+      await collectBlockKeys(app, cardIndex, block, keys, visitedCards);
     }
   }
   return keys;
@@ -130,6 +174,7 @@ export async function collectUsedCacheKeys(app: App): Promise<UsedCacheKeys> {
 
 async function collectBlockKeys(
   app: App,
+  cardIndex: CardIndex,
   block: PluginBlock,
   keys: UsedCacheKeys,
   visitedCards: Set<string>
@@ -149,7 +194,7 @@ async function collectBlockKeys(
         block.type === "overlay" ? parseOverlaySpec(block.body) : parseSpreadSpec(block.body);
       if (!result.spec) return;
       for (const ref of result.spec.series) {
-        await collectRefKeys(app, ref, keys, visitedCards);
+        await collectRefKeys(app, cardIndex, ref, keys, visitedCards);
       }
       return;
     }
@@ -158,6 +203,7 @@ async function collectBlockKeys(
 
 async function collectRefKeys(
   app: App,
+  cardIndex: CardIndex,
   ref: SeriesRef,
   keys: UsedCacheKeys,
   visitedCards: Set<string>
@@ -167,16 +213,18 @@ async function collectRefKeys(
       keys.quotes.add(`${ref.tsCode}|${cacheAssetKey(ref.assetType!, ref.sourceId)}`);
       return;
     case "card": {
-      // Follow the referenced spread card (cycle-safe) — its own series count
-      // as used too.
-      const cardPath = ref.cardPath;
-      if (!cardPath || visitedCards.has(cardPath)) return;
-      visitedCards.add(cardPath);
+      // Follow the referenced spread card (cycle-safe, keyed by cardId) — its
+      // own series count as used too.
+      const cardId = ref.cardId;
+      if (!cardId || visitedCards.has(cardId)) return;
+      visitedCards.add(cardId);
+      const cardPath = await cardIndex.resolve(cardId);
+      if (!cardPath) return;
       const file = app.vault.getAbstractFileByPath(cardPath);
       if (!(file instanceof TFile)) return;
       const content = await app.vault.cachedRead(file);
       for (const block of extractPluginBlocks(content)) {
-        await collectBlockKeys(app, block, keys, visitedCards);
+        await collectBlockKeys(app, cardIndex, block, keys, visitedCards);
       }
       return;
     }

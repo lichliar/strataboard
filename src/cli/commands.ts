@@ -13,7 +13,7 @@ import {
 } from "../modules/series-spec";
 import { setRequestInterval } from "../modules/http";
 import { CustomQuoteClient, fetchKlineSample, type SearchFetchStats } from "../modules/custom-quote-client";
-import { CsvQuoteClient } from "../modules/csv-quote-client";
+import { CsvQuoteClient, parseSignalTable } from "../modules/csv-quote-client";
 import type { KlineParseStats } from "../modules/quote-format-parsers";
 import { hasCodeSpecificParams, auditSearchCoverage, compileDeadCodes, type SearchCoverageAudit } from "../utils/symbol-list";
 import { formatDate } from "../utils/date";
@@ -37,6 +37,10 @@ export interface CliSettings {
   customSources?: CustomSourceDef[];
   symbolCachePath?: string;
   requestIntervalMs?: number;
+  // 本地脚本 folder (vault-relative); output/*.csv auto-registers as sources.
+  scriptFolderPath?: string;
+  // 指标管理 folder (vault-relative); *.js files load as custom indicators.
+  indicatorFolderPath?: string;
 }
 
 export interface VaultContext {
@@ -202,7 +206,7 @@ export async function searchSymbols(
 
 export function listSources(ctx: VaultContext): {
   ok: true;
-  sources: { id: string; name: string; format: string; enabled: boolean; group?: string; symbolCount: number; isScriptOutput: boolean }[];
+  sources: { id: string; name: string; format: string; enabled: boolean; group?: string; purpose?: "signals"; symbolCount: number; isScriptOutput: boolean }[];
 } {
   const sources = (ctx.settings.customSources ?? []).map((def) => ({
     id: def.id,
@@ -210,8 +214,9 @@ export function listSources(ctx: VaultContext): {
     format: def.format,
     enabled: def.enabled,
     group: def.group,
+    purpose: def.purpose,
     symbolCount: def.symbols?.length ?? 0,
-    // 脚本处理产物自动注册的源，id 形如 script:<文件名>。
+    // 本地脚本产物自动注册的源，id 形如 script:<文件名>。
     isScriptOutput: def.id.startsWith("script:"),
   }));
   return { ok: true, sources };
@@ -422,6 +427,37 @@ export async function probeData(
   const keyFields = keyInfo
     ? { apiKeySource: keyInfo.source, ...(keyInfo.donorName ? { apiKeyDonor: keyInfo.donorName } : {}) }
     : {};
+  // Signals sources carry a fixed-column signal table: probe = parse the
+  // vault CSV and count this code's events.
+  if (def.purpose === "signals") {
+    await profileLookup.close();
+    if (!def.filePath) fail(`信号源「${def.name}」缺少 filePath（vault 内信号表 CSV）。`);
+    const file = path.isAbsolute(def.filePath) ? def.filePath : path.join(ctx.vault, def.filePath);
+    if (!fs.existsSync(file)) fail(`信号表文件不存在: ${def.filePath}`);
+    const { events, dropped, total } = parseSignalTable(fs.readFileSync(file, "utf8"));
+    const filtered = events.filter((ev) => ev.code === code);
+    if (filtered.length === 0) {
+      return {
+        ok: true,
+        type,
+        sourceId,
+        code,
+        rows: 0,
+        ...(dropped > 0 ? { dropped } : {}),
+        hint: `信号表共 ${total} 行，其中 ${code} 的信号 0 条——检查 code 列取值是否与本卡的代码一致`,
+      };
+    }
+    return {
+      ok: true,
+      type,
+      sourceId,
+      code,
+      rows: filtered.length,
+      ...(dropped > 0 ? { dropped } : {}),
+      firstDate: filtered[0].date,
+      lastDate: filtered[filtered.length - 1].date,
+    };
+  }
   const { rows, stats } = await fetchWithStats(ctx, def, code, start, end, await profileLookup.get(sourceId, code));
   await profileLookup.close();
   if (rows.length === 0) {
@@ -536,6 +572,37 @@ function pushProbeStatWarnings(result: ValidateConfigSourceResult, code: string,
   }
 }
 
+// Signals-source probe: parse the vault signal table (date/code/side[/text])
+// and count usable events. `code` carries the filePath — there is no symbol
+// to probe, the table itself is the subject.
+function probeSignalTable(ctx: VaultContext, def: CustomSourceDef): ValidateConfigProbe {
+  const label = def.filePath ?? "";
+  if (!def.filePath) {
+    return { code: label, ok: false, rows: 0, reason: "信号源缺少 filePath（vault 内信号表 CSV）" };
+  }
+  const file = path.isAbsolute(def.filePath) ? def.filePath : path.join(ctx.vault, def.filePath);
+  if (!fs.existsSync(file)) {
+    return { code: label, ok: false, rows: 0, reason: `信号表文件不存在: ${def.filePath}` };
+  }
+  try {
+    const { events, dropped, total } = parseSignalTable(fs.readFileSync(file, "utf8"));
+    if (events.length === 0) {
+      return {
+        code: label,
+        ok: false,
+        rows: 0,
+        ...(dropped > 0 ? { dropped } : {}),
+        reason: total > 0
+          ? `信号表 ${total} 行全部无法解析——检查列名（date/time/datetime/日期、code/symbol/代码、side/direction/方向）与 side 取值（buy/sell/买/卖）`
+          : "信号表为空（脚本还没有产出信号）",
+      };
+    }
+    return { code: label, ok: true, rows: events.length, ...(dropped > 0 ? { dropped } : {}) };
+  } catch (e) {
+    return { code: label, ok: false, rows: 0, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export interface ValidateConfigProbe {
   code: string;
   ok: boolean;
@@ -575,10 +642,14 @@ function checkConfigEntry(entry: any, index: number): { def?: CustomSourceDef; e
   }
   if (typeof entry.name !== "string" || !entry.name.trim()) errors.push(`${label}: 缺少 name`);
   if (!KNOWN_FORMATS.has(entry.format)) errors.push(`${label}: format 必须是 tencent/eastmoney/json/csv 之一`);
+  if (entry.purpose !== undefined && entry.purpose !== "signals") errors.push(`${label}: purpose 只支持 "signals"（脚本产物信号表）`);
   if (entry.format === "csv") {
     const hasFile = typeof entry.filePath === "string" && !!entry.filePath;
     const hasUrl = typeof entry.klineUrl === "string" && !!entry.klineUrl;
-    if (!hasFile && !hasUrl) errors.push(`${label}: csv 格式需要 filePath（vault 内文件）或 klineUrl（远程 CSV）之一`);
+    if (entry.purpose === "signals") {
+      // Signal tables are vault-local script outputs only.
+      if (!hasFile) errors.push(`${label}: 信号源需要 filePath（vault 内信号表 CSV，date/code/side 列）`);
+    } else if (!hasFile && !hasUrl) errors.push(`${label}: csv 格式需要 filePath（vault 内文件）或 klineUrl（远程 CSV）之一`);
   } else if (typeof entry.klineUrl !== "string" || !entry.klineUrl) {
     errors.push(`${label}: 缺少 klineUrl`);
   }
@@ -605,7 +676,8 @@ function checkConfigEntry(entry: any, index: number): { def?: CustomSourceDef; e
     errors.push(`${label}: headers 必须是 {"头名": "值"} 对象`);
   }
   const map = entry.jsonMap;
-  if ((entry.format === "json" || entry.format === "csv") && !map) {
+  // Signal tables have no jsonMap: their columns are fixed by the contract.
+  if (entry.purpose !== "signals" && (entry.format === "json" || entry.format === "csv") && !map) {
     errors.push(`${label}: ${entry.format} 格式需要 jsonMap 字段映射`);
   }
   if (map !== undefined) {
@@ -867,6 +939,16 @@ export async function validateConfig(
     }
 
     if (opts.structuralOnly) continue;
+
+    // Signals sources carry a fixed-column signal table instead of kline
+    // data: probe = parse the vault CSV and count usable events.
+    if (def.purpose === "signals") {
+      result.probes.push(probeSignalTable(ctx, def));
+      if (result.probes[0].dropped) {
+        result.warnings.push(`信号表有 ${result.probes[0].dropped} 行无法解析被丢弃（检查 date/code/side 列名与取值：side 只认 buy/sell/买/卖）`);
+      }
+      continue;
+    }
 
     let searchOnlyCode: string | undefined;
     let auditSamples: SearchCoverageAudit["sampleCodes"] = [];

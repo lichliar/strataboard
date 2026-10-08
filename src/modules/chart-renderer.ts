@@ -1,6 +1,8 @@
 import { MarkdownRenderChild, Notice, setIcon, setTooltip } from "obsidian";
 import {
   createChart,
+  createSeriesMarkers,
+  createTextWatermark,
   CandlestickSeries,
   HistogramSeries,
   LineSeries,
@@ -16,15 +18,35 @@ import {
   type LineData,
   type Time,
 } from "lightweight-charts";
-import type { OhlcvRow, ParsedCardSpec, SymbolItem } from "../types";
+import type { Freq, OhlcvRow, ParsedCardSpec, SignalEvent, SymbolItem } from "../types";
+import { eventToMarker, snapEventsToBars } from "./signal-markers";
+import { buildSignalZones, SignalZonesPrimitive } from "./signal-zones";
+import { SignalTooltip, type SignalTipEntry } from "./signal-tooltip";
 import { ChartSizeGuard } from "./chart-size-guard";
 import { resolveEffectiveTheme, onAttached, toLayoutPoint, installZoomEventFix } from "../utils/dom";
-import { parseDateYmd, formatDate } from "../utils/date";
+import { parseDateYmd, formatDate, formatDateTime } from "../utils/date";
+import { FREQ_BADGE, freqRank, maxFreq } from "../utils/frequency";
 import { t, getLanguage } from "../i18n";
+import type { Bar, IndicatorResult } from "oakscriptjs";
+import { IndicatorRenderer } from "../vendor/lci/render";
+import {
+  adaptResultTimes,
+  INDICATOR_PALETTE,
+  indicatorComputeCache,
+  indicatorRegistry,
+  ohlcvToBars,
+  type IndicatorDef,
+  type IndicatorInstance,
+  type IndicatorResultLike,
+} from "./indicators";
 
 interface ChartRendererOptions {
   spec: ParsedCardSpec;
   data: OhlcvRow[];
+  // Native frequency of the source's raw rows (auto-detected per symbol).
+  // Period buttons below it are frozen — upsampling only, never fabricating
+  // smaller-period bars from coarser data. Drives the header's 级别 badge.
+  nativeFreq?: Freq;
   theme: "auto" | "dark" | "light";
   chartType: "candlestick" | "line";
   riseColor: string;
@@ -34,25 +56,40 @@ interface ChartRendererOptions {
   // 宽度自适应 off (canvas only): freeze the chart width at first layout so
   // the chart stops following canvas node width changes.
   freezeWidth?: boolean;
-  // Daily rows used as the MA basis on W/M charts: MA periods always mean N
-  // trading days, so a weekly/monthly card computes the rolling mean on daily
-  // closes and fits it to each displayed bar. Null/undefined = compute on the
-  // displayed frequency (daily charts, or the fallback when the daily load
-  // failed).
-  maBaseData?: OhlcvRow[] | null;
+  // Indicator instances already merged by the caller (per-card spec
+  // 指标覆盖 ?? global default); [] = no indicators. Overlay indicators draw
+  // on the price pane, the rest get their own panes after the volume pane.
+  indicators: IndicatorInstance[];
+  // Settings-level overrides of built-in indicator default parameters
+  // (指标管理 → 内置指标 → 编辑), merged between the indicator's own
+  // def.defaultInputs and each instance's inputs.
+  builtinIndicatorInputs?: Record<string, Record<string, unknown>>;
+  // Daily rows as the trading-day basis for period-based indicators (the ma
+  // builtin computes on native bars and fits values onto resampled bars).
+  // Null on daily charts.
+  nativeBars?: OhlcvRow[] | null;
   // Global 显示设置 (applied at render time); opacity values are percents
   // (0-100), gated by their companion toggle at render time.
   showLegend: boolean;
   legendFrosted: boolean;
   legendOpacity: number;
-  // Moving-average lines (global showChartMA merged with the per-card
-  // 显示均线 override at render time); when off no MA series are added and
-  // the legend's MA values disappear with them.
-  showMA: boolean;
   showGrid: boolean;
   gridOpacity: number;
+  // Signal markers (from a script-produced signal table, spec 信号): buy
+  // arrows below bars, sell arrows above, colored by rise/fall so they stay
+  // consistent with the card's candle colors.
+  signals?: SignalEvent[];
+  // 本地脚本 provenance (script-produced sources only): the header gets a
+  // provenance line (script · data-through · last run) and the footer a run
+  // button. scriptStale = the script file was edited after the output CSV
+  // was last written.
+  scriptInfo?: { scriptName: string; lastRun: number | null; scriptStale: boolean };
+  onRunScript?: () => Promise<void>;
+  // Click on a bar (chart mode / reading mode only — the caller gates canvas
+  // view mode) → open that date's daily note.
+  onDateClick?: (ymd: string) => void;
   onRefresh?: () => void;
-  onSwitchFreq?: (freq: "D" | "W" | "M") => void;
+  onSwitchFreq?: (freq: Freq) => void;
   // Footer tool buttons (wireframe #screen-card): edit opens the card's edit
   // modal; delete removes the canvas node (canvas-only, hidden elsewhere).
   onEdit?: () => void;
@@ -108,16 +145,10 @@ function formatPercent(n: number | undefined): string {
   return `${n.toFixed(2)}%`;
 }
 
-// MA defaults and overlay palette; the palette cycles when a card asks for
-// more periods than there are colors. Colors stay readable on both themes.
-// Exported for the unified edit modal's MA preview chips.
-const DEFAULT_MA_PERIODS = [5, 10, 20, 60];
-export const MA_COLORS = ["#f59e0b", "#ec4899", "#8b5cf6", "#14b8a6", "#f97316", "#0ea5e9", "#84cc16", "#e879f9"];
-
-// Per-MA computed series, kept so the crosshair legend can show the hovered
-// bar's MA values (and color the labels to match the lines).
-interface MaSeriesData {
-  period: number;
+// One overlay indicator plot surfaced in the crosshair legend: the label is
+// colored like its line, values aligned to the displayed bar index.
+interface OverlayLegendPlot {
+  label: string;
   color: string;
   values: (number | null)[];
 }
@@ -132,7 +163,7 @@ interface LegendRefs {
   close: HTMLElement;
   change: HTMLElement;
   vol: HTMLElement;
-  ma: { period: number; valueEl: HTMLElement }[];
+  indicators: HTMLElement[];
 }
 
 export class ChartRenderer extends MarkdownRenderChild {
@@ -150,16 +181,40 @@ export class ChartRenderer extends MarkdownRenderChild {
   private priceSeries: ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null = null;
   private legendRefs: LegendRefs | null = null;
   private legendEl: HTMLElement | null = null;
-  private maSeriesData: MaSeriesData[] = [];
+  private overlayLegendPlots: OverlayLegendPlot[] = [];
   private dataIndexByTime = new Map<string, number>();
+  // 信号标注 hover readout: full-text tooltip per chart time (markers only
+  // carry 12 truncated chars) plus the tooltip itself.
+  private signalEventsByTime = new Map<string, SignalTipEntry[]>();
+  private signalTip: SignalTooltip | null = null;
+  private readyPromise: Promise<void> = Promise.resolve();
 
   constructor(containerEl: HTMLElement, options: ChartRendererOptions) {
     super(containerEl);
     this.options = options;
   }
 
+  // Resolves when the initial render finished (render() handles its own
+  // errors, so this never rejects). Awaited by the code-block renderer so
+  // Obsidian's PDF export waits for the chart instead of capturing the
+  // loading placeholder.
+  whenReady(): Promise<void> {
+    return this.readyPromise;
+  }
+
+  // takeScreenshot() forces a synchronous full repaint — used after the
+  // initial render so the canvas bitmap is populated even when the library's
+  // rAF-batched paint never runs (hidden PDF-export render pass). Also
+  // refreshes the print snapshot: in @media print the live chart DOM is
+  // hidden and this static image is what lands in the PDF (a monolithic
+  // bitmap the paginator can never slice mid-chart).
+  forcePaint(): void {
+    if (!this.chart || !this.chartContainerEl) return;
+    upsertPrintSnapshot(this.chartContainerEl, renderChartSnapshot(this.chart, this.containerEl));
+  }
+
   onload() {
-    void this.render();
+    this.readyPromise = this.render();
   }
 
   onunload() {
@@ -199,32 +254,96 @@ export class ChartRenderer extends MarkdownRenderChild {
 
     this.chart = createChart(this.chartContainerEl, {
       ...buildChartOptions(isDark, this.options.showGrid, this.options.gridOpacity),
-      // Seed the size from the container's current layout size (0x0 while
-      // still detached — the ChartSizeGuard fixes it on attach).
-      width: this.chartContainerEl.clientWidth,
-      height: this.chartContainerEl.clientHeight,
+      // Seed the size from the container's current layout size, falling back
+      // to DETACHED_CHART_WIDTH/the configured height when there is no layout
+      // yet (detached mount, or Obsidian's hidden PDF-export render pass —
+      // the ChartSizeGuard only fixes sizing on attach/resize, which never
+      // happens there, and a 0x0 chart prints as a blank canvas).
+      width: this.chartContainerEl.clientWidth || DETACHED_CHART_WIDTH,
+      height: this.chartContainerEl.clientHeight || this.options.height,
     });
     // Zoom-correct mouse coordinates before the library sees them (Obsidian
     // canvas scales node content with a CSS transform).
     this.uninstallZoomFix = installZoomEventFix(this.chartContainerEl);
+    addTitleWatermark(this.chart, this.options.symbolInfo?.name ?? this.options.spec.symbol, isDark);
+    if (this.options.onDateClick) {
+      const onDateClick = this.options.onDateClick;
+      this.chart.subscribeClick((param) => {
+        if (param.time == null) return;
+        onDateClick(timeToYmd(param.time));
+      });
+    }
 
     this.priceSeries = this.addPriceSeries(0, data, isDark);
-    if (this.options.showMA) {
-      this.addMovingAverages(0, data);
+    if (this.options.signals && this.options.signals.length > 0) {
+      const snapped = snapEventsToBars(this.options.signals, data.map((r) => r.tradeDate));
+      const markers = [...snapped.entries()].flatMap(([index, events]) =>
+        events.map((ev) =>
+          eventToMarker(ev, toChartTime(data[index].tradeDate) as Time, {
+            buy: this.options.riseColor,
+            sell: this.options.fallColor,
+          })
+        )
+      );
+      if (markers.length > 0) {
+        createSeriesMarkers(this.priceSeries, markers);
+      }
+      // Holding-period bands (buy→sell pairs) painted behind the candles.
+      const zones = buildSignalZones(snapped, data.length);
+      if (zones.length > 0) {
+        const p = isDark ? CHART_PALETTE.dark : CHART_PALETTE.light;
+        this.priceSeries.attachPrimitive(
+          new SignalZonesPrimitive(
+            zones.map((zone) => ({
+              from: toChartTime(data[zone.from].tradeDate) as Time,
+              to: toChartTime(data[zone.to].tradeDate) as Time,
+            })),
+            `rgba(${p.grid}, 0.12)`
+          )
+        );
+      }
+      // Hover readout with the full signal text near the crosshair.
+      for (const [index, events] of snapped) {
+        this.signalEventsByTime.set(
+          toChartTime(data[index].tradeDate),
+          events.map((event) => ({ event }))
+        );
+      }
     }
+    // Overlay indicators draw on the price pane (before the volume pane
+    // exists); non-overlay ones get panes AFTER it, so pane order is always
+    // price → volume → indicator panes.
+    this.addOverlayIndicators(data);
     // 成交量 pane 默认开（卡片级 显示成交量 可关）。
-    if (spec.showVolume !== false) {
+    const showVolume = spec.showVolume !== false;
+    if (showVolume) {
       this.addVolumeSeries(1, data);
     }
     this.configurePane(this.chart.panes()[0], { leftVisible: false, rightVisible: true }, isDark);
     const volumePane = this.chart.panes()[1];
     if (volumePane) {
-      this.configureVolumePane(volumePane);
+      this.configureAuxPane(volumePane);
     }
+    this.addIndicatorPanes(data, showVolume ? 2 : 1);
     this.applyPaneRatios();
     this.addLatestPriceLine(data);
+    this.addCustomPriceLines(isDark);
     if (this.options.showLegend) {
       this.addLegend(data);
+    }
+
+    // Signal hover readout works with or without the legend: hovering a bar
+    // that carries signal events pops the full-text chip near the crosshair.
+    if (this.signalEventsByTime.size > 0) {
+      this.signalTip = new SignalTooltip(this.chartContainerEl!);
+      this.chart.subscribeCrosshairMove((param) => {
+        const entries = param.time != null ? this.signalEventsByTime.get(String(param.time)) : undefined;
+        if (!entries || !param.point) {
+          this.signalTip?.hide();
+          return;
+        }
+        this.signalTip?.show(param.point.x, param.point.y, entries);
+      });
     }
 
     if (spec.visibleStart && spec.visibleEnd) {
@@ -269,8 +388,10 @@ export class ChartRenderer extends MarkdownRenderChild {
     this.priceSeries = null;
     this.legendRefs = null;
     this.legendEl = null;
-    this.maSeriesData = [];
+    this.overlayLegendPlots = [];
     this.dataIndexByTime.clear();
+    this.signalEventsByTime.clear();
+    this.signalTip = null;
   }
 
   // Current visible time range as YYYY-MM-DD, or null when no chart/range.
@@ -329,6 +450,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     const titleWrap = topRow.createDiv({ cls: "strataboard-header-title-wrap" });
     const title = titleWrap.createDiv({ cls: "strataboard-header-title" });
     title.createSpan({ cls: "strataboard-header-name", text: symbol?.name ?? this.options.spec.symbol });
+    title.createSpan({ cls: "strataboard-header-freq", text: t(FREQ_BADGE[this.nativeFreq()]) });
     if (symbol?.enname) {
       title.createSpan({ cls: "strataboard-header-enname", text: ` · ${symbol.enname}` });
     }
@@ -350,6 +472,24 @@ export class ChartRenderer extends MarkdownRenderChild {
       text: `${change >= 0 ? "+" : ""}${formatPercent(changePct)}`,
       attr: { style: `color: ${color}` },
     });
+
+    // 本地脚本 provenance line (script-produced sources only): which script
+    // feeds the card, how fresh the data is, and when the script last ran —
+    // the maintenance trail when a script source rots.
+    const scriptInfo = this.options.scriptInfo;
+    if (scriptInfo) {
+      const line = this.headerEl.createDiv({ cls: "strataboard-header-script" });
+      line.createSpan({
+        text: t("本地脚本 · {name} · 数据至 {date} · 更新于 {time}", {
+          name: scriptInfo.scriptName,
+          date: toChartTime(latest.tradeDate),
+          time: scriptInfo.lastRun ? formatDateTime(scriptInfo.lastRun) : t("从未"),
+        }),
+      });
+      if (scriptInfo.scriptStale) {
+        line.createSpan({ cls: "strataboard-header-script-stale", text: t("脚本已修改未运行") });
+      }
+    }
   }
 
   // Header text for PNG exports (name + code + latest quote, rise/fall
@@ -365,7 +505,7 @@ export class ChartRenderer extends MarkdownRenderChild {
     const color = change >= 0 ? this.options.riseColor : this.options.fallColor;
     return {
       title: symbol?.name ?? this.options.spec.symbol,
-      subtitle: symbol?.tsCode ?? this.options.spec.symbol,
+      subtitle: `${symbol?.tsCode ?? this.options.spec.symbol} · ${t(FREQ_BADGE[this.nativeFreq()])}`,
       quote: [
         { text: formatNumber(latest.close, 2), color },
         { text: `${change >= 0 ? "+" : ""}${formatNumber(change, 2)}`, color },
@@ -376,22 +516,40 @@ export class ChartRenderer extends MarkdownRenderChild {
 
   // ===== Footer: freq tabs + SVG tool buttons (wireframe #screen-card) =====
 
+  private nativeFreq(): Freq {
+    return this.options.nativeFreq ?? "D";
+  }
+
   private addFooter() {
     const footerEl = this.containerEl.createDiv({ cls: "strataboard-card-footer" });
     this.periodTabsEl = footerEl.createDiv({ cls: "strataboard-period-tabs" });
-    const freqs: { id: "D" | "W" | "M"; label: string }[] = [
+    const freqs: { id: Freq; label: string }[] = [
       { id: "D", label: "日K" },
       { id: "W", label: "周K" },
       { id: "M", label: "月K" },
+      { id: "Q", label: "季K" },
+      { id: "Y", label: "年K" },
     ];
 
+    const native = this.nativeFreq();
+    // A spec.freq below the native frequency is clamped for display (main.ts
+    // renders effFreq instead), so the active tab follows the effective one.
+    const activeFreq = maxFreq(this.options.spec.freq, native);
     for (const f of freqs) {
+      // Freeze periods finer than the source's native granularity: weekly
+      // bars built from monthly rows would be fabricated, not resampled.
+      const frozen = freqRank(f.id) < freqRank(native);
       const btn = this.periodTabsEl.createEl("button", {
         text: t(f.label),
-        cls: f.id === this.options.spec.freq ? "is-active" : "",
+        cls: `${f.id === activeFreq ? "is-active" : ""} ${frozen ? "is-disabled" : ""}`.trim(),
       });
+      if (frozen) {
+        btn.disabled = true;
+        setTooltip(btn, t("数据源原始粒度为{label}，不支持切换到更小周期。", { label: t(FREQ_BADGE[native]) }));
+        continue;
+      }
       btn.addEventListener("click", () => {
-        if (f.id !== this.options.spec.freq) {
+        if (f.id !== activeFreq) {
           this.options.onSwitchFreq?.(f.id);
         }
       });
@@ -413,6 +571,16 @@ export class ChartRenderer extends MarkdownRenderChild {
       const name = this.options.symbolInfo?.name ?? this.options.spec.symbol;
       void exportChartPng(this.chart, name, this.buildExportHeader(), this.containerEl);
     });
+    // 本地脚本 sources: one-click rerun of the producing script (the success
+    // path re-renders every chart card via invalidateScriptOutput).
+    if (this.options.onRunScript) {
+      const runBtn = addTool("play", t("运行本地脚本"), () => {
+        runBtn.disabled = true;
+        void this.options.onRunScript!().finally(() => {
+          runBtn.disabled = false;
+        });
+      });
+    }
     addTool("refresh-cw", t("刷新数据"), () => this.options.onRefresh?.());
     // 删除卡片 removes the canvas node (the card file stays in the library),
     // so it only makes sense inside a canvas — decided once attached.
@@ -477,78 +645,136 @@ export class ChartRenderer extends MarkdownRenderChild {
     return series;
   }
 
-  private addMovingAverages(paneIndex: number, data: OhlcvRow[]) {
-    const periods = this.options.spec.maPeriods ?? DEFAULT_MA_PERIODS;
-    this.maSeriesData = [];
-    // MA periods always mean N TRADING DAYS: on W/M charts the rolling mean
-    // is computed on the daily close series (maBaseData) and each displayed
-    // bar takes the MA value at the last daily row with
-    // tradeDate <= bar.tradeDate (bar dates are period-end, see
-    // data-adapter.resample). Daily charts (or a missing/failed daily load)
-    // keep the plain on-displayed-data computation.
-    const base =
-      this.options.spec.freq !== "D" && this.options.maBaseData && this.options.maBaseData.length > 0
-        ? this.options.maBaseData
-        : null;
-    periods.forEach((period, i) => {
-      const color = MA_COLORS[i % MA_COLORS.length];
-      const maData: LineData[] = [];
-      const values: (number | null)[] = [];
-      if (base) {
-        const dailyMa: (number | null)[] = new Array<number | null>(base.length).fill(null);
-        let sum = 0;
-        for (let j = 0; j < base.length; j++) {
-          sum += base[j].close;
-          if (j >= period) {
-            sum -= base[j - period].close;
-          }
-          if (j >= period - 1) {
-            dailyMa[j] = sum / period;
-          }
-        }
-        for (let j = 0; j < data.length; j++) {
-          const idx = floorIndex(base, data[j].tradeDate, (row) => row.tradeDate);
-          const value = idx >= 0 ? dailyMa[idx] : null;
-          // values stay aligned to the displayed bar index so the crosshair
-          // legend logic is unchanged.
-          values.push(value);
-          if (value != null) {
-            maData.push({ time: toChartTime(data[j].tradeDate), value });
-          }
-        }
-      } else {
-        let sum = 0;
-        for (let j = 0; j < data.length; j++) {
-          sum += data[j].close;
-          if (j >= period) {
-            sum -= data[j - period].close;
-          }
-          if (j >= period - 1) {
-            const value = sum / period;
-            maData.push({
-              time: toChartTime(data[j].tradeDate),
-              value,
-            });
-            values.push(value);
-          } else {
-            values.push(null);
-          }
-        }
+  // ===== Indicators =====
+
+  // unix-second Bars for calculate() plus the chart-time ("YYYY-MM-DD")
+  // counterpart handed to the vendored renderer: the renderer forwards
+  // bar/result times straight into series data and our time scale is
+  // string-based, so everything it receives uses adapted string times (the
+  // calculation itself runs on unix seconds; the cast localizes the
+  // oakscriptjs Bar time-type mismatch — vendored files stay untouched).
+  private indicatorContext(data: OhlcvRow[]): { bars: Bar[]; renderBars: Bar[]; nativeBars?: Bar[] } {
+    const bars = ohlcvToBars(data);
+    const renderBars = bars.map((bar, i) => ({
+      ...bar,
+      time: toChartTime(data[i].tradeDate) as unknown as number,
+    }));
+    const nativeRows = this.options.nativeBars;
+    return {
+      bars,
+      renderBars,
+      nativeBars: nativeRows && nativeRows.length > 0 ? ohlcvToBars(nativeRows) : undefined,
+    };
+  }
+
+  // Resolve + compute (compute-cached) + adapt one instance to chart times.
+  // Null = unknown id: warn and skip (the warn-only precedent — a missing
+  // custom indicator must never block the chart).
+  private computeIndicator(
+    instance: IndicatorInstance,
+    ctx: { bars: Bar[]; nativeBars?: Bar[] },
+    data: OhlcvRow[]
+  ): { def: IndicatorDef; inputs: Record<string, unknown>; adapted: IndicatorResultLike } | null {
+    const def = indicatorRegistry.resolve(instance.id);
+    if (!def) {
+      console.warn(`[StrataBoard] 未找到指标「${instance.id}」，已跳过（若是自定义指标，请确认脚本已启用且加载成功）。`);
+      return null;
+    }
+    const inputs = { ...def.defaultInputs, ...this.options.builtinIndicatorInputs?.[def.id], ...instance.inputs };
+    let result = indicatorComputeCache.get(def.id, inputs, ctx.bars);
+    if (!result) {
+      result = def.calculate(ctx.bars, inputs, { nativeBars: ctx.nativeBars });
+      indicatorComputeCache.set(def.id, inputs, ctx.bars, result);
+    }
+    return { def, inputs, adapted: adaptResultTimes(result, data) };
+  }
+
+  // Overlay indicators on the price pane (called before the volume pane
+  // exists). Each visible plot also gets a crosshair-legend entry.
+  private addOverlayIndicators(data: OhlcvRow[]) {
+    if (this.options.indicators.length === 0 || !this.chart || !this.priceSeries) return;
+    const ctx = this.indicatorContext(data);
+    let maIndex = 0;
+    for (const instance of this.options.indicators) {
+      if (instance.hidden) continue;
+      const computed = this.computeIndicator(instance, ctx, data);
+      if (!computed || !computed.def.metadata.overlay) continue;
+      const { def, inputs, adapted } = computed;
+      // MA-line identity: each 均线 instance takes the next palette color;
+      // only ma instances consume palette slots so interleaved overlays don't
+      // shift the colors.
+      let plotColor: string | undefined;
+      if (def.id === "ma") {
+        plotColor = INDICATOR_PALETTE[maIndex % INDICATOR_PALETTE.length];
+        maIndex++;
       }
-      this.maSeriesData.push({ period, color, values });
-      const series = this.chart!.addSeries(
-        LineSeries,
+      const plots = plotColor
+        ? Object.fromEntries((def.plotConfig ?? []).map((plot) => [plot.id, { color: plotColor }]))
+        : undefined;
+      const renderer = new IndicatorRenderer(this.chart, { paneIndex: 0, mainSeries: this.priceSeries });
+      renderer.render(
         {
-          color,
-          lineWidth: 1,
-          priceLineVisible: false,
-          lastValueVisible: false,
-          crosshairMarkerVisible: false,
+          overlay: true,
+          plotConfig: def.plotConfig ?? [],
+          hlineConfig: def.hlineConfig,
+          fillConfig: def.fillConfig,
         },
-        paneIndex
+        adapted as unknown as IndicatorResult,
+        ctx.renderBars,
+        { inputs, ...(plots ? { plots } : {}) }
       );
-      series.setData(maData);
-    });
+      for (const plot of def.plotConfig ?? []) {
+        if (plot.display === "none") continue;
+        const points = adapted.plots?.[plot.id];
+        if (!points?.length) continue;
+        const byTime = new Map(points.map((point) => [String(point.time), point.value]));
+        this.overlayLegendPlots.push({
+          label: def.id === "ma" ? `MA${String(inputs.length ?? "")}` : plot.title ?? plot.id,
+          color: plotColor ?? plot.color ?? "#2962FF",
+          values: data.map((row) => {
+            const value = byTime.get(toChartTime(row.tradeDate));
+            return value != null && !Number.isNaN(value) ? value : null;
+          }),
+        });
+      }
+    }
+  }
+
+  // Non-overlay indicators, one new pane each, starting at firstPane (after
+  // the volume pane). Their plots show the latest value on their own price
+  // scale instead of entering the main legend.
+  private addIndicatorPanes(data: OhlcvRow[], firstPane: number) {
+    if (this.options.indicators.length === 0 || !this.chart) return;
+    const ctx = this.indicatorContext(data);
+    let pane = firstPane;
+    for (const instance of this.options.indicators) {
+      if (instance.hidden) continue;
+      const computed = this.computeIndicator(instance, ctx, data);
+      if (!computed || computed.def.metadata.overlay) continue;
+      const { def, inputs, adapted } = computed;
+      const renderer = new IndicatorRenderer(this.chart, {
+        paneIndex: pane,
+        mainSeries: this.priceSeries ?? undefined,
+      });
+      renderer.render(
+        {
+          overlay: false,
+          plotConfig: def.plotConfig ?? [],
+          hlineConfig: def.hlineConfig,
+          fillConfig: def.fillConfig,
+        },
+        adapted as unknown as IndicatorResult,
+        ctx.renderBars,
+        { inputs, lastValueVisible: true }
+      );
+      // Every pane must keep its right scale visible or chart layout throws
+      // (same constraint as the volume pane, see configureAuxPane).
+      const paneApi = this.chart.panes()[pane];
+      if (paneApi) {
+        this.configureAuxPane(paneApi);
+      }
+      pane++;
+    }
   }
 
   private addVolumeSeries(paneIndex: number, data: OhlcvRow[]) {
@@ -573,7 +799,8 @@ export class ChartRenderer extends MarkdownRenderChild {
     series.setData(volumeData);
   }
 
-  private configureVolumePane(pane: IPaneApi<Time>) {
+  // Shared secondary-pane scale config (volume pane, indicator panes).
+  private configureAuxPane(pane: IPaneApi<Time>) {
     pane.priceScale("left").applyOptions({ visible: false });
     // The right scale must stay visible on EVERY pane: the chart-level
     // rightPriceScale.visible=true makes adjustSizeImpl() call
@@ -590,8 +817,11 @@ export class ChartRenderer extends MarkdownRenderChild {
   private applyPaneRatios() {
     const ratios = this.options.spec.paneRatios;
     const panes = this.chart!.panes();
-    panes[0].setStretchFactor(ratios?.[0] ?? 3);
-    panes[1]?.setStretchFactor(ratios?.[1] ?? 1);
+    // 面板比例 applies per pane in order; panes beyond the array (newly added
+    // indicator panes on old 2-element cards) get the default stretch.
+    panes.forEach((pane, i) => {
+      pane.setStretchFactor(ratios?.[i] ?? (i === 0 ? 3 : 1));
+    });
   }
 
   private addLatestPriceLine(data: OhlcvRow[]) {
@@ -606,6 +836,22 @@ export class ChartRenderer extends MarkdownRenderChild {
       axisLabelVisible: true,
       title: "",
     });
+  }
+
+  // 价位线 (YAML): user-defined horizontal reference lines (成本线/关注价位).
+  private addCustomPriceLines(isDark: boolean) {
+    if (!this.priceSeries) return;
+    const p = isDark ? CHART_PALETTE.dark : CHART_PALETTE.light;
+    for (const line of this.options.spec.priceLines ?? []) {
+      this.priceSeries.createPriceLine({
+        price: line.price,
+        color: line.color ?? p.muted,
+        lineWidth: 1,
+        lineStyle: LineStyle.SparseDotted,
+        axisLabelVisible: true,
+        title: line.title ?? "",
+      });
+    }
   }
 
   // ===== Crosshair legend =====
@@ -638,12 +884,9 @@ export class ChartRenderer extends MarkdownRenderChild {
       close: mkItem(t("收")),
       change: mkItem(t("涨跌")),
       vol: mkItem(t("量")),
-      // MA labels are colored to match their lines, so each line is
-      // identifiable from the legend.
-      ma: this.maSeriesData.map(({ period, color }) => ({
-        period,
-        valueEl: mkItem(`MA${period}`, color),
-      })),
+      // Overlay indicator plots are colored to match their lines, so each
+      // line is identifiable from the legend.
+      indicators: this.overlayLegendPlots.map(({ label, color }) => mkItem(label, color)),
     };
 
     this.dataIndexByTime = new Map(
@@ -709,9 +952,9 @@ export class ChartRenderer extends MarkdownRenderChild {
     refs.change.textContent = `${changeAbs >= 0 ? "+" : ""}${formatNumber(changeAbs, 2)} (${change >= 0 ? "+" : ""}${formatPercent(change)})`;
     refs.change.style.color = color;
     refs.vol.textContent = formatBigNumber(row.vol);
-    for (let i = 0; i < refs.ma.length; i++) {
-      const value = this.maSeriesData[i]?.values[index];
-      refs.ma[i].valueEl.textContent = formatNumber(value ?? undefined, 2);
+    for (let i = 0; i < refs.indicators.length; i++) {
+      const value = this.overlayLegendPlots[i]?.values[index];
+      refs.indicators[i].textContent = formatNumber(value ?? undefined, 2);
     }
   }
 
@@ -851,6 +1094,11 @@ export class ChartRenderer extends MarkdownRenderChild {
 
 // ===== Shared module-level helpers (also used by the series chart renderer) =====
 
+// Fallback chart width when the container has no layout size yet (detached
+// mount, or Obsidian's hidden PDF-export render pass). The ChartSizeGuard
+// corrects to the real layout size on attach in normal views.
+export const DETACHED_CHART_WIDTH = 640;
+
 // Hermes chart palette. The dark values mirror the .fc-hermes scope in
 // styles.css — canvas drawing can't read CSS variables, so the two must be
 // kept in sync. The light variant only applies to cards explicitly set to
@@ -886,6 +1134,7 @@ export function buildChartOptions(isDark: boolean, showGrid: boolean, gridOpacit
     layout: {
       background: { color: "transparent" },
       textColor: p.text,
+      attributionLogo: false,
     },
     grid: {
       vertLines: { color: gridColor, style: LineStyle.Dashed, visible: showGrid },
@@ -940,6 +1189,27 @@ export function buildChartOptions(isDark: boolean, showGrid: boolean, gridOpacit
   };
 }
 
+// Faint centered background text (TradingView-style symbol watermark) on the
+// price pane. Long titles (overlay cards compose every series name) are
+// ellipsized so the single-line watermark doesn't overflow the card.
+const MAX_WATERMARK_CHARS = 24;
+export function addTitleWatermark(chart: IChartApi, title: string | undefined, isDark: boolean) {
+  const trimmed = (title ?? "").trim();
+  if (!trimmed) return;
+  const p = isDark ? CHART_PALETTE.dark : CHART_PALETTE.light;
+  createTextWatermark(chart.panes()[0], {
+    lines: [
+      {
+        text: trimmed.length > MAX_WATERMARK_CHARS ? `${trimmed.slice(0, MAX_WATERMARK_CHARS)}…` : trimmed,
+        color: `rgba(${p.grid}, 0.08)`,
+        fontSize: 36,
+        fontFamily: "sans-serif",
+        fontStyle: "bold",
+      },
+    ],
+  });
+}
+
 // Hides Obsidian's markdown chrome (frontmatter, inline title, …) around a
 // card rendered inside a canvas node. No-op outside a canvas.
 export function suppressMarkdownChrome(containerEl: HTMLElement) {
@@ -976,9 +1246,8 @@ function findAncestor(containerEl: HTMLElement, className: string): HTMLElement 
 
 // Index of the last item whose key is <= target (-1 when target precedes the
 // first item). Items must be ascending by key; keys are compared
-// lexicographically, which works for both ISO dates and YYYYMMDD. Shared by
-// the MA overlay (daily MA fitted onto W/M bars) and the series chart's
-// crosshair legend.
+// lexicographically, which works for both ISO dates and YYYYMMDD. Used by the
+// series chart's crosshair legend.
 export function floorIndex<T>(items: readonly T[], target: string, key: (item: T) => string): number {
   let lo = 0;
   let hi = items.length - 1;
@@ -1009,11 +1278,14 @@ function formatTickMark(time: Time, tickMarkType: TickMarkType): string {
 
 // Text header composited above the chart in PNG exports so the image
 // identifies what it shows (name/code + latest quote, or the overlay/spread
-// title + subtitle).
+// title + subtitle + per-line legend).
 export interface ChartPngHeader {
   title: string;
   subtitle?: string;
   quote?: { text: string; color?: string }[];
+  // Series-card legend rows: the date plus one colored label/value per line.
+  // Snapshotted at the latest data by the caller — never at a hovered date.
+  legend?: { date?: string; items: { label: string; color: string; value?: string }[] };
 }
 
 // Exports the chart canvas as a PNG: prefers copying to the clipboard
@@ -1049,9 +1321,9 @@ export async function exportChartPng(chart: IChartApi, name: string, header?: Ch
 }
 
 // Paints the chart screenshot onto an opaque card-colored canvas with a text
-// header strip on top (title / subtitle / quote segments). The screenshot is
-// a bitmap at CSS-size × devicePixelRatio, so the header is drawn at the same
-// ratio to keep text as crisp as the chart.
+// header strip on top (title / subtitle / quote segments / legend rows). The
+// screenshot is a bitmap at CSS-size × devicePixelRatio, so the header is
+// drawn at the same ratio to keep text as crisp as the chart.
 function composePng(chart: IChartApi, shot: HTMLCanvasElement, surfaceEl: HTMLElement, header?: ChartPngHeader): HTMLCanvasElement {
   const cssWidth = chart.chartElement().clientWidth;
   const dpr = cssWidth > 0 ? shot.width / cssWidth : window.devicePixelRatio || 1;
@@ -1066,22 +1338,53 @@ function composePng(chart: IChartApi, shot: HTMLCanvasElement, surfaceEl: HTMLEl
   const titleSize = 15;
   const subSize = 11;
   const quoteSize = 14;
+  const legendSize = 11;
+  const legendGap = 12;
   const lineGap = 4;
   const padBottom = 10;
+
+  const out = createEl("canvas");
+  out.width = shot.width;
+  const ctx = out.getContext("2d");
+  if (!ctx) return shot;
+
+  // Wrap the legend items into rows first — the header height depends on the
+  // row count. Measuring needs a 2d context; assigning out.height afterwards
+  // resets the context state, which the draw pass re-sets anyway.
+  type LegendRowItem = { label: string; labelColor: string; bold?: boolean; value?: string };
+  const legendRows: LegendRowItem[][] = [];
+  const maxWidth = out.width - 2 * padX * dpr;
+  const legend = header?.legend;
+  if (hasHeader && legend && (legend.date || legend.items.length > 0)) {
+    ctx.font = `${legendSize * dpr}px ${fontFamily}`;
+    const items: LegendRowItem[] = legend.date
+      ? [{ label: legend.date, labelColor: palette.text, bold: true }, ...legend.items.map((it) => ({ label: it.label, labelColor: it.color, value: it.value }))]
+      : legend.items.map((it) => ({ label: it.label, labelColor: it.color, value: it.value }));
+    let row: LegendRowItem[] = [];
+    let rowWidth = 0;
+    for (const item of items) {
+      const width = ctx.measureText(item.value ? `${item.label} ${item.value}` : item.label).width + legendGap * dpr;
+      if (row.length > 0 && rowWidth + width > maxWidth) {
+        legendRows.push(row);
+        row = [];
+        rowWidth = 0;
+      }
+      row.push(item);
+      rowWidth += width;
+    }
+    if (row.length > 0) legendRows.push(row);
+  }
 
   let headerHeight = 0;
   if (hasHeader) {
     headerHeight = padTop + titleSize;
     if (header.subtitle) headerHeight += lineGap + subSize;
     if (header.quote && header.quote.length > 0) headerHeight += lineGap + quoteSize;
+    if (legendRows.length > 0) headerHeight += legendRows.length * (lineGap + legendSize);
     headerHeight += padBottom;
   }
 
-  const out = createEl("canvas");
-  out.width = shot.width;
   out.height = Math.round(headerHeight * dpr) + shot.height;
-  const ctx = out.getContext("2d");
-  if (!ctx) return shot;
 
   // The screenshot itself is transparent (buildChartOptions sets a
   // transparent layout background), so fill the card surface color first.
@@ -1090,7 +1393,6 @@ function composePng(chart: IChartApi, shot: HTMLCanvasElement, surfaceEl: HTMLEl
   ctx.fillRect(0, 0, out.width, out.height);
 
   if (hasHeader) {
-    const maxWidth = out.width - 2 * padX * dpr;
     ctx.textBaseline = "top";
     let y = padTop * dpr;
     ctx.font = `600 ${titleSize * dpr}px ${fontFamily}`;
@@ -1111,9 +1413,47 @@ function composePng(chart: IChartApi, shot: HTMLCanvasElement, surfaceEl: HTMLEl
         ctx.fillText(seg.text, x, y);
         x += ctx.measureText(seg.text).width + 12 * dpr;
       }
+      y += (quoteSize + lineGap) * dpr;
+    }
+    for (const row of legendRows) {
+      let x = padX * dpr;
+      for (const item of row) {
+        ctx.font = `${item.bold ? "600 " : ""}${legendSize * dpr}px ${fontFamily}`;
+        ctx.fillStyle = item.labelColor;
+        ctx.fillText(item.label, x, y);
+        x += ctx.measureText(item.label).width;
+        if (item.value) {
+          ctx.font = `${legendSize * dpr}px ${fontFamily}`;
+          ctx.fillStyle = palette.text;
+          const valueText = ` ${item.value}`;
+          ctx.fillText(valueText, x, y);
+          x += ctx.measureText(valueText).width;
+        }
+        x += legendGap * dpr;
+      }
+      y += (legendSize + lineGap) * dpr;
     }
   }
 
   ctx.drawImage(shot, 0, Math.round(headerHeight * dpr));
   return out;
+}
+
+// Opaque PNG canvas of the current chart frame for the print snapshot:
+// takeScreenshot() forces a synchronous repaint, then the frame is composited
+// onto the card surface color so the image stays legible even when the PDF
+// omits element backgrounds (the chart's own layout background is
+// transparent).
+export function renderChartSnapshot(chart: IChartApi, surfaceEl: HTMLElement): HTMLCanvasElement {
+  return composePng(chart, chart.takeScreenshot(), surfaceEl, undefined);
+}
+
+// Creates or refreshes the card's print-snapshot <img> inside the chart
+// container. Hidden by default; @media print swaps it in for the live chart.
+export function upsertPrintSnapshot(containerEl: HTMLElement, canvas: HTMLCanvasElement): void {
+  let img = containerEl.querySelector<HTMLImageElement>("img.strataboard-print-snapshot");
+  if (!img) {
+    img = containerEl.createEl("img", { cls: "strataboard-print-snapshot" });
+  }
+  img.src = canvas.toDataURL("image/png");
 }

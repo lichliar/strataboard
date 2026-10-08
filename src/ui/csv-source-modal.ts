@@ -2,6 +2,7 @@ import { App, Modal, Notice, Setting, SuggestModal, TFile, TextComponent } from 
 import type { CustomSourceDef } from "../types";
 import { deriveCsvMapping, parseCsvKline, parseCsvTable, type CsvTable } from "../modules/csv-quote-client";
 import { normalizeJsonDate } from "../modules/quote-format-parsers";
+import { applyInfoDescs } from "./info-desc";
 import { t } from "../i18n";
 
 // Setup dialog for one format "csv" custom source (设置页 → 自定义数据源 →
@@ -146,6 +147,8 @@ export class CsvSourceModal extends Modal {
     cancelBtn.addEventListener("click", () => this.close());
     const saveBtn = footer.createEl("button", { text: t("保存"), cls: "mod-cta" });
     saveBtn.addEventListener("click", () => this.save());
+
+    applyInfoDescs(contentEl);
   }
 
   // Re-reads the file and rebuilds mapping + preview. Column detection runs

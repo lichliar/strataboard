@@ -37,6 +37,30 @@ export function onAttached(el: HTMLElement, cb: () => void, maxAttempts = 30): v
 }
 
 /**
+ * One animation frame, bounded by a timeout. Hidden render passes (Obsidian's
+ * PDF export) may never deliver rAF, and callers awaiting this in a
+ * post-processor promise must not hang the export forever.
+ */
+export function nextFrameBounded(timeoutMs = 800): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let rafId = 0;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      window.cancelAnimationFrame(rafId);
+      resolve();
+    }, timeoutMs);
+    rafId = window.requestAnimationFrame(() => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/**
  * Safely inserts a trusted static SVG string into the DOM without innerHTML.
  * Parses via DOMParser and imports the <svg> root; silently no-ops on a
  * parse failure (parsererror document or missing root element).

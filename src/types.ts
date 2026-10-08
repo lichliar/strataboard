@@ -58,6 +58,10 @@ export interface CustomSourceDef {
   group?: string;                   // source-group label: sources sharing a name collapse into one grouped entry (unified search fans out across members); absent = ungrouped
   icon?: string;                    // optional custom SVG markup shown in the 插入图表 submenu; absent = colored dot from the series palette
   format: "tencent" | "eastmoney" | "json" | "csv";
+  // "signals" = annotation source (a script-produced event CSV: date, code,
+  // side, text) — NOT a quote data source: excluded from quote pickers and
+  // kline resolution, referenced by cards' 信号/signals fields instead.
+  purpose?: "signals";
   searchUrl?: string;               // GET search template, {query} placeholder; empty = no GET search
   searchBodyTemplate?: string;      // POST search body; same placeholders as bodyTemplate plus {query} (raw, not URL-encoded). When set, search goes POST to searchUrl, falling back to klineUrl. A search template WITHOUT {query} means "fetch the whole list, filter locally" (cached in data-adapter).
   searches?: SearchEndpoint[];      // additional search endpoints (merged source covering several search interfaces); results merge deduped by code
@@ -175,7 +179,7 @@ export function sourceNeedsApiKey(def: CustomSourceDef): boolean {
 // searchBodyTemplate nested inside jsonMap). Shared by the CLI validator and
 // the settings import path so the two never drift.
 export const KNOWN_SOURCE_DEF_KEYS: ReadonlySet<string> = new Set([
-  "id", "name", "enabled", "group", "icon", "format", "searchUrl", "searchBodyTemplate",
+  "id", "name", "enabled", "group", "icon", "format", "purpose", "searchUrl", "searchBodyTemplate",
   "searches", "klineUrl", "filePath", "testCode", "jsonMap", "symbols", "params",
   "profiles", "codeRules", "searchPaginate", "searchProfile", "deadCodes", "apiKey", "apiKeyHeader", "headers", "method", "bodyTemplate",
   "bodyEncoding", "paginate", "transport",
@@ -240,7 +244,7 @@ export function cacheAssetKey(assetType: string, sourceId?: string): string {
   return assetType === "custom" && sourceId ? `custom:${sourceId}` : assetType;
 }
 
-export type Freq = "D" | "W" | "M";
+export type Freq = "D" | "W" | "M" | "Q" | "Y";
 export type RangePreset = "1y" | "3y" | "5y" | "10y" | "20y" | "ytd" | "max";
 export type ChartTheme = "auto" | "dark" | "light";
 export type ChartType = "candlestick" | "line";
@@ -291,10 +295,14 @@ export interface DisplayOverrides {
   legendOpacity?: number;
   showLatestValue?: boolean;
   showPointMarkers?: boolean;
-  // K-line cards only: moving-average lines (系列图 cards have no MA).
-  showMA?: boolean;
   showGrid?: boolean;
   gridOpacity?: number;
+}
+
+export interface IndicatorInstance {
+  id: string;                          // indicator registry id (builtin or custom)
+  inputs?: Record<string, unknown>;    // parameter overrides, keyed by inputConfig id
+  hidden?: boolean;                    // true = kept in the list but not drawn
 }
 
 export interface ParsedCardSpec {
@@ -317,7 +325,11 @@ export interface ParsedCardSpec {
   visibleStart?: string;  // YYYY-MM-DD, persisted chart-mode zoom/pan range
   visibleEnd?: string;    // YYYY-MM-DD (takes precedence over visibleRange)
   logScale?: boolean;
-  maPeriods?: number[]; // moving-average periods, e.g. [5, 10, 20, 60]
+  // Quote cards only: indicator instances (系列图 cards have no indicators).
+  // undefined = follow the global default; [] = explicitly no indicators.
+  indicators?: IndicatorInstance[];
+  signal?: SignalRef;   // 信号标注: buy/sell markers from a signals-purpose source (code defaults to symbol)
+  priceLines?: PriceLineSpec[]; // 价位线: user-defined horizontal reference lines (成本线/关注价位)
   widthAuto?: boolean;  // canvas only: card width follows the node (default true; false freezes the first-layout width)
   heightAuto?: boolean; // canvas only: card height follows the node (default true; false = fixed 高度)
   bleed?: number;       // canvas only: px gap between card content and node edge (default DEFAULT_CARD_BLEED)
@@ -326,7 +338,6 @@ export interface ParsedCardSpec {
   showLegend?: boolean;
   legendFrosted?: boolean;
   legendOpacity?: number; // percent 0-100
-  showMA?: boolean;       // 显示均线 override (undefined = follow 全局 showChartMA)
   showGrid?: boolean;
   gridOpacity?: number;   // percent 0-100
   widgetType?: WidgetType;
@@ -338,6 +349,34 @@ export interface ParsedCardSpec {
 
 // ==================== Series (overlay / spread cards) ====================
 
+// One trade-signal event from a signals-purpose csv source (script product:
+// date,code,side,text event table). date is YYYYMMDD, matching
+// OhlcvRow.tradeDate so the same floorIndex snapping works for both.
+export interface SignalEvent {
+  date: string;
+  code: string;
+  side: "buy" | "sell";
+  text?: string;
+}
+
+// A card's reference to a signals source. On quote cards (YAML 信号) code
+// defaults to the card's own symbol; on overlay/spread cards (YAML signals
+// list) code is required — overlay matches it against quote series tsCode,
+// spread filters events by it.
+export interface SignalRef {
+  sourceId: string;
+  code?: string;
+}
+
+// A user-defined horizontal reference line on a quote card (YAML 价位线:
+// 成本线/关注价位). Rendered as a dashed price line with an axis label;
+// title shows next to the line.
+export interface PriceLineSpec {
+  price: number;
+  title?: string;
+  color?: string;  // default: palette muted
+}
+
 export type SeriesSource = "quote" | "card";
 
 // Resampling period for series cards: daily / monthly / quarterly / yearly.
@@ -348,7 +387,7 @@ export interface SeriesRef {
   tsCode?: string;        // quote only, e.g. "600519.SH"
   assetType?: AssetType;  // quote only
   sourceId?: string;      // quote only: which CustomSourceDef feeds it
-  cardPath?: string;      // card only: vault-relative path of the referenced card .md (quote/spread block)
+  cardId?: string;        // card only: stable id of the referenced spread card (SpreadSpec.id)
   label?: string;         // optional display name override
   scale?: number;         // overlay cards only: visual multiplier applied to the plotted values (default 1)
 }
@@ -358,15 +397,20 @@ export interface SeriesPoint {
   value: number;
 }
 
-// A card file an overlay series can reference (source: "card"), identified by
-// its fenced block type. Overlay cards are deliberately not referenceable
-// (which of the normalized lines would it resolve to?).
+// A card file the series picker's 已有卡片 list can offer, identified by its
+// fenced block type. Overlay cards are deliberately not referenceable (which
+// of the normalized lines would it resolve to?). Picking a QUOTE card emits a
+// plain quote series ref (quoteRef below) — quote cards carry no identity of
+// their own. Picking a SPREAD card emits a card ref by its stable cardId, so
+// renaming/moving the card file never breaks the reference.
 export type ReferenceableCardKind = "quote" | "spread";
 
 export interface ReferenceableCard {
-  path: string;  // vault-relative .md path
+  path: string;  // vault-relative .md path (picker key only, never written to YAML)
   name: string;  // file basename (display name)
   kind: ReferenceableCardKind;
+  quoteRef?: { tsCode: string; assetType: AssetType; sourceId?: string };  // quote cards
+  cardId?: string;  // spread cards (SpreadSpec.id)
 }
 
 // How the overlay card puts its series on a comparable footing:
@@ -376,11 +420,17 @@ export interface ReferenceableCard {
 //   none    — raw values on one shared axis
 export type OverlayCompareMode = "percent" | "zscore" | "axis" | "none";
 
+// Line rendering shape for series charts (YAML lineType): simple straight
+// segments (default), curved smoothing, or steps for discretely-changing
+// data (rates, premiums).
+export type SeriesLineType = "simple" | "curved" | "steps";
+
 export interface OverlaySpec extends DisplayOverrides {
   series: SeriesRef[];
   range: string;   // RangePreset
   period?: SeriesPeriod;  // default "D"
   normalize?: OverlayCompareMode;  // default "percent"
+  lineType?: SeriesLineType;  // default "simple", applies to every line
   height?: number;
   theme?: ChartTheme;     // default "auto" (follow Obsidian)
   widthAuto?: boolean;    // canvas only, default true
@@ -393,16 +443,22 @@ export interface OverlaySpec extends DisplayOverrides {
 // 数据计算卡: an arithmetic expression over lettered series — series[0] is
 // A, series[1] is B, … (e.g. "A-B", "(A+B)/2"). Legacy two-leg cards
 // (`a:`/`b:` in YAML) migrate to series + "A-B" at parse time (see
-// series-spec.ts).
+// series-spec.ts). `id` is the card's stable identity: other cards reference
+// it via SeriesRef.cardId, so the file can be renamed/moved freely. Assigned
+// at creation; older cards get one written back on first render/listing.
 export interface SpreadSpec extends DisplayOverrides {
+  id?: string;
   series: SeriesRef[];
   expression: string;
   range: string;
+  signals?: SignalRef[];  // 信号标注: all entries' events (filtered by their code) merge onto the single line
   period?: SeriesPeriod;  // default "D"
   height?: number;
   theme?: ChartTheme;     // default "auto" (follow Obsidian)
   lineWidth?: number;     // px, default 2
-  lineColor?: string;     // default: first palette color
+  lineColor?: string;     // default: first palette color; unused when style is "baseline"
+  lineType?: SeriesLineType;  // default "simple"
+  style?: "baseline" | "area"; // default line; baseline shades above/below the 0 axis in rise/fall colors, area fills a gradient under the line
   widthAuto?: boolean;    // canvas only, default true
   heightAuto?: boolean;   // canvas only, default true
   bleed?: number;         // canvas only, default DEFAULT_CARD_BLEED

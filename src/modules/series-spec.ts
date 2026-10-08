@@ -7,8 +7,10 @@ import {
   type OverlayCompareMode,
   type OverlaySpec,
   type SeriesPeriod,
+  type SeriesLineType,
   type SeriesRef,
   type SeriesSource,
+  type SignalRef,
   type SpreadSpec,
 } from "../types";
 import { MAX_CARD_BLEED } from "./card-spec";
@@ -72,6 +74,8 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
   if (viewEnd !== undefined && typeof viewEnd !== "string") return viewEnd;
   const normalize = parseNormalize(map.normalize);
   if (typeof normalize !== "string") return normalize;
+  const lineType = parseLineType(map.lineType);
+  if (typeof lineType === "object") return lineType;
   const theme = parseTheme(map.theme);
   if (typeof theme === "object") return theme;
   const widthAuto = parseAutoFlag(map.widthAuto, "widthAuto");
@@ -89,6 +93,7 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
       range,
       period,
       normalize,
+      ...(lineType ? { lineType } : {}),
       ...(height !== undefined ? { height } : {}),
       ...(theme ? { theme } : {}),
       ...(widthAuto !== undefined ? { widthAuto } : {}),
@@ -153,6 +158,12 @@ export function parseSpreadSpec(source: string): SeriesSpecParseResult<SpreadSpe
   if (typeof lineWidth !== "number" && lineWidth !== undefined) return lineWidth;
   const lineColor = parseLineColor(map.lineColor);
   if (typeof lineColor !== "string" && lineColor !== undefined) return lineColor;
+  const style = map.style === undefined || map.style === null ? undefined : String(map.style);
+  if (style !== undefined && style !== "line" && style !== "baseline" && style !== "area") {
+    return { error: t("style 仅支持 line、baseline 或 area。") };
+  }
+  const lineType = parseLineType(map.lineType);
+  if (typeof lineType === "object") return lineType;
   const widthAuto = parseAutoFlag(map.widthAuto, "widthAuto");
   if (typeof widthAuto !== "boolean" && widthAuto !== undefined) return widthAuto;
   const heightAuto = parseAutoFlag(map.heightAuto, "heightAuto");
@@ -162,16 +173,27 @@ export function parseSpreadSpec(source: string): SeriesSpecParseResult<SpreadSpe
   const display = parseDisplayOverrides(map);
   if ("error" in display) return display;
 
+  // Missing/invalid ids are NOT card errors: the renderer (and the card
+  // listing) write a fresh id back on first sight. Only non-empty strings
+  // are carried through.
+  const id = String(map.id ?? "").trim();
+  const signals = parseSignals(map.signals);
+  if (signals && !Array.isArray(signals)) return signals;
+
   return {
     spec: {
+      ...(id ? { id } : {}),
       series,
       expression,
       range,
+      ...(signals ? { signals } : {}),
       period,
       ...(height !== undefined ? { height } : {}),
       ...(theme ? { theme } : {}),
       ...(lineWidth !== undefined ? { lineWidth } : {}),
       ...(lineColor ? { lineColor } : {}),
+      ...(lineType ? { lineType } : {}),
+      ...(style === "baseline" || style === "area" ? { style } : {}),
       ...(widthAuto !== undefined ? { widthAuto } : {}),
       ...(heightAuto !== undefined ? { heightAuto } : {}),
       ...(bleed !== undefined ? { bleed } : {}),
@@ -188,6 +210,7 @@ export function stringifyOverlaySpec(spec: OverlaySpec): string {
     range: spec.range,
     ...(spec.period && spec.period !== "D" ? { period: spec.period } : {}),
     ...(spec.normalize && spec.normalize !== "percent" ? { normalize: spec.normalize } : {}),
+    ...(spec.lineType ? { lineType: spec.lineType } : {}),
     ...(spec.height ? { height: spec.height } : {}),
     ...(spec.theme && spec.theme !== "auto" ? { theme: spec.theme } : {}),
     ...(spec.widthAuto === false ? { widthAuto: false } : {}),
@@ -201,6 +224,7 @@ export function stringifyOverlaySpec(spec: OverlaySpec): string {
 
 export function stringifySpreadSpec(spec: SpreadSpec): string {
   return stringify({
+    ...(spec.id ? { id: spec.id } : {}),
     expression: spec.expression,
     series: spec.series,
     range: spec.range,
@@ -209,6 +233,9 @@ export function stringifySpreadSpec(spec: SpreadSpec): string {
     ...(spec.theme && spec.theme !== "auto" ? { theme: spec.theme } : {}),
     ...(spec.lineWidth != null && spec.lineWidth !== 2 ? { lineWidth: spec.lineWidth } : {}),
     ...(spec.lineColor ? { lineColor: spec.lineColor } : {}),
+    ...(spec.lineType ? { lineType: spec.lineType } : {}),
+    ...(spec.style ? { style: spec.style } : {}),
+    ...(spec.signals && spec.signals.length > 0 ? { signals: signalsYaml(spec.signals) } : {}),
     ...(spec.widthAuto === false ? { widthAuto: false } : {}),
     ...(spec.heightAuto === false ? { heightAuto: false } : {}),
     ...(spec.bleed != null && spec.bleed !== 8 ? { bleed: spec.bleed } : {}),
@@ -216,6 +243,38 @@ export function stringifySpreadSpec(spec: SpreadSpec): string {
     ...(spec.viewStart ? { viewStart: spec.viewStart } : {}),
     ...(spec.viewEnd ? { viewEnd: spec.viewEnd } : {}),
   }, { lineWidth: 0, aliasDuplicateObjects: false }).trimEnd();
+}
+
+// signals: a single {source, code} map or a list of them (spread cards only —
+// overlay cards dropped 信号标注). code is REQUIRED — spread cards filter
+// events by it before merging them onto the single line.
+function parseSignals(raw: unknown): SignalRef[] | undefined | { error: string } {
+  if (raw === undefined || raw === null) return undefined;
+  const list = Array.isArray(raw) ? raw : [raw];
+  const signals: SignalRef[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const entry = list[i];
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return { error: t("signals[{i}] 必须是一个 YAML 对象。", { i }) };
+    }
+    const m = entry as Record<string, unknown>;
+    const sourceId = String(m.source ?? "").trim();
+    const code = String(m.code ?? "").trim();
+    if (!sourceId) {
+      return { error: t("signals[{i}] 缺少有效的 source（信号源 id）。", { i }) };
+    }
+    if (!code) {
+      return { error: t("signals[{i}] 缺少有效的 code（信号标注的标的代码）。", { i }) };
+    }
+    signals.push({ sourceId, code });
+  }
+  return signals.length > 0 ? signals : undefined;
+}
+
+// YAML form uses {source, code} keys (English-key convention of series
+// specs), not the internal SignalRef field names.
+function signalsYaml(signals: SignalRef[]): { source: string; code?: string }[] {
+  return signals.map((s) => ({ source: s.sourceId, ...(s.code ? { code: s.code } : {}) }));
 }
 
 // Returns the parsed YAML object, or an error message string.
@@ -262,11 +321,17 @@ function parseSeriesRef(raw: unknown, path: string, allowScale = false): SeriesR
   const ref: SeriesRef = { source };
 
   if (source === "card") {
-    const cardPath = String(map.cardPath ?? "").trim();
-    if (!cardPath) {
-      return t("{path} 缺少有效的 cardPath（引用的卡片文件路径）。", { path });
+    // Legacy cardPath refs are recognized only to give a targeted error —
+    // they are never resolved. The one-click upgrade (设置 → 路径设置 →
+    // 清理维护) rewrites them; the file path stays in the YAML as a clue.
+    if (map.cardPath !== undefined && map.cardPath !== null && String(map.cardPath).trim()) {
+      return t("{path} 是旧格式引用（cardPath），已无法解析。请到 设置 → 路径设置 → 清理维护 运行「升级卡片引用」，或编辑卡片重新选择系列。", { path });
     }
-    ref.cardPath = cardPath;
+    const cardId = String(map.cardId ?? "").trim();
+    if (!cardId) {
+      return t("{path} 缺少有效的 cardId（引用的计算卡 id）。", { path });
+    }
+    ref.cardId = cardId;
   } else {
     const tsCode = String(map.tsCode ?? "").trim();
     // assetType is always "custom" now; keep reading the field only to reject
@@ -375,6 +440,17 @@ function parseLineColor(raw: unknown): string | undefined | { error: string } {
     return { error: t("无效的 lineColor：{value}（应为 #rrggbb）。", { value: String(raw) }) };
   }
   return value;
+}
+
+const VALID_LINE_TYPES: SeriesLineType[] = ["simple", "curved", "steps"];
+
+function parseLineType(raw: unknown): SeriesLineType | undefined | { error: string } {
+  if (raw === undefined || raw === null) return undefined;
+  const value = String(raw).trim() as SeriesLineType;
+  if (!VALID_LINE_TYPES.includes(value)) {
+    return { error: t("无效的 lineType：{value}（应为 {valid}）。", { value: String(raw), valid: VALID_LINE_TYPES.join(" | ") }) };
+  }
+  return value === "simple" ? undefined : value;
 }
 
 function parseAutoFlag(raw: unknown, key: string): boolean | undefined | { error: string } {

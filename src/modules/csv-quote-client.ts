@@ -1,5 +1,5 @@
 import * as Papa from "papaparse";
-import type { CustomSourceDef, JsonSourceMap, OhlcvRow, SymbolListEntry } from "../types";
+import type { CustomSourceDef, JsonSourceMap, OhlcvRow, SignalEvent, SymbolListEntry } from "../types";
 import { normalizeJsonDate, parseMappedKline, resolveMapCode, splitCompositeCode } from "./quote-format-parsers";
 import { fetchSourceText } from "./custom-quote-client";
 import { resolveSymbolParams } from "../utils/symbol-list";
@@ -114,4 +114,63 @@ export function deriveCsvMapping(
     mode = "wide";
   }
   return { jsonMap: { rowsPath: "", rowKind: "object", cols }, symbols, mode };
+}
+
+// ==================== Signal event tables (信号表) ====================
+
+// Column aliases for the script-contract signal table (date,code,side,text).
+const SIGNAL_DATE_COLS = ["date", "time", "datetime", "日期"] as const;
+const SIGNAL_CODE_COLS = ["code", "symbol", "代码"] as const;
+const SIGNAL_SIDE_COLS = ["side", "direction", "方向"] as const;
+
+function findField(fields: string[], names: readonly string[]): string | undefined {
+  return fields.find((f) => names.includes(f.toLowerCase().replace(/[_\s]/g, "") as never));
+}
+
+// A CSV is a signal event table when it carries a date, a code and a side
+// column. Checked BEFORE the quote-shape derivation (script-sources.ts), so
+// event tables never get misclassified as wide tables.
+export function isSignalTable(fields: string[]): boolean {
+  return Boolean(
+    findField(fields, SIGNAL_DATE_COLS) &&
+    findField(fields, SIGNAL_CODE_COLS) &&
+    findField(fields, SIGNAL_SIDE_COLS)
+  );
+}
+
+const SIDE_MAP: Record<string, SignalEvent["side"]> = {
+  buy: "buy",
+  sell: "sell",
+  "买": "buy",
+  "卖": "sell",
+};
+
+// Parses a signal event table into normalized events. Rows with an
+// unparseable date, empty code or unrecognized side are dropped and counted
+// (sparse annotations are fine; silently halving them is not). Event dates
+// normalize to YYYYMMDD via the shared normalizeJsonDate.
+export function parseSignalTable(text: string): { events: SignalEvent[]; dropped: number; total: number } {
+  const table = parseCsvTable(text);
+  const dateCol = findField(table.fields, SIGNAL_DATE_COLS);
+  const codeCol = findField(table.fields, SIGNAL_CODE_COLS);
+  const sideCol = findField(table.fields, SIGNAL_SIDE_COLS);
+  const textCol = findField(table.fields, ["text", "note", "备注"]);
+  const events: SignalEvent[] = [];
+  let dropped = 0;
+  if (!dateCol || !codeCol || !sideCol) {
+    return { events, dropped: table.rows.length, total: table.rows.length };
+  }
+  for (const row of table.rows) {
+    const date = normalizeJsonDate(row[dateCol]);
+    const code = String(row[codeCol] ?? "").trim();
+    const side = SIDE_MAP[String(row[sideCol] ?? "").trim().toLowerCase()];
+    if (!date || !code || !side) {
+      dropped++;
+      continue;
+    }
+    const text = String(row[textCol ?? ""] ?? "").trim();
+    events.push({ date, code, side, ...(text ? { text } : {}) });
+  }
+  events.sort((a, b) => a.date.localeCompare(b.date));
+  return { events, dropped, total: table.rows.length };
 }

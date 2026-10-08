@@ -2,7 +2,7 @@ import { App, TFile } from "obsidian";
 import type { ParsedCardSpec, SeriesPeriod, SeriesPoint, SeriesRef, SpreadSpec } from "../types";
 import { SqliteCache } from "./sqlite-cache";
 import { DataAdapter } from "./data-adapter";
-import { parseCardSpec } from "./card-spec";
+import { CardIndex } from "./card-index";
 import { parseSpreadSpec } from "./series-spec";
 import { evalExpression, parseExpression, type ExprNode } from "./expression";
 import { t } from "../i18n";
@@ -11,20 +11,24 @@ interface SeriesAdapterOptions {
   app: App;
   cache: SqliteCache;
   dataAdapter: DataAdapter;
+  cardIndex: CardIndex;
 }
 
 // Unified loader for the generic "series" used by overlay and spread cards.
-// Dispatches across quote (custom-source OHLCV) and card (an existing
-// quote/spread card file) sources, all yielding YYYY-MM-DD SeriesPoints.
-// `visited` threads the card-reference chain so hand-written YAML cycles
-// (A refs B refs A) fail fast instead of recursing forever.
+// Dispatches across quote (custom-source OHLCV) and card (an existing spread
+// card, referenced by its stable SpreadSpec.id) sources, all yielding
+// YYYY-MM-DD SeriesPoints. `visited` threads the card-reference chain so
+// hand-written YAML cycles (A refs B refs A) fail fast instead of recursing
+// forever.
 export class SeriesAdapter {
   private app: App;
   private dataAdapter: DataAdapter;
+  private cardIndex: CardIndex;
 
   constructor(options: SeriesAdapterOptions) {
     this.app = options.app;
     this.dataAdapter = options.dataAdapter;
+    this.cardIndex = options.cardIndex;
   }
 
   async loadSeries(
@@ -42,52 +46,42 @@ export class SeriesAdapter {
     }
   }
 
-  // Loads an existing card file and resolves it to a point series by block
-  // type: spread cards evaluate their expression (recursively), quote cards
-  // yield their close prices. The OVERLAY's own range/period govern; the
-  // referenced card's range, period and view settings are ignored.
+  // Resolves a card ref (SeriesRef.cardId) to the referenced spread card's
+  // evaluated point series. The OVERLAY's own range/period govern; the
+  // referenced card's range, period and view settings are ignored. Quote
+  // cards are never referenced — pickers emit plain quote refs instead.
   private async loadCardSeries(
     ref: SeriesRef,
     range: string,
     period: SeriesPeriod,
     visited: Set<string>
   ): Promise<SeriesPoint[]> {
-    const cardPath = ref.cardPath!;
-    if (visited.has(cardPath)) {
-      throw new Error(t("检测到循环引用：{path}。", { path: cardPath }));
+    const cardId = ref.cardId!;
+    if (visited.has(cardId)) {
+      throw new Error(t("检测到循环引用：{path}。", { path: cardId }));
     }
-    visited.add(cardPath);
+    visited.add(cardId);
+    const cardPath = await this.cardIndex.resolve(cardId);
+    if (!cardPath) {
+      throw new Error(t("无法读取卡片：引用的计算卡不存在（id: {id}）。", { id: cardId }));
+    }
     const file = this.app.vault.getAbstractFileByPath(cardPath);
     if (!(file instanceof TFile)) {
       throw new Error(t("无法读取卡片：{path}（文件不存在）。", { path: cardPath }));
     }
     const content = await this.app.vault.cachedRead(file);
-    const match = content.match(/```(quote|spread)\n([\s\S]*?)\n```/);
+    const match = content.match(/```spread\n([\s\S]*?)\n```/);
     if (!match) {
-      throw new Error(t("无法读取卡片：{path}（未找到可引用的数据代码块）。", { path: cardPath }));
+      throw new Error(t("无法读取卡片：{path}（引用的卡片不是计算卡）。", { path: cardPath }));
     }
-    const kind = match[1];
-    const body = match[2];
     const invalid = (reason: string) =>
       new Error(t("无法读取卡片：{path}（{reason}）。", { path: cardPath, reason }));
 
-    if (kind === "spread") {
-      const result = parseSpreadSpec(body);
-      if (!result.spec) {
-        throw invalid(result.error ?? t("配置无效"));
-      }
-      return this.loadSpread(result.spec, range, period, visited);
+    const result = parseSpreadSpec(match[1]);
+    if (!result.spec) {
+      throw invalid(result.error ?? t("配置无效"));
     }
-    const result = parseCardSpec(body);
-    if (!result.ok) {
-      throw invalid(result.error.message);
-    }
-    const spec = result.spec;
-    const points = await this.loadQuoteSeries(
-      { source: "quote", tsCode: spec.symbol, assetType: spec.assetType, sourceId: spec.sourceId },
-      range
-    );
-    return resamplePoints(points, period);
+    return this.loadSpread(result.spec, range, period, visited);
   }
 
   private async loadQuoteSeries(ref: SeriesRef, range: string): Promise<SeriesPoint[]> {
@@ -124,14 +118,37 @@ export class SeriesAdapter {
   }
 
   static defaultLabel(ref: SeriesRef): string {
-    switch (ref.source) {
-      case "quote":
-        return ref.tsCode ?? "";
-      case "card":
-        // File basename without the .md extension, e.g. "差值计算-1".
-        return ref.cardPath?.split("/").pop()?.replace(/\.md$/, "") ?? "";
-    }
+    return ref.tsCode ?? "";
   }
+
+  // Display name for a series ref: explicit label first, then the referenced
+  // spread card's file basename (async: the card index may need a rebuild),
+  // finally the raw quote code. Card refs fall back to a generic 计算卡 when
+  // the id no longer resolves.
+  async resolveLabel(ref: SeriesRef): Promise<string> {
+    if (ref.label) return ref.label;
+    if (ref.source === "card") {
+      const path = ref.cardId ? await this.cardIndex.resolve(ref.cardId) : null;
+      return basename(path) ?? t("计算卡");
+    }
+    return ref.tsCode ?? "";
+  }
+
+  // Sync variant for contexts that cannot await (edit modals): uses only the
+  // card index's warm in-memory map, same 计算卡 fallback.
+  resolveLabelSync(ref: SeriesRef): string {
+    if (ref.label) return ref.label;
+    if (ref.source === "card") {
+      const path = ref.cardId ? this.cardIndex.resolveSync(ref.cardId) : null;
+      return basename(path) ?? t("计算卡");
+    }
+    return ref.tsCode ?? "";
+  }
+}
+
+// File basename without the .md extension, e.g. "差值计算-1".
+function basename(path: string | null): string | null {
+  return path?.split("/").pop()?.replace(/\.md$/, "") ?? null;
 }
 
 function ymdToIso(ymd: string): string {
