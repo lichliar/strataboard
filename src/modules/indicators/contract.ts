@@ -1,8 +1,6 @@
 /**
- * Unified indicator contract: the single shape every indicator (builtin
- * wrapper around a vendored lci file, self-written builtin, or user custom
- * script) is registered under. Obsidian-free so the CLI/MCP bundles and the
- * node benchmark can use it too.
+ * Contract for user-provided custom indicator files. Obsidian-free so the
+ * CLI/MCP bundles can use it too.
  *
  * Chinese display strings (name / category / error messages) are carried as
  * data; display layers wrap them with t() — this module never calls t().
@@ -12,19 +10,12 @@ import type { Bar, IndicatorResult, InputConfig, PlotConfig, HLineConfig, FillCo
 import type { MarkerData } from "../../vendor/lci/types";
 
 // The vendored standard files widen IndicatorResult the same way (see
-// lci/standard/rsi.ts): markers are MarkerData from lci/types.
+// user indicator modules): markers are MarkerData from lci/types.
 export type IndicatorResultLike = Omit<IndicatorResult, "markers"> & { markers?: MarkerData[] };
-
-// Trading-day basis for indicators whose period means N TRADING days on
-// resampled (W/M/Q/Y) charts. Only "ma" consumes it today.
-export interface IndicatorContext {
-  nativeBars?: Bar[];
-}
 
 export type IndicatorCalculate = (
   bars: Bar[],
-  inputs: Record<string, unknown>,
-  ctx?: IndicatorContext
+  inputs: Record<string, unknown>
 ) => IndicatorResultLike;
 
 export interface IndicatorDef {
@@ -32,12 +23,15 @@ export interface IndicatorDef {
   id: string;
   /** Chinese display name (UI wraps with t() at display time) */
   name: string;
+  /** User-authored Markdown description shown in indicator pickers/settings. */
+  description?: string;
   /** 均线 | 通道 | 震荡 | 动量 | 趋势 | 波动 | 成交量 | 自定义 */
   category: string;
-  origin: "builtin" | "custom";
   metadata: { title: string; shortTitle: string; overlay: boolean };
   inputConfig: InputConfig[];
   defaultInputs: Record<string, unknown>;
+  /** Optional ordered input ids to include in chart labels. */
+  labelParams?: string[];
   plotConfig?: PlotConfig[];
   hlineConfig?: HLineConfig[];
   fillConfig?: FillConfig[];
@@ -50,6 +44,20 @@ export interface IndicatorInstance {
   inputs?: Record<string, unknown>;
   /** true = kept in the list but not drawn (per-card visibility toggle). */
   hidden?: boolean;
+  group?: string;
+}
+
+/** Display label shared by the on-screen and headless chart renderers. */
+export function formatIndicatorLabel(def: IndicatorDef, inputs: Record<string, unknown>): string {
+  const title = def.metadata.shortTitle || def.name || def.id;
+  const numericConfigs = def.inputConfig.filter((config) => config.type === "int" || config.type === "float");
+  const configs = def.labelParams
+    ? def.labelParams.map((id) => def.inputConfig.find((config) => config.id === id)).filter((config): config is InputConfig => config != null)
+    : numericConfigs.slice(0, /macd/i.test(def.id) || /macd/i.test(def.metadata.shortTitle) ? 3 : 1);
+  const values = configs
+    .map((config) => inputs[config.id])
+    .filter((value): value is string | number => (typeof value === "string" && value.trim() !== "") || (typeof value === "number" && Number.isFinite(value)));
+  return values.length > 0 ? `${title}(${values.join(", ")})` : title;
 }
 
 export type ValidateIndicatorResult = { ok: true; def: IndicatorDef } | { ok: false; error: string };
@@ -87,6 +95,10 @@ export function validateIndicatorDef(raw: unknown): ValidateIndicatorResult {
     }
   }
 
+  if (obj.labelParams !== undefined && (!Array.isArray(obj.labelParams) || (obj.labelParams as unknown[]).some((id) => typeof id !== "string"))) {
+    return { ok: false, error: "labelParams 必须是字符串数组" };
+  }
+
   if (obj.defaultInputs == null || typeof obj.defaultInputs !== "object" || Array.isArray(obj.defaultInputs)) {
     return { ok: false, error: "defaultInputs 缺失或不是对象" };
   }
@@ -99,7 +111,6 @@ export function validateIndicatorDef(raw: unknown): ValidateIndicatorResult {
     id: typeof obj.id === "string" ? obj.id : "",
     name: typeof obj.name === "string" && obj.name ? obj.name : (meta.title as string),
     category: typeof obj.category === "string" && obj.category ? obj.category : "自定义",
-    origin: obj.origin === "builtin" ? "builtin" : "custom",
     metadata: {
       title: meta.title as string,
       shortTitle: meta.shortTitle as string,
@@ -107,6 +118,7 @@ export function validateIndicatorDef(raw: unknown): ValidateIndicatorResult {
     },
     inputConfig: obj.inputConfig as InputConfig[],
     defaultInputs: obj.defaultInputs as Record<string, unknown>,
+    labelParams: Array.isArray(obj.labelParams) ? (obj.labelParams as string[]) : undefined,
     plotConfig: Array.isArray(obj.plotConfig) ? (obj.plotConfig as PlotConfig[]) : undefined,
     hlineConfig: Array.isArray(obj.hlineConfig) ? (obj.hlineConfig as HLineConfig[]) : undefined,
     fillConfig: Array.isArray(obj.fillConfig) ? (obj.fillConfig as FillConfig[]) : undefined,

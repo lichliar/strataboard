@@ -1,6 +1,6 @@
 /**
- * Output types of the indicators: the oakscriptjs IndicatorResult shapes, shared by the built-in indicators and
- * scripts run with executeScript.
+ * Output types of user indicators: the oakscriptjs IndicatorResult shapes
+ * consumed by the vendored renderer.
  *
  * A point on a bar after the last bar (Pine bar_index + k) has the time of that future bar: barTime(bars, index).
  * A property that is not set is omitted (the renderer applies the Pine default); a colour set to na is 'transparent'.

@@ -19,6 +19,14 @@ export interface CanvasNodeLike {
 
 export interface CanvasLike {
   nodes: Map<unknown, CanvasNodeLike>;
+  // The multi-selection set (verified against app.asar: constructed as
+  // `this.selection = new Set` in the canvas class). File nodes carry
+  // filePath/file; right-clicking a selection of 2+ nodes opens the canvas'
+  // own onSelectionContextMenu, which triggers workspace events
+  // "canvas:selection-menu" (menu, canvas) and — when 2+ file nodes are
+  // selected — "files-menu" (menu, files, "canvas:selection-menu"), NOT the
+  // single-node "file-menu"/"canvas-menu" path.
+  selection?: Set<CanvasNodeLike>;
   removeNode?: (node: CanvasNodeLike) => void;
   requestSave?: () => void;
   createFileNode?: (options: {

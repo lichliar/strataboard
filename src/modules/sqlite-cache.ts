@@ -1,8 +1,8 @@
 import { type Vault } from "obsidian";
 import initSqlJs, { type Database } from "sql.js";
+import wasmBinary from "sql.js/dist/sql-wasm.wasm";
 import type { AssetType, Freq, OhlcvRow, SymbolItem } from "../types";
 import { cacheAssetKey } from "../types";
-import { t } from "../i18n";
 
 // The asset_type column is a plain cache-key string: user custom sources
 // carry `custom:<sourceId>` (see cacheAssetKey) so two sources sharing a
@@ -10,7 +10,6 @@ import { t } from "../i18n";
 
 export interface SqliteCacheOptions {
   vault: Vault;
-  pluginDir: string;
 }
 
 export interface SqliteCachePaths {
@@ -20,7 +19,6 @@ export interface SqliteCachePaths {
 
 export class SqliteCache {
   private vault: Vault;
-  private pluginDir: string;
   private SQL?: initSqlJs.SqlJsStatic;
   private ohlcvDb?: Database;
   private symbolsDb?: Database;
@@ -36,7 +34,6 @@ export class SqliteCache {
 
   constructor(options: SqliteCacheOptions) {
     this.vault = options.vault;
-    this.pluginDir = options.pluginDir;
   }
 
   async init(paths: SqliteCachePaths): Promise<void> {
@@ -44,22 +41,14 @@ export class SqliteCache {
     await this.ensureDir(paths.ohlcvDbPath);
     await this.ensureDir(paths.symbolsDbPath);
 
-    const wasmPath = `${this.pluginDir}/sql-wasm.wasm`;
-    const wasmBinary = await this.readWasmBinary(wasmPath);
-    this.SQL = await initSqlJs({ wasmBinary });
+    // The esbuild binary loader yields an offset-0 Uint8Array, so .buffer is
+    // exactly the wasm bytes sql.js expects.
+    this.SQL = await initSqlJs({ wasmBinary: wasmBinary.buffer as ArrayBuffer });
 
     this.ohlcvDb = await this.openOrCreate(paths.ohlcvDbPath);
     this.symbolsDb = await this.openOrCreate(paths.symbolsDbPath);
 
     this.ensureSchemas();
-  }
-
-  private async readWasmBinary(path: string): Promise<ArrayBuffer> {
-    try {
-      return await this.vault.adapter.readBinary(path);
-    } catch {
-      throw new Error(t("无法读取 sql-wasm.wasm。请确认插件目录中存在该文件：{path}", { path }));
-    }
   }
 
   private async openOrCreate(path: string): Promise<Database> {
@@ -214,6 +203,28 @@ export class SqliteCache {
     return { minDate, maxDate };
   }
 
+  // Latest cached bar date for a key as YYYY-MM-DD (the "最后数据" date the
+  // cache/stale badges show); null when the key has no rows at all.
+  async getLastDataDate(
+    key: { symbol: string; assetType: string; freq: Freq }
+  ): Promise<string | null> {
+    const stmt = this.ohlcvDb!.prepare(`
+      SELECT MAX(trade_date) as max_date
+      FROM ohlcv
+      WHERE symbol = ? AND asset_type = ? AND freq = ?
+    `);
+    stmt.bind([key.symbol, key.assetType, key.freq]);
+    if (!stmt.step()) {
+      stmt.free();
+      return null;
+    }
+    const r = stmt.getAsObject() as Record<string, unknown>;
+    stmt.free();
+    const maxDate = r.max_date as string | undefined;
+    if (!maxDate) return null;
+    return `${maxDate.slice(0, 4)}-${maxDate.slice(4, 6)}-${maxDate.slice(6, 8)}`;
+  }
+
   async mergeOhlcvRows(
     key: { symbol: string; assetType: string; freq: Freq },
     rows: OhlcvRow[]
@@ -319,6 +330,46 @@ export class SqliteCache {
     }
     insertStmt.free();
     this.markDirty("symbols");
+  }
+
+  // LOWER LIKE search over the symbol cache with relevance ordering (exact
+  // code hit first, then prefix, then the rest) — the same SQL the CLI's
+  // searchSymbols runs against symbols.db (src/cli/commands.ts). Custom-source
+  // rows are keyed `custom:<sourceId>` (see cacheAssetKey); they come back as
+  // assetType "custom" with the sourceId parsed out of the key.
+  async searchSymbols(query: string, limit = 50): Promise<SymbolItem[]> {
+    const lower = query.trim().toLowerCase();
+    if (!lower) return [];
+    const stmt = this.symbolsDb!.prepare(`
+      SELECT ts_code, symbol, name, enname, exchange, list_date, asset_type, profile
+      FROM symbols
+      WHERE LOWER(ts_code) LIKE :like OR LOWER(symbol) LIKE :like OR LOWER(name) LIKE :like
+      ORDER BY CASE
+        WHEN LOWER(ts_code) = :exact OR LOWER(symbol) = :exact THEN 0
+        WHEN LOWER(ts_code) LIKE :prefix OR LOWER(symbol) LIKE :prefix OR LOWER(name) LIKE :prefix THEN 1
+        ELSE 2
+      END, ts_code
+      LIMIT :limit
+    `);
+    stmt.bind({
+      ":like": `%${lower}%`,
+      ":exact": lower,
+      ":prefix": `${lower}%`,
+      ":limit": limit,
+    });
+    const items: SymbolItem[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      const item = this.rowToSymbol(row);
+      const key = String(row.asset_type ?? "");
+      if (key.startsWith("custom:")) {
+        item.assetType = "custom";
+        item.sourceId = key.slice("custom:".length);
+      }
+      items.push(item);
+    }
+    stmt.free();
+    return items;
   }
 
   // ==================== Maintenance ====================

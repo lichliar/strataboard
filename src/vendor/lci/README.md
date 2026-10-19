@@ -6,10 +6,8 @@ License: MIT (see `docs/THIRD-PARTY-LICENSES.md`)
 
 ## Layout
 
-- `standard/*.ts` — 12 built-in indicator implementations (ema, bb, parabolic-sar,
-  supertrend, ichimoku, macd, rsi, cci, williams-r, dmi, obv, atr), copied verbatim.
 - `render/` — IndicatorRenderer (draws IndicatorResult onto lightweight-charts v5 panes).
-- `types.ts`, `bar-time.ts` — shared output types and bar-time helpers used by the above.
+- `types.ts`, `bar-time.ts` — shared output types and bar-time helpers used by the renderer.
 
 ## Rules
 
@@ -18,5 +16,4 @@ License: MIT (see `docs/THIRD-PARTY-LICENSES.md`)
   indicator from it pulls all 1290 indicators into main.js. Vendor individual source files
   from the repo instead.
 - Runtime deps: `oakscriptjs` (~0.10.x), `lightweight-charts` (^5.2), `fancy-canvas` (^2.1).
-- When upgrading: bump the pinned commit above, re-copy files, then re-run
-  `node scripts/check-indicators.mjs` (numeric benchmark) before shipping.
+- When upgrading: bump the pinned commit above and re-copy only the renderer and shared helpers used by the plugin.

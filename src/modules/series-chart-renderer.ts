@@ -1,7 +1,6 @@
 import { MarkdownRenderChild, setIcon, setTooltip } from "obsidian";
 import {
   createChart,
-  createSeriesMarkers,
   AreaSeries,
   BaselineSeries,
   LineSeries,
@@ -16,41 +15,40 @@ import {
   type Time,
   type LineWidth,
 } from "lightweight-charts";
-import type { ChartTheme, SeriesLineType, SeriesPoint, SignalEvent } from "../types";
+import type { ChartTheme, Freq, SeriesLineType, SeriesPoint } from "../types";
+import { DEFAULT_RISE_COLOR, DEFAULT_FALL_COLOR } from "../types";
 import { onAttached, resolveEffectiveTheme, toLayoutPoint, installZoomEventFix } from "../utils/dom";
 import { addTitleWatermark, buildChartOptions, exportChartPng, floorIndex, suppressMarkdownChrome, DETACHED_CHART_WIDTH, renderChartSnapshot, upsertPrintSnapshot, type ChartPngHeader } from "./chart-renderer";
+import { DEFAULT_CARD_HEIGHT } from "./card-spec";
 import { ChartSizeGuard } from "./chart-size-guard";
-import { SIGNAL_BUY_COLOR, SIGNAL_SELL_COLOR, eventToMarker, snapEventsToBars } from "./signal-markers";
-import { SignalTooltip, type SignalTipEntry } from "./signal-tooltip";
+import { SERIES_LINE_COLORS, type SeriesChartLine } from "./overlay-lines";
+import { renderCacheBadge, renderEmptyState, renderStaleBadge, isDataStale, type EmptyKind } from "./card-status";
 import { t } from "../i18n";
 
-export interface SeriesChartLine {
-  name: string;
-  color?: string;
-  lineWidth?: number; // px, 1–4 (lightweight-charts LineWidth), default 2
-  lineType?: SeriesLineType; // default "simple" straight segments
-  // "baseline" (spread cards): 0-axis baseline area series shaded in the
-  // 红涨绿跌 defaults; `color` is then unused (legend/guide follow the sign
-  // of the latest value). "area" (spread cards): gradient fill under the line.
-  style?: "baseline" | "area";
-  points: SeriesPoint[];
-}
-
 interface SeriesChartRendererOptions {
-  title?: string;      // header title, e.g. "资产叠加（美的集团+贵州茅台）（归一化）"; omitted = no header
+  title?: string;      // header title, e.g. "对比（美的集团+贵州茅台）（归一化）"; omitted = no header
   subtitle?: string;   // small muted line under the title, e.g. the normalization base date
   lines: SeriesChartLine[];
-  height?: number;     // px, default 400
   valueSuffix?: string; // e.g. "%" appended to legend values and price-axis ticks
   theme?: ChartTheme;  // default "auto" (follow Obsidian; only then is the theme watcher attached)
-  freezeWidth?: boolean; // canvas only: pin the first-layout width (quote spec 宽度自适应 off)
+  // Global 涨色/跌色 (settings): the spread baseline style shades above/below
+  // the 0 axis with them.
+  riseColor?: string;
+  fallColor?: string;
   initialVisibleRange?: { from: string; to: string };  // YYYY-MM-DD, from the card YAML
   onEdit?: () => void; // pencil button in the footer tools
+  onRefresh?: () => void; // refresh button in the footer tools
   // 本地脚本 provenance (when any series is script-produced): muted note
-  // line under the title (script names + last-run stamps) plus a run button
-  // in the header actions that reruns the producing script(s).
+  // line under the title (script names + last-run stamps). The rerun entry
+  // lives in the load-error block (card-status.ts), not here.
   scriptNote?: string;
-  onRunScript?: () => Promise<void>;
+  // Card period (D/W/M/…) driving the stale-badge threshold.
+  freq?: Freq;
+  // Cache badge at the top of the card when any leg came from a failure
+  // fallback instead of a fresh fetch (card-status.ts).
+  cacheBadge?: { lastDataAt?: string };
+  // Which empty-state copy to show when every line is empty (source vs range).
+  emptyKind?: EmptyKind;
   // Overlay 独立纵轴 mode: every line gets its own invisible overlay price
   // scale (auto-fitted to its own range); the shared right axis is hidden.
   independentScales?: boolean;
@@ -64,29 +62,9 @@ interface SeriesChartRendererOptions {
   // settings). Independent of showLatestValue, which keeps the axis label /
   // dashed guide line.
   showPointMarkers: boolean;
-  // Signal markers per line (parallel to `lines`; undefined = no signals on
-  // that line). Overlay matches each entry to the quote line with the same
-  // code; spread merges every entry onto the single line. Fixed colors —
-  // series lines have no rise/fall color concept.
-  signals?: (SignalEvent[] | undefined)[];
   showGrid: boolean;
   gridOpacity: number;
 }
-
-const DEFAULT_HEIGHT = 400;
-
-// Line palette for overlay/spread charts; cycles when a card has more lines
-// than colors. Colors stay readable on both themes. Length matches
-// MAX_OVERLAY_SERIES so a full overlay card never repeats a color.
-export const SERIES_LINE_COLORS = [
-  "#2563eb", "#dc2626", "#f59e0b", "#8b5cf6", "#14b8a6",
-  "#ec4899", "#0ea5e9", "#84cc16", "#f97316", "#6366f1",
-];
-
-// Baseline (spread style: baseline) colors: the 红涨绿跌 defaults the quote
-// cards use, with gradient fills fading toward the 0 axis.
-const BASELINE_TOP = { line: "#ef4444", fill1: "rgba(239, 68, 68, 0.28)", fill2: "rgba(239, 68, 68, 0.04)" };
-const BASELINE_BOTTOM = { line: "#22c55e", fill1: "rgba(34, 197, 94, 0.28)", fill2: "rgba(34, 197, 94, 0.04)" };
 
 const LINE_TYPE_MAP: Record<SeriesLineType, LineType> = {
   simple: LineType.Simple,
@@ -118,7 +96,7 @@ function timeToYmd(time: Time): string {
   return `${day.year}-${String(day.month).padStart(2, "0")}-${String(day.day).padStart(2, "0")}`;
 }
 
-// Shared multi-line chart for the overlay (资产叠加) and spread (差值计算)
+// Shared multi-line chart for the overlay (compare) and spread (calc)
 // cards: one lightweight-charts LineSeries per line, a crosshair legend with
 // one colored entry per line, theme-aware rebuild, and a Chinese empty state.
 export class SeriesChartRenderer extends MarkdownRenderChild {
@@ -133,10 +111,6 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
   private latestDate = "";
   private initialVisibleRange: IRange<Time> | null = null;
   private stackEl: HTMLElement | null = null;
-  // 信号标注 hover readout: full-text tooltip entries per chart time
-  // (markers only carry 12 truncated chars).
-  private signalEventsByTime = new Map<string, SignalTipEntry[]>();
-  private signalTip: SignalTooltip | null = null;
   // Price-scale ids carrying a line each — ["right"] normally, one overlay
   // scale per line in 独立纵轴 mode (drives the legend-clearance margins).
   private scaleIds: string[] = ["right"];
@@ -162,24 +136,26 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     onAttached(this.containerEl, () => suppressMarkdownChrome(this.containerEl));
 
     const lines = this.options.lines.filter((line) => line.points.length > 0);
-    // Signals arrive parallel to options.lines; re-derive the pairing after
-    // the empty-line filter above drops entries.
-    const lineSignals = this.options.lines
-      .map((line, i) => ({ line, events: this.options.signals?.[i] }))
-      .filter(({ line }) => line.points.length > 0)
-      .map(({ events }) => events);
     if (lines.length === 0) {
-      this.containerEl.createDiv({
-        cls: "strataboard-empty",
-        text: t("暂无数据：所选系列在该时间范围内没有数据。"),
-      });
+      renderEmptyState(this.containerEl, this.options.emptyKind ?? "range-empty");
       return;
     }
 
+    // Status badges (card-status.ts): the cache badge wins over the stale
+    // badge — served-from-cache already implies the data may be old.
+    const lastBarYmd = lines.reduce(
+      (max, line) => (line.points[line.points.length - 1].date > max ? line.points[line.points.length - 1].date : max),
+      lines[0].points[lines[0].points.length - 1].date
+    );
+    if (this.options.cacheBadge) {
+      renderCacheBadge(this.containerEl, this.options.cacheBadge.lastDataAt, () => this.options.onRefresh?.());
+    } else if (this.options.freq && isDataStale(lastBarYmd, this.options.freq)) {
+      renderStaleBadge(this.containerEl, lastBarYmd, () => this.options.onRefresh?.());
+    }
+
     // Header row with the card title (and optional subtitle, e.g. the
-    // normalization base date) plus the 运行本地脚本 button on the right.
-    // 编辑参数/导出图片 live in the footer (same layout as the quote card).
-    // Skipped when no title is given.
+    // normalization base date). 编辑参数/刷新数据/导出图片 live in the footer
+    // (same layout as the quote card). Skipped when no title is given.
     if (this.options.title) {
       const headerEl = this.containerEl.createDiv({ cls: "financial-series-chart-header" });
       const mainEl = headerEl.createDiv({ cls: "financial-series-chart-header-main" });
@@ -196,29 +172,18 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
         const noteEl = mainEl.createDiv({ cls: "financial-series-chart-script-note", text: this.options.scriptNote });
         setTooltip(noteEl, this.options.scriptNote);
       }
-      if (this.options.onRunScript) {
-        const actions = headerEl.createDiv({ cls: "strataboard-header-actions" });
-        const runBtn = actions.createEl("button", { cls: "strataboard-header-btn" });
-        setIcon(runBtn, "play");
-        setTooltip(runBtn, t("运行本地脚本"));
-        runBtn.addEventListener("click", () => {
-          runBtn.disabled = true;
-          void this.options.onRunScript!().finally(() => {
-            runBtn.disabled = false;
-          });
-        });
-      }
     }
 
     // Chart stack: the inline height acts as the flex basis (same sizing
     // model as the quote chart card).
     const stackEl = this.containerEl.createDiv({ cls: "strataboard-chart-stack" });
     this.stackEl = stackEl;
-    stackEl.style.height = `${this.options.height ?? DEFAULT_HEIGHT}px`;
+    stackEl.style.height = `${DEFAULT_CARD_HEIGHT}px`;
     this.chartContainerEl = stackEl.createDiv({ cls: "strataboard-chart-container" });
 
-    // Footer: tool buttons pinned to the bottom-right (same style as the
-    // quote card footer — series cards have no period tabs on the left).
+    // Footer: tool buttons pinned to the bottom-right (same style and order
+    // as the quote card footer: 编辑 → 刷新 → 导出; series cards have no
+    // period tabs on the left).
     const footerEl = this.containerEl.createDiv({ cls: "strataboard-card-footer" });
     const tools = footerEl.createDiv({ cls: "strataboard-card-tools" });
     if (this.options.onEdit) {
@@ -226,6 +191,12 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
       setIcon(editBtn, "pencil");
       setTooltip(editBtn, t("编辑参数"));
       editBtn.addEventListener("click", () => this.options.onEdit?.());
+    }
+    if (this.options.onRefresh) {
+      const refreshBtn = tools.createEl("button", { cls: "strataboard-tool-btn" });
+      setIcon(refreshBtn, "refresh-cw");
+      setTooltip(refreshBtn, t("刷新数据"));
+      refreshBtn.addEventListener("click", () => this.options.onRefresh?.());
     }
     const exportBtn = tools.createEl("button", { cls: "strataboard-tool-btn" });
     setIcon(exportBtn, "image");
@@ -261,7 +232,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     // ChartSizeGuard only fixes sizing on attach/resize, which never happens
     // there, and a 0x0 chart prints as a blank canvas).
     chartOptions.width = this.chartContainerEl.clientWidth || DETACHED_CHART_WIDTH;
-    chartOptions.height = this.chartContainerEl.clientHeight || (this.options.height ?? DEFAULT_HEIGHT);
+    chartOptions.height = this.chartContainerEl.clientHeight || DEFAULT_CARD_HEIGHT;
     this.chart = createChart(this.chartContainerEl, chartOptions);
     // Zoom-correct mouse coordinates before the library sees them (Obsidian
     // canvas scales node content with a CSS transform).
@@ -269,16 +240,20 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     addTitleWatermark(this.chart, this.options.title, isDark);
 
     this.scaleIds = this.options.independentScales ? lines.map((_, i) => `s${i}`) : ["right"];
+    // Baseline (spread style: baseline) colors: the global 涨色/跌色, with
+    // gradient fills fading toward the 0 axis.
+    const baselineTop = { line: this.options.riseColor ?? DEFAULT_RISE_COLOR };
+    const baselineBottom = { line: this.options.fallColor ?? DEFAULT_FALL_COLOR };
     lines.forEach((line, i) => {
       const data: LineData[] = line.points.map((p) => ({ time: p.date, value: p.value }));
       // Baseline lines (spread 基线 style) ignore the palette color: the
       // legend dot and latest-value guide line follow the sign of the latest
-      // value instead (red above / green below the 0 axis).
+      // value instead (rise color above / fall color below the 0 axis).
       const color =
         line.style === "baseline"
           ? line.points[line.points.length - 1].value >= 0
-            ? BASELINE_TOP.line
-            : BASELINE_BOTTOM.line
+            ? baselineTop.line
+            : baselineBottom.line
           : line.color ?? SERIES_LINE_COLORS[i % SERIES_LINE_COLORS.length];
       // When every line is percent-ish the legend carries a "%" suffix; put
       // the same suffix on the price-axis ticks via a custom price format.
@@ -305,12 +280,12 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
               {
                 ...sharedOptions,
                 baseValue: { type: "price", price: 0 },
-                topLineColor: BASELINE_TOP.line,
-                topFillColor1: BASELINE_TOP.fill1,
-                topFillColor2: BASELINE_TOP.fill2,
-                bottomLineColor: BASELINE_BOTTOM.line,
-                bottomFillColor1: BASELINE_BOTTOM.fill1,
-                bottomFillColor2: BASELINE_BOTTOM.fill2,
+                topLineColor: baselineTop.line,
+                topFillColor1: withAlpha(baselineTop.line, 0.28),
+                topFillColor2: withAlpha(baselineTop.line, 0.04),
+                bottomLineColor: baselineBottom.line,
+                bottomFillColor1: withAlpha(baselineBottom.line, 0.28),
+                bottomFillColor2: withAlpha(baselineBottom.line, 0.04),
               },
               0
             )
@@ -327,29 +302,6 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
               )
             : this.chart!.addSeries(LineSeries, { ...sharedOptions, color }, 0);
       series.setData(data);
-      const events = lineSignals[i];
-      if (events && events.length > 0) {
-        // Event dates are YYYYMMDD; the points' dates are already the
-        // YYYY-MM-DD chart time, so markers take them verbatim.
-        const snapped = snapEventsToBars(events, line.points.map((p) => p.date.replace(/-/g, "")));
-        const markers = [...snapped.entries()].flatMap(([index, evs]) =>
-          evs.map((ev) =>
-            eventToMarker(ev, line.points[index].date as Time, { buy: SIGNAL_BUY_COLOR, sell: SIGNAL_SELL_COLOR })
-          )
-        );
-        if (markers.length > 0) {
-          createSeriesMarkers(series, markers);
-        }
-        // Hover readout with the full signal text near the crosshair.
-        for (const [index, evs] of snapped) {
-          const key = line.points[index].date;
-          const list = this.signalEventsByTime.get(key) ?? [];
-          for (const event of evs) {
-            list.push({ seriesName: line.name, seriesColor: color, event });
-          }
-          this.signalEventsByTime.set(key, list);
-        }
-      }
       line.color = color;
       // Single-line cards (spread, or a one-line overlay) also get a dashed
       // guide line at the latest value; axisLabelVisible stays off so it
@@ -389,18 +341,6 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
       this.addLegend(lines);
     }
 
-    // Signal hover readout works with or without the legend.
-    if (this.signalEventsByTime.size > 0) {
-      this.signalTip = new SignalTooltip(this.chartContainerEl!);
-      this.chart.subscribeCrosshairMove((param) => {
-        const entries = param.time != null ? this.signalEventsByTime.get(String(param.time)) : undefined;
-        if (!entries || !param.point) {
-          this.signalTip?.hide();
-          return;
-        }
-        this.signalTip?.show(param.point.x, param.point.y, entries);
-      });
-    }
     this.setupSizeGuard();
   }
 
@@ -454,8 +394,6 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
     this.latestDate = "";
     this.initialVisibleRange = null;
     this.scaleIds = ["right"];
-    this.signalEventsByTime.clear();
-    this.signalTip = null;
   }
 
   // Current visible time range as YYYY-MM-DD, or null when no chart/range.
@@ -597,12 +535,6 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
         }
       } else {
         this.chart?.timeScale().fitContent();
-      }
-      // 宽度自适应 off: pin the stack to its first-layout width so later
-      // canvas node width changes stop reaching the chart (canvas-only,
-      // same as the quote chart's freezeWidth).
-      if (this.options.freezeWidth && this.stackEl && this.containerEl.closest(".canvas-node")) {
-        this.stackEl.style.width = `${containerEl.clientWidth}px`;
       }
     }, () => this.updateLegendClearance());
   }

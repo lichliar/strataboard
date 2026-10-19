@@ -1,46 +1,26 @@
-import { App, Modal, Notice, Setting, type ColorComponent, type TextComponent } from "obsidian";
-import type { ChartTheme, CustomSourceDef, DisplayOverrides, SeriesPeriod, SeriesRef, SignalRef, SpreadSpec } from "../types";
-import { SeriesRefEditor, SignalRefEditor, type OpenSymbolPicker } from "./series-ref-editor";
+import { App, Modal, Notice, Setting, setTooltip, type ColorComponent, type TextComponent } from "obsidian";
+import type { ChartTheme, CustomSourceDef, DisplayOverrides, SeriesPeriod, SeriesRef, SpreadSpec } from "../types";
+import { SeriesRefEditor, type OpenSymbolPicker } from "./series-ref-editor";
 import { parseExpression } from "../modules/expression";
 import { appendSvg } from "../utils/dom";
-import { addStepper } from "./stepper";
 import { renderDisplayOverrideSettings } from "./display-overrides";
-import { DEFAULT_CARD_BLEED, MAX_CARD_BLEED } from "../modules/card-spec";
+import { RANGE_OPTIONS, PERIOD_OPTIONS, THEME_OPTIONS } from "../modules/series-summary";
+import { createSubTabs } from "./sub-tabs";
 import { t } from "../i18n";
 
-// 数据计算卡 editor (wireframe #screen-calc, IMPLEMENTATION.md phase 3):
+// Spread (calc) card editor (wireframe #screen-calc, IMPLEMENTATION.md phase 3):
 // an arithmetic expression over lettered series (A/B/C… assigned by row
-// order). Two sub-pages aligned with the unified card modal — 基础设置
-// (expression + series list + range/period), 显示设置 (fixed line type /
-// 线宽 / 线条颜色 + the Canvas 设置 and 图表设置 collapsibles). The
-// expression validates on every keystroke: red outline + inline warning hint
-// + disabled save button (all three together).
+// order). Two sub-pages via createSubTabs (same pattern as the unified card
+// modal): 数据 (expression + quick-template buttons + series list +
+// range/period) and 外观 (chart style / 线型 / 线宽 / 线条颜色 / 主题 + the
+// 图表设置 collapsible). The expression validates on every keystroke: red
+// outline + inline warning hint + disabled save button (all three together).
+// A calc card needs at least two series — enforced at save time and by the
+// row-delete floor.
 //
 // The modal doubles as the insert flow (modal-first: only 保存 creates the
 // card) and the in-card editor; the card title is derived from the
 // expression, so there is no title field.
-
-const RANGE_OPTIONS: { value: string; label: string }[] = [
-  { value: "1y", label: "近1年" },
-  { value: "3y", label: "近3年" },
-  { value: "5y", label: "近5年" },
-  { value: "10y", label: "近10年" },
-  { value: "20y", label: "近20年" },
-  { value: "max", label: "全部" },
-];
-
-const PERIOD_OPTIONS: { value: SeriesPeriod; label: string }[] = [
-  { value: "D", label: "日线" },
-  { value: "M", label: "月线" },
-  { value: "Q", label: "季线" },
-  { value: "Y", label: "年线" },
-];
-
-const THEME_OPTIONS: { value: ChartTheme; label: string }[] = [
-  { value: "auto", label: "跟随 Obsidian 主题" },
-  { value: "dark", label: "深色" },
-  { value: "light", label: "浅色" },
-];
 
 // Matches SERIES_LINE_COLORS[0] in series-chart-renderer.ts; a line color
 // equal to it is treated as "default" and not persisted.
@@ -48,12 +28,12 @@ const DEFAULT_LINE_COLOR = "#2563eb";
 
 const MAX_SERIES = 26; // single letters A–Z
 
-type SubPage = "basic" | "display";
+// A calc card with fewer than two series has nothing to compute.
+const MIN_SERIES = 2;
 
-const SUB_PAGES: { id: SubPage; label: string }[] = [
-  { id: "basic", label: "基础设置" },
-  { id: "display", label: "显示设置" },
-];
+// Quick-expression templates under the formula box. Pure syntax shortcuts —
+// they carry no signal-meaning copy by design.
+const EXPRESSION_TEMPLATES = ["A-B", "A/B", "(A/B-1)×100"];
 
 // Warning triangle from the wireframe's error hint.
 const WARNING_SVG =
@@ -68,55 +48,40 @@ export class SpreadEditModal extends Modal {
   private refs: SeriesRef[];
   private range: string;
   private period: SeriesPeriod;
-  private height: string;
   private theme: ChartTheme;
   private lineWidth: string;
   private lineColor: string;
   private style: "line" | "baseline" | "area";
   private lineType: "simple" | "curved" | "steps";
-  private widthAuto: boolean;
-  private heightAuto: boolean;
-  private bleed: number;
   // Per-card 图表设置 overrides (undefined = follow the plugin-wide 显示设置).
   private displayOverrides: DisplayOverrides;
 
   private editors: SeriesRefEditor[] = [];
-  private activeSubPage: SubPage = "basic";
   private exprText: TextComponent | null = null;
   private errorEl: HTMLElement | null = null;
   private saveBtn: HTMLButtonElement | null = null;
-  private heightText: TextComponent | null = null;
   private rowsEl: HTMLElement | null = null;
   private addRowEl: HTMLButtonElement | null = null;
 
   private onSubmit: (spec: SpreadSpec) => void;
   private openSymbolPicker: OpenSymbolPicker;
   private customSources: CustomSourceDef[];
-  private signalSources: CustomSourceDef[];
-  private initialSignals: SignalRef[];
-  private signalEditors: SignalRefEditor[] = [];
-  private signalRowsEl: HTMLElement | null = null;
   // The card's stable id is not edited here but must survive save()
   // rebuilding the spec object.
   private cardId?: string;
 
-  constructor(app: App, spec: SpreadSpec, onSubmit: (spec: SpreadSpec) => void, openSymbolPicker: OpenSymbolPicker, title?: string, customSources?: CustomSourceDef[], signalSources?: CustomSourceDef[]) {
+  constructor(app: App, spec: SpreadSpec, onSubmit: (spec: SpreadSpec) => void, openSymbolPicker: OpenSymbolPicker, title?: string, customSources?: CustomSourceDef[]) {
     super(app);
     this.cardId = spec.id;
     this.expression = spec.expression;
     this.refs = spec.series.map((ref) => ({ ...ref }));
-    this.initialSignals = spec.signals ?? [];
     this.range = RANGE_OPTIONS.some((o) => o.value === spec.range) ? spec.range : "10y";
     this.period = spec.period ?? "D";
-    this.height = spec.height ? String(spec.height) : "";
     this.theme = spec.theme ?? "auto";
     this.lineWidth = String(spec.lineWidth ?? 2);
     this.lineColor = spec.lineColor ?? DEFAULT_LINE_COLOR;
     this.style = spec.style ?? "line";
     this.lineType = spec.lineType ?? "simple";
-    this.widthAuto = spec.widthAuto ?? true;
-    this.heightAuto = spec.heightAuto ?? true;
-    this.bleed = spec.bleed ?? DEFAULT_CARD_BLEED;
     this.displayOverrides = {
       showLegend: spec.showLegend,
       legendFrosted: spec.legendFrosted,
@@ -129,8 +94,7 @@ export class SpreadEditModal extends Modal {
     this.onSubmit = onSubmit;
     this.openSymbolPicker = openSymbolPicker;
     this.customSources = customSources ?? [];
-    this.signalSources = signalSources ?? [];
-    this.setTitle(title ?? t("编辑数据计算卡"));
+    this.setTitle(title ?? t("编辑计算卡"));
   }
 
   onOpen() {
@@ -139,33 +103,17 @@ export class SpreadEditModal extends Modal {
     this.editors = [];
     this.exprText = null;
     this.errorEl = null;
-    this.heightText = null;
 
-    const tabBar = contentEl.createDiv("fc-subtabs");
-    const pagesEl = contentEl.createDiv();
-    const pages: Record<SubPage, HTMLElement> = {
-      basic: pagesEl.createDiv(),
-      display: pagesEl.createDiv(),
-    };
-    const applyActive = () => {
-      for (const tab of SUB_PAGES) {
-        pages[tab.id].classList.toggle("fc-hidden", tab.id !== this.activeSubPage);
-      }
-      tabBar.querySelectorAll(".fc-subtab").forEach((el, i) => {
-        el.classList.toggle("is-active", SUB_PAGES[i].id === this.activeSubPage);
-      });
-    };
-    SUB_PAGES.forEach((tab) => {
-      const btn = tabBar.createEl("button", { text: t(tab.label), cls: "fc-subtab" });
-      btn.addEventListener("click", () => {
-        this.activeSubPage = tab.id;
-        applyActive();
-      });
-    });
-    applyActive();
+    const subTabs = createSubTabs<"data" | "appearance">(
+      contentEl,
+      [
+        { id: "data", label: "数据" },
+        { id: "appearance", label: "外观" },
+      ]
+    );
 
-    this.renderBasicPage(pages.basic);
-    this.renderDisplayPage(pages.display);
+    this.renderDataPage(subTabs.page("data"));
+    this.renderAppearancePage(subTabs.page("appearance"));
 
     const footer = contentEl.createDiv("fc-modal-footer");
     const cancelBtn = footer.createEl("button", { text: t("取消") });
@@ -180,9 +128,9 @@ export class SpreadEditModal extends Modal {
     this.contentEl.empty();
   }
 
-  // ==================== 基础设置 ====================
+  // ==================== 数据 ====================
 
-  private renderBasicPage(pageEl: HTMLElement) {
+  private renderDataPage(pageEl: HTMLElement) {
     pageEl.createDiv({ cls: "fc-field-hint", text: t("表达式（使用系列代号 A/B/C...）") });
 
     const exprSetting = new Setting(pageEl).setName(t("公式"));
@@ -198,6 +146,19 @@ export class SpreadEditModal extends Modal {
       this.exprText = text;
     });
 
+    // Quick templates: write the expression into the formula box (setValue
+    // does not fire onChange, so update + revalidate explicitly).
+    const templatesEl = pageEl.createDiv({ cls: "fc-expr-templates" });
+    for (const expr of EXPRESSION_TEMPLATES) {
+      const btn = templatesEl.createEl("button", { cls: "fc-expr-template", text: expr, attr: { type: "button" } });
+      setTooltip(btn, t("点击填入公式：{expr}", { expr }));
+      btn.addEventListener("click", () => {
+        this.expression = expr;
+        this.exprText?.setValue(expr);
+        this.revalidateExpression();
+      });
+    }
+
     // Inline error hint (warning triangle + reason), hidden while valid.
     const errorEl = pageEl.createDiv({ cls: "fc-error-hint fc-calc-expr-error" });
     appendSvg(errorEl.createSpan(), WARNING_SVG);
@@ -212,9 +173,9 @@ export class SpreadEditModal extends Modal {
 
     pageEl.createDiv({ cls: "fc-field-hint fc-hint-mt", text: t("系列列表") });
     this.rowsEl = pageEl.createDiv("fc-calc-series-rows");
-    // Fresh cards start with one empty row bound to the first custom source.
+    // Fresh cards start with two empty rows bound to the first custom source.
     if (this.refs.length === 0) {
-      this.refs.push({ source: "quote", assetType: "custom", sourceId: this.customSources[0]?.id ?? "" });
+      this.refs.push(this.emptyRef(), this.emptyRef());
     }
     this.renderSeriesRows();
 
@@ -224,7 +185,7 @@ export class SpreadEditModal extends Modal {
     });
     this.addRowEl.addEventListener("click", () => {
       if (this.refs.length >= MAX_SERIES) return;
-      this.refs.push({ source: "quote", assetType: "custom", sourceId: this.customSources[0]?.id ?? "" });
+      this.refs.push(this.emptyRef());
       this.renderSeriesRows();
       this.revalidateExpression();
     });
@@ -234,29 +195,6 @@ export class SpreadEditModal extends Modal {
       cls: "fc-field-hint",
       text: t("系列代号按字母顺序自动分配，删除后自动重排"),
     });
-
-    // 信号标注: script-produced signal tables; every entry's events merge
-    // onto the card's single line.
-    const signalGroup = pageEl.createDiv("fc-canvas-logic-group");
-    signalGroup.createDiv({ cls: "fc-canvas-logic-title", text: t("信号标注") });
-    signalGroup.createDiv({
-      cls: "fc-field-hint fc-hint-mb",
-      text: this.signalSources.length > 0
-        ? t("把脚本产物信号表的买卖点标到图上；所有条目的信号合并标注在计算线上。")
-        : t("暂无信号源：脚本产物信号表（date,code,side,text）会先注册为信号源。"),
-    });
-    this.signalRowsEl = signalGroup.createDiv({ cls: "fc-calc-series-rows" });
-    this.signalEditors = [];
-    for (const ref of this.initialSignals) {
-      this.addSignalRow(ref);
-    }
-    const addSignalBtn = signalGroup.createEl("button", {
-      cls: "fc-add-row",
-      text: t("+ 添加信号"),
-      attr: { type: "button" },
-    });
-    addSignalBtn.disabled = this.signalSources.length === 0;
-    addSignalBtn.addEventListener("click", () => this.addSignalRow());
 
     new Setting(pageEl).setName(t("数据范围")).addDropdown((dropdown) => {
       for (const option of RANGE_OPTIONS) {
@@ -277,6 +215,10 @@ export class SpreadEditModal extends Modal {
     });
   }
 
+  private emptyRef(): SeriesRef {
+    return { source: "quote", assetType: "custom", sourceId: this.customSources[0]?.id ?? "" };
+  }
+
   // Rebuilds the series rows; letters follow row order (A/B/C…).
   private renderSeriesRows() {
     const rowsEl = this.rowsEl;
@@ -290,6 +232,10 @@ export class SpreadEditModal extends Modal {
         row,
         ref,
         () => {
+          if (this.refs.length <= MIN_SERIES) {
+            new Notice(t("计算卡至少需要两个数据序列"));
+            return;
+          }
           this.refs.splice(index, 1);
           this.renderSeriesRows();
           this.updateAddRow();
@@ -309,19 +255,6 @@ export class SpreadEditModal extends Modal {
     const full = this.refs.length >= MAX_SERIES;
     this.addRowEl.textContent = full ? t("系列数量已达上限") : t("+ 新增系列（{letter}）", { letter: letterAt(this.refs.length) });
     this.addRowEl.disabled = full;
-  }
-
-  private addSignalRow(initial?: SignalRef) {
-    const editor = new SignalRefEditor(
-      this.signalRowsEl!,
-      initial,
-      this.signalSources,
-      () => {
-        this.signalEditors = this.signalEditors.filter((e) => e !== editor);
-        editor.el.remove();
-      }
-    );
-    this.signalEditors.push(editor);
   }
 
   // Live validation: red outline + inline hint + disabled save (三件套).
@@ -345,9 +278,9 @@ export class SpreadEditModal extends Modal {
     }
   }
 
-  // ==================== 显示设置 ====================
+  // ==================== 外观 ====================
 
-  private renderDisplayPage(pageEl: HTMLElement) {
+  private renderAppearancePage(pageEl: HTMLElement) {
     let colorPicker: ColorComponent | null = null;
     new Setting(pageEl)
       .setName(t("图表类型"))
@@ -400,64 +333,13 @@ export class SpreadEditModal extends Modal {
         picker.setDisabled(this.style === "baseline");
       });
 
-    // Canvas 设置 collapsible (mirrors the unified edit modal).
-    const canvasDetails = pageEl.createEl("details", { cls: "fc-settings-sub" });
-    canvasDetails.createEl("summary", { text: t("Canvas 设置") });
-
-    new Setting(canvasDetails).setName(t("主题")).addDropdown((dropdown) => {
+    new Setting(pageEl).setName(t("主题")).addDropdown((dropdown) => {
       for (const option of THEME_OPTIONS) {
         dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.theme).onChange((value) => {
         this.theme = value as ChartTheme;
       });
-    });
-
-    new Setting(canvasDetails)
-      .setName(t("宽度自适应"))
-      .setDesc(t("卡片宽度跟随 Canvas 节点宽度缩放。"))
-      .addToggle((toggle) =>
-        toggle.setValue(this.widthAuto).onChange((value) => {
-          this.widthAuto = value;
-        })
-      );
-
-    new Setting(canvasDetails)
-      .setName(t("高度"))
-      .setDesc(t("可选，单位 px（200–1600，默认 400）；开启「高度自适应」后此字段失效。"))
-      .addText((text) => {
-        text
-          .setPlaceholder(t("如 400"))
-          .setValue(this.height)
-          .setDisabled(this.heightAuto)
-          .onChange((value) => {
-            this.height = value.trim();
-          });
-        text.inputEl.addClass("fc-mono");
-        this.heightText = text;
-      });
-
-    new Setting(canvasDetails)
-      .setName(t("高度自适应"))
-      .setDesc(t("开启后跟随节点高度，「高度」字段失效。"))
-      .addToggle((toggle) =>
-        toggle.setValue(this.heightAuto).onChange((value) => {
-          this.heightAuto = value;
-          this.heightText?.setDisabled(value);
-        })
-      );
-
-    const bleedSetting = new Setting(canvasDetails)
-      .setName(t("出血尺寸"))
-      .setDesc(t("卡片内容与 Canvas 节点边缘的留白。"));
-    addStepper(bleedSetting.controlEl, {
-      get: () => this.bleed,
-      set: (value) => {
-        this.bleed = value;
-      },
-      min: 0,
-      max: MAX_CARD_BLEED,
-      unit: "px",
     });
 
     // 图表设置 collapsible: per-card overrides of the plugin-wide 显示设置.
@@ -469,6 +351,11 @@ export class SpreadEditModal extends Modal {
   // ==================== Save ====================
 
   private save() {
+    if (this.refs.length < MIN_SERIES) {
+      new Notice(t("计算卡至少需要两个数据序列"));
+      return;
+    }
+
     const parsed = parseExpression(this.expression, this.refs.length);
     if (!parsed.ok) {
       new Notice(t("公式错误：{msg}", { msg: t(parsed.error) }));
@@ -483,30 +370,10 @@ export class SpreadEditModal extends Modal {
       }
     }
 
-    let height: number | undefined;
-    if (this.height) {
-      const parsedHeight = Number(this.height);
-      if (!Number.isInteger(parsedHeight) || parsedHeight < 200 || parsedHeight > 1600) {
-        new Notice(t("高度应为 200–1600 的整数（单位 px）。"));
-        return;
-      }
-      height = parsedHeight;
-    }
-
     const lineWidth = Number(this.lineWidth);
     if (!Number.isInteger(lineWidth) || lineWidth < 1 || lineWidth > 4) {
       new Notice(t("线宽应为 1–4 的整数（单位 px）。"));
       return;
-    }
-
-    const signals: SignalRef[] = [];
-    for (const editor of this.signalEditors) {
-      const error = editor.validate();
-      if (error) {
-        new Notice(error);
-        return;
-      }
-      signals.push(editor.toRef());
     }
 
     this.close();
@@ -516,16 +383,11 @@ export class SpreadEditModal extends Modal {
       expression: this.expression.trim(),
       range: this.range,
       period: this.period,
-      ...(signals.length ? { signals } : {}),
-      ...(height !== undefined ? { height } : {}),
       ...(this.theme !== "auto" ? { theme: this.theme } : {}),
       ...(lineWidth !== 2 ? { lineWidth } : {}),
       ...(this.lineColor !== DEFAULT_LINE_COLOR ? { lineColor: this.lineColor } : {}),
       ...(this.lineType !== "simple" ? { lineType: this.lineType } : {}),
       ...(this.style !== "line" ? { style: this.style } : {}),
-      ...(this.widthAuto ? {} : { widthAuto: false }),
-      ...(this.heightAuto ? {} : { heightAuto: false }),
-      ...(this.bleed === DEFAULT_CARD_BLEED ? {} : { bleed: this.bleed }),
       // 图表设置 overrides: undefined fields are dropped by the serializer.
       ...this.displayOverrides,
     });

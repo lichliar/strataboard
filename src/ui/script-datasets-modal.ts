@@ -2,7 +2,7 @@ import { App, Modal, Notice, Setting } from "obsidian";
 import type { CustomSourceDef } from "../types";
 import { t } from "../i18n";
 
-// Naming dialog for one script-produced source (设置 → 数据源设置 → 本地脚本
+// Naming dialog for one script-produced source (设置 → 数据源 → 本地脚本
 // → 命名): one script can emit several datasets (a wide-table CSV carries one
 // series per column, e.g. neer/reer/bis), and the auto-registered names are
 // just the column names. This dialog renames the source itself and each
@@ -36,12 +36,7 @@ export class ScriptDatasetsModal extends Modal {
     });
 
     const symbols = this.def.symbols ?? [];
-    if (this.def.purpose === "signals") {
-      contentEl.createDiv({
-        cls: "fc-field-hint",
-        text: t("信号表按 code 列区分标的，信号标注不显示名称；此处只需维护数据源名称。"),
-      });
-    } else if (symbols.length > 0) {
+    if (symbols.length > 0) {
       contentEl.createDiv({
         cls: "fc-field-hint",
         text: t("一个脚本可产出多套数据（宽表每列一套）：在此为每套单独命名。代码即 CSV 列名，不可修改。"),

@@ -1,7 +1,7 @@
 import { App, TFile } from "obsidian";
 import type StrataBoardPlugin from "../main";
 import type { CustomSourceDef } from "../types";
-import { deriveCsvMapping, isSignalTable, parseCsvKline, parseCsvTable, parseSignalTable } from "./csv-quote-client";
+import { deriveCsvMapping, parseCsvKline, parseCsvTable } from "./csv-quote-client";
 import { normalizePath, sanitizeFileNamePart } from "../utils/slug";
 
 // Script-output auto-registration (本地脚本): every CSV a user script drops
@@ -102,20 +102,6 @@ async function buildScriptSourceDef(
   }
   const table = parseCsvTable(text);
   if (table.fields.length === 0 || table.rows.length === 0) return null;
-  // Signal event tables (date,code,side,text) register as annotation sources
-  // (purpose "signals") — no jsonMap/symbols, cards reference them via their
-  // 信号/signals YAML fields.
-  if (isSignalTable(table.fields)) {
-    if (parseSignalTable(text).events.length === 0) return null;
-    return {
-      id: `script:${slug}`,
-      name: file.basename,
-      enabled: true,
-      format: "csv",
-      filePath: file.path,
-      purpose: "signals",
-    };
-  }
   const { jsonMap, symbols } = deriveCsvMapping(table, { fallbackCode: file.basename });
   if (!jsonMap.cols.date) return null;
   const wide = jsonMap.cols.close === "{code}";

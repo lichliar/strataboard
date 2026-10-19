@@ -1,5 +1,5 @@
 // Shared stepper control (wireframe: − / value unit / ＋ in one bordered box,
-// used for 出血尺寸 in the unified modal and the 数据计算卡 modal).
+// used for the calendar card's display settings in calendar-edit-modal).
 
 export interface StepperOptions {
   get: () => number;

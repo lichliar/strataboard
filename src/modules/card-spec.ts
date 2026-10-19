@@ -1,16 +1,56 @@
 import { parse, stringify } from "yaml";
-import { cacheAssetKey, type AssetType, type Freq, type IndicatorInstance, type ParsedCardSpec, type PriceLineSpec, type RangePreset, type SignalRef, type VisibleRangePreset, type WidgetType } from "../types";
+import { cacheAssetKey, type AssetType, type Freq, type IndicatorInstance, type ParsedCardSpec, type PriceLineSpec, type RangePreset, type WidgetType } from "../types";
 import { isDateRangeString } from "../utils/date";
+import { parseWidgetInput } from "./widget-parser";
+import { t } from "../i18n";
 
 const VALID_FREQS: Freq[] = ["D", "W", "M", "Q", "Y"];const VALID_RANGES: RangePreset[] = ["1y", "3y", "5y", "ytd", "max"];
-const VALID_VISIBLE_RANGES: VisibleRangePreset[] = ["1m", "3m", "6m", "1y", "ytd", "max"];
 const VALID_WIDGET_TYPES: WidgetType[] = ["iframe", "html"];
 
 export const DEFAULT_CARD_HEIGHT = 400;
 export const MIN_CARD_HEIGHT = 200;
 export const MAX_CARD_HEIGHT = 1600;
-export const DEFAULT_CARD_BLEED = 8;
-export const MAX_CARD_BLEED = 40;
+
+// Strict known-key whitelists: any other YAML key (unknown or removed in a
+// past version) is a parse error, so stale/typo'd fields surface instead of
+// being silently ignored.
+export const QUOTE_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  "代码", "数据源", "周期", "范围", "版本", "title",
+  "图表类型", "主题", "显示标题", "显示成交量", "对数坐标",
+  "可见起点", "可见终点", "indicators", "价位线",
+  "高度",
+  "显示图例", "图例半透明", "图例透明度", "显示网格", "网格透明度",
+]);
+export const WIDGET_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  "小组件类型", "iframe地址", "小组件HTML", "小组件标题", "代码", "周期", "范围", "版本", "高度",
+]);
+export const CALENDAR_KNOWN_KEYS: ReadonlySet<string> = new Set(["日历", "月份", "高度"]);
+
+export type CardBlockKind = "quote" | "widget" | "calendar";
+
+export function findUnknownCardKeys(source: string): { kind: CardBlockKind; keys: string[] } | null {
+  let parsed: unknown;
+  try {
+    parsed = parse(normalizeYamlSource(source));
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const map = parsed as Record<string, unknown>;
+  const isCalendar = extractBoolean(map, "日历") === true || map["月份"] !== undefined;
+  const widgetType = extractLiteral(map, "小组件类型", VALID_WIDGET_TYPES);
+  const isWidget = Boolean(widgetType || extractString(map, "iframe地址") || extractString(map, "小组件HTML"));
+  const kind: CardBlockKind = isCalendar ? "calendar" : isWidget ? "widget" : "quote";
+  const known = kind === "calendar" ? CALENDAR_KNOWN_KEYS : kind === "widget" ? WIDGET_KNOWN_KEYS : QUOTE_KNOWN_KEYS;
+  const keys = Object.keys(map).filter((key) => !known.has(key));
+  return keys.length > 0 ? { kind, keys } : null;
+}
+
+function unknownKeysError(map: Record<string, unknown>, known: ReadonlySet<string>): ParseError | null {
+  const unknown = Object.keys(map).filter((key) => !known.has(key));
+  if (unknown.length === 0) return null;
+  return { message: t("卡片配置包含未知或已删除的字段：{keys}", { keys: unknown.join(", ") }) };
+}
 
 export interface ParseError {
   message: string;
@@ -49,7 +89,7 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
   const iframeUrl = extractString(map, "iframe地址");
   const widgetHtml = extractString(map, "小组件HTML");
   if (widgetType || iframeUrl || widgetHtml) {
-    return parseWidgetCardSpec(map, defaults, widgetType ?? "iframe");
+    return parseWidgetCardSpec(map, defaults, widgetType);
   }
 
   const symbol = extractString(map, "代码");
@@ -57,6 +97,9 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
     const keys = Object.keys(map).join(", ");
     return { ok: false, error: { message: `Missing required field: 代码. Parsed keys: [${keys}]` } };
   }
+  const unknownKeys = unknownKeysError(map, QUOTE_KNOWN_KEYS);
+  if (unknownKeys) return { ok: false, error: unknownKeys };
+  const title = extractString(map, "title");
 
   const assetType: AssetType = "custom";
   const sourceId = extractString(map, "数据源") ?? defaults?.sourceId;
@@ -75,16 +118,11 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
   }
 
   const version = extractNumber(map, "版本") ?? defaults?.version ?? 1;
-  const height = extractHeight(map, defaults?.height);
 
-  const paneRatios = extractPositiveNumberArray(map, "面板比例");
   const chartType = extractLiteral(map, "图表类型", ["candlestick", "line"]);
   const theme = extractLiteral(map, "主题", ["auto", "dark", "light"]);
-  const riseColor = extractString(map, "涨色");
-  const fallColor = extractString(map, "跌色");
   const showHeader = extractBoolean(map, "显示标题");
   const showVolume = extractBoolean(map, "显示成交量");
-  const visibleRange = extractLiteral(map, "可见范围", VALID_VISIBLE_RANGES);
   const visibleStart = extractIsoDate(map, "可见起点");
   if (visibleStart instanceof Error) {
     return { ok: false, error: { message: visibleStart.message } };
@@ -98,55 +136,42 @@ export function parseCardSpec(source: string, defaults?: Partial<ParsedCardSpec>
   if (indicators instanceof Error) {
     return { ok: false, error: { message: indicators.message } };
   }
-  const signal = extractSignalRef(map);
-  if (signal instanceof Error) {
-    return { ok: false, error: { message: signal.message } };
-  }
   const priceLines = extractPriceLines(map);
   if (priceLines instanceof Error) {
     return { ok: false, error: { message: priceLines.message } };
   }
-  const widthAuto = extractBoolean(map, "宽度自适应");
-  const heightAuto = extractBoolean(map, "高度自适应");
-  const bleed = extractBleed(map);
   const showLegend = extractBoolean(map, "显示图例");
   const legendFrosted = extractBoolean(map, "图例半透明");
   const legendOpacity = extractOpacity(map, "图例透明度");
   const showGrid = extractBoolean(map, "显示网格");
   const gridOpacity = extractOpacity(map, "网格透明度");
+  const height = extractOptionalHeight(map);
 
   return {
     ok: true,
     spec: {
       symbol,
+      title,
       assetType,
       sourceId,
       freq: rawFreq,
       range: rawRange,
       version,
-      height,
-      paneRatios,
       chartType,
       theme,
-      riseColor,
-      fallColor,
       showHeader,
       showVolume,
-      visibleRange,
       visibleStart,
       visibleEnd,
       logScale,
       indicators,
-      signal,
       priceLines,
-      widthAuto,
-      heightAuto,
-      bleed,
       showLegend,
       legendFrosted,
       legendOpacity,
       showGrid,
       gridOpacity,
+      height,
     },
   };
 }
@@ -156,14 +181,32 @@ function parseWidgetCardSpec(
   defaults?: Partial<ParsedCardSpec>,
   inferredWidgetType?: WidgetType
 ): ParseResult {
+  const unknownKeys = unknownKeysError(map, WIDGET_KNOWN_KEYS);
+  if (unknownKeys) return { ok: false, error: unknownKeys };
+  if (map["小组件类型"] !== undefined && !inferredWidgetType) {
+    return { ok: false, error: { message: "小组件类型 must be iframe or html." } };
+  }
   const iframeUrl = extractString(map, "iframe地址");
   const widgetHtml = extractString(map, "小组件HTML");
 
   if (!iframeUrl && !widgetHtml) {
-    return { ok: false, error: { message: "Widget card requires iframe地址 or 小组件HTML." } };
+    return { ok: false, error: { message: "TradingView widget card requires iframe地址 or 小组件HTML." } };
+  }
+  if (iframeUrl && widgetHtml) {
+    return { ok: false, error: { message: "TradingView widget card must contain only one of iframe地址 or 小组件HTML." } };
   }
 
-  const widgetType = inferredWidgetType ?? extractLiteral(map, "小组件类型", VALID_WIDGET_TYPES) ?? "iframe";
+  const parsedWidget = parseWidgetInput(iframeUrl ?? widgetHtml ?? "");
+  if (!parsedWidget) {
+    return { ok: false, error: { message: "Only official TradingView HTTPS URLs and widget code are allowed." } };
+  }
+  const widgetType = inferredWidgetType ?? extractLiteral(map, "小组件类型", VALID_WIDGET_TYPES) ?? parsedWidget.widgetType;
+  if (widgetType !== parsedWidget.widgetType) {
+    return {
+      ok: false,
+      error: { message: `小组件类型 must be ${parsedWidget.widgetType} for the supplied TradingView content.` },
+    };
+  }
   const widgetTitle = extractString(map, "小组件标题");
   const symbol = extractString(map, "代码") ?? widgetTitle ?? "widget";
   const rawFreq = extractString(map, "周期") ?? defaults?.freq ?? "D";
@@ -182,8 +225,8 @@ function parseWidgetCardSpec(
       version,
       height,
       widgetType,
-      iframeUrl,
-      widgetHtml,
+      iframeUrl: parsedWidget.iframeUrl,
+      widgetHtml: parsedWidget.widgetHtml,
       widgetTitle,
     },
   };
@@ -195,6 +238,8 @@ function parseCalendarCardSpec(
   map: Record<string, unknown>,
   defaults?: Partial<ParsedCardSpec>
 ): ParseResult {
+  const unknownKeys = unknownKeysError(map, CALENDAR_KNOWN_KEYS);
+  if (unknownKeys) return { ok: false, error: unknownKeys };
   const month = extractString(map, "月份");
   if (month && !CALENDAR_MONTH_RE.test(month)) {
     return { ok: false, error: { message: `Invalid 月份: ${month}. Use YYYY-MM.` } };
@@ -262,11 +307,8 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
     范围: spec.range,
     版本: spec.version,
   };
-  if (spec.height != null && spec.height !== DEFAULT_CARD_HEIGHT) {
-    obj.高度 = spec.height;
-  }
-  if (spec.paneRatios != null && spec.paneRatios.length > 0) {
-    obj.面板比例 = spec.paneRatios;
+  if (spec.title != null) {
+    obj.title = spec.title;
   }
   if (spec.chartType != null) {
     obj.图表类型 = spec.chartType;
@@ -274,20 +316,11 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
   if (spec.theme != null) {
     obj.主题 = spec.theme;
   }
-  if (spec.riseColor != null) {
-    obj.涨色 = spec.riseColor;
-  }
-  if (spec.fallColor != null) {
-    obj.跌色 = spec.fallColor;
-  }
   if (spec.showHeader === false) {
     obj.显示标题 = false;
   }
   if (spec.showVolume === false) {
     obj.显示成交量 = false;
-  }
-  if (spec.visibleRange != null) {
-    obj.可见范围 = spec.visibleRange;
   }
   if (spec.visibleStart != null) {
     obj.可见起点 = spec.visibleStart;
@@ -297,11 +330,6 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
   }
   if (spec.logScale === true) {
     obj.对数坐标 = true;
-  }
-  if (spec.signal != null) {
-    obj.信号 = spec.signal.code
-      ? { 源: spec.signal.sourceId, 代码: spec.signal.code }
-      : spec.signal.sourceId;
   }
   if (spec.indicators !== undefined) {
     obj.indicators = spec.indicators;
@@ -317,17 +345,10 @@ export function stringifyCardSpec(spec: ParsedCardSpec): string {
           }
     );
   }
-  // Canvas display fields are only written when they differ from the defaults
-  // (widthAuto/heightAuto default true, bleed defaults to DEFAULT_CARD_BLEED),
-  // so older cards and freshly created ones keep clean YAML.
-  if (spec.widthAuto === false) {
-    obj.宽度自适应 = false;
-  }
-  if (spec.heightAuto === false) {
-    obj.高度自适应 = false;
-  }
-  if (spec.bleed != null && spec.bleed !== DEFAULT_CARD_BLEED) {
-    obj.出血 = spec.bleed;
+  // Quote cards omit 高度 to follow the containing Canvas node. A value
+  // switches the card to a fixed manual chart height.
+  if (spec.height != null) {
+    obj.高度 = spec.height;
   }
   // Per-card display overrides are written only when set; absent = the card
   // follows the plugin-wide 显示设置.
@@ -378,7 +399,6 @@ export function buildCardFrontmatter(spec: ParsedCardSpec): string {
     `fc-数据源: ${spec.sourceId}`,
     `fc-周期: ${spec.freq}`,
     `fc-范围: ${spec.range}`,
-    `fc-高度: ${spec.height ?? DEFAULT_CARD_HEIGHT}`,
     `fc-key: ${canonicalKey(spec)}`,
     "---",
   ].join("\n");
@@ -402,26 +422,7 @@ function extractBoolean(map: Record<string, unknown>, key: string): boolean | un
   return undefined;
 }
 
-// 信号: a signal-source id string, or a {源: id, 代码: code} map. 代码 is
-// optional and defaults to the card's own symbol at render time.
-function extractSignalRef(map: Record<string, unknown>): SignalRef | Error | undefined {
-  const raw = map["信号"];
-  if (raw === undefined || raw === null || raw === "") return undefined;
-  if (typeof raw === "string") {
-    const sourceId = raw.trim();
-    return sourceId ? { sourceId } : undefined;
-  }
-  if (typeof raw === "object" && !Array.isArray(raw)) {
-    const m = raw as Record<string, unknown>;
-    const sourceId = String(m["源"] ?? "").trim();
-    if (!sourceId) return new Error("Invalid 信号: 缺少 源（信号源 id）。");
-    const code = String(m["代码"] ?? "").trim();
-    return { sourceId, ...(code ? { code } : {}) };
-  }
-  return new Error("Invalid 信号: 应为信号源 id 字符串或 {源, 代码} 映射。");
-}
-
-// indicators: a list of indicator instances, each a {id, inputs?, hidden?}
+// indicators: a list of indicator instances, each a {id, inputs?, hidden?, group?}
 // map. id is the indicator registry id; inputs are parameter overrides
 // (values pass through unvalidated); hidden: true keeps the instance but
 // skips drawing it. An empty list is meaningful — explicitly no indicators,
@@ -450,10 +451,14 @@ function extractIndicators(map: Record<string, unknown>): IndicatorInstance[] | 
     if (m.hidden !== undefined && typeof m.hidden !== "boolean") {
       return new Error(`indicators[${i}] 的 hidden 必须是布尔值。`);
     }
+    if (m.group !== undefined && (typeof m.group !== "string" || !m.group.trim())) {
+      return new Error(`indicators[${i}] 的 group 必须是非空字符串。`);
+    }
     indicators.push({
       id,
       ...(inputs !== undefined ? { inputs: inputs as Record<string, unknown> } : {}),
       ...(m.hidden === true ? { hidden: true } : {}),
+      ...(typeof m.group === "string" && m.group.trim() ? { group: m.group.trim() } : {}),
     });
   }
   return indicators;
@@ -511,18 +516,6 @@ function extractIsoDate(map: Record<string, unknown>, key: string): string | und
   return raw;
 }
 
-function extractPositiveNumberArray(
-  map: Record<string, unknown>,
-  key: string
-): number[] | undefined {
-  const raw = map[key];
-  if (!Array.isArray(raw)) return undefined;
-  const values = raw
-    .map((item) => (typeof item === "number" && Number.isFinite(item) && item > 0 ? item : null))
-    .filter((item): item is number => item !== null);
-  return values.length > 0 ? values : undefined;
-}
-
 function extractHeight(map: Record<string, unknown>, defaultValue?: number): number {
   const raw = extractNumber(map, "高度");
   const value = raw ?? defaultValue ?? DEFAULT_CARD_HEIGHT;
@@ -530,11 +523,10 @@ function extractHeight(map: Record<string, unknown>, defaultValue?: number): num
   return Math.max(MIN_CARD_HEIGHT, Math.min(MAX_CARD_HEIGHT, value));
 }
 
-// 出血: px gap between card content and the canvas node edge, 0–MAX_CARD_BLEED.
-function extractBleed(map: Record<string, unknown>): number | undefined {
-  const raw = extractNumber(map, "出血");
+function extractOptionalHeight(map: Record<string, unknown>): number | undefined {
+  const raw = extractNumber(map, "高度");
   if (raw == null || !Number.isFinite(raw)) return undefined;
-  return Math.max(0, Math.min(MAX_CARD_BLEED, Math.round(raw)));
+  return Math.max(MIN_CARD_HEIGHT, Math.min(MAX_CARD_HEIGHT, Math.round(raw)));
 }
 
 // Display-override opacities are percents, clamped to 0–100.

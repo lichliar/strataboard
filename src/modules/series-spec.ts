@@ -10,14 +10,12 @@ import {
   type SeriesLineType,
   type SeriesRef,
   type SeriesSource,
-  type SignalRef,
   type SpreadSpec,
 } from "../types";
-import { MAX_CARD_BLEED } from "./card-spec";
 import { parseExpression } from "./expression";
 import { t } from "../i18n";
 
-// Parse/serialize for the overlay (资产叠加) and spread (差值计算) card
+// Parse/serialize for the overlay (compare) and spread (calc) card
 // specs. These live outside ParsedCardSpec and are parsed with the `yaml`
 // package directly, using English keys.
 
@@ -37,7 +35,7 @@ export const DEFAULT_OVERLAY_SPEC: OverlaySpec = {
 
 export const DEFAULT_SPREAD_SPEC: SpreadSpec = {
   series: [],
-  expression: "",
+  expression: "A-B",
   range: "10y",
 };
 
@@ -46,15 +44,40 @@ export const DEFAULT_SPREAD_SPEC: SpreadSpec = {
 // gets a distinct color.
 export const MAX_OVERLAY_SERIES = 10;
 
+// Strict known-key whitelists: any other YAML key (unknown or removed in a
+// past version) is a parse error, so stale/typo'd fields surface instead of
+// being silently ignored. Display-override keys (DisplayOverrides) are shared.
+const DISPLAY_OVERRIDE_KEYS = [
+  "showLegend", "legendFrosted", "legendOpacity", "showLatestValue", "showPointMarkers", "showGrid", "gridOpacity",
+];
+export const OVERLAY_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  "series", "range", "period", "normalize", "lineType", "theme", "title", "viewStart", "viewEnd",
+  ...DISPLAY_OVERRIDE_KEYS,
+]);
+export const SPREAD_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  // a/b are the legacy two-leg shape, recognized for the migration error path.
+  "id", "series", "expression", "a", "b", "range", "period", "theme", "lineWidth", "lineColor", "lineType", "style",
+  "title", "viewStart", "viewEnd",
+  ...DISPLAY_OVERRIDE_KEYS,
+]);
+
+function unknownKeysError(map: Record<string, unknown>, known: ReadonlySet<string>): string | null {
+  const unknown = Object.keys(map).filter((key) => !known.has(key));
+  if (unknown.length === 0) return null;
+  return t("卡片配置包含未知或已删除的字段：{keys}", { keys: unknown.join(", ") });
+}
+
 export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlaySpec> {
   const map = parseYamlMap(source);
   if (typeof map === "string") return { error: map };
+  const unknownKeys = unknownKeysError(map, OVERLAY_KNOWN_KEYS);
+  if (unknownKeys) return { error: unknownKeys };
 
   if (!Array.isArray(map.series) || map.series.length === 0) {
     return { error: t("缺少必填字段 series（至少需要一个数据系列）。") };
   }
   if (map.series.length > MAX_OVERLAY_SERIES) {
-    return { error: t("叠加卡最多支持 {max} 个数据系列。", { max: MAX_OVERLAY_SERIES }) };
+    return { error: t("对比卡最多支持 {max} 个数据系列。", { max: MAX_OVERLAY_SERIES }) };
   }
   const series: SeriesRef[] = [];
   for (let i = 0; i < map.series.length; i++) {
@@ -64,8 +87,6 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
   }
 
   const range = parseRange(map.range);
-  const height = parseHeight(map.height);
-  if (typeof height !== "number" && height !== undefined) return height;
   const period = parsePeriod(map.period);
   if (typeof period !== "string") return period;
   const viewStart = parseViewDate(map.viewStart, "viewStart");
@@ -78,12 +99,6 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
   if (typeof lineType === "object") return lineType;
   const theme = parseTheme(map.theme);
   if (typeof theme === "object") return theme;
-  const widthAuto = parseAutoFlag(map.widthAuto, "widthAuto");
-  if (typeof widthAuto !== "boolean" && widthAuto !== undefined) return widthAuto;
-  const heightAuto = parseAutoFlag(map.heightAuto, "heightAuto");
-  if (typeof heightAuto !== "boolean" && heightAuto !== undefined) return heightAuto;
-  const bleed = parseBleed(map.bleed);
-  if (typeof bleed !== "number" && bleed !== undefined) return bleed;
   const display = parseDisplayOverrides(map);
   if ("error" in display) return display;
 
@@ -93,12 +108,9 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
       range,
       period,
       normalize,
+      ...seriesTitle(map),
       ...(lineType ? { lineType } : {}),
-      ...(height !== undefined ? { height } : {}),
       ...(theme ? { theme } : {}),
-      ...(widthAuto !== undefined ? { widthAuto } : {}),
-      ...(heightAuto !== undefined ? { heightAuto } : {}),
-      ...(bleed !== undefined ? { bleed } : {}),
       ...display,
       ...(viewStart ? { viewStart } : {}),
       ...(viewEnd ? { viewEnd } : {}),
@@ -109,6 +121,8 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
 export function parseSpreadSpec(source: string): SeriesSpecParseResult<SpreadSpec> {
   const map = parseYamlMap(source);
   if (typeof map === "string") return { error: map };
+  const unknownKeys = unknownKeysError(map, SPREAD_KNOWN_KEYS);
+  if (unknownKeys) return { error: unknownKeys };
 
   // Current shape: series[] + expression. Legacy 差值计算 cards carry two
   // legs (a/b) and migrate to the equivalent "A-B" expression.
@@ -144,8 +158,6 @@ export function parseSpreadSpec(source: string): SeriesSpecParseResult<SpreadSpe
   }
 
   const range = parseRange(map.range);
-  const height = parseHeight(map.height);
-  if (typeof height !== "number" && height !== undefined) return height;
   const period = parsePeriod(map.period);
   if (typeof period !== "string") return period;
   const viewStart = parseViewDate(map.viewStart, "viewStart");
@@ -164,12 +176,6 @@ export function parseSpreadSpec(source: string): SeriesSpecParseResult<SpreadSpe
   }
   const lineType = parseLineType(map.lineType);
   if (typeof lineType === "object") return lineType;
-  const widthAuto = parseAutoFlag(map.widthAuto, "widthAuto");
-  if (typeof widthAuto !== "boolean" && widthAuto !== undefined) return widthAuto;
-  const heightAuto = parseAutoFlag(map.heightAuto, "heightAuto");
-  if (typeof heightAuto !== "boolean" && heightAuto !== undefined) return heightAuto;
-  const bleed = parseBleed(map.bleed);
-  if (typeof bleed !== "number" && bleed !== undefined) return bleed;
   const display = parseDisplayOverrides(map);
   if ("error" in display) return display;
 
@@ -177,26 +183,19 @@ export function parseSpreadSpec(source: string): SeriesSpecParseResult<SpreadSpe
   // listing) write a fresh id back on first sight. Only non-empty strings
   // are carried through.
   const id = String(map.id ?? "").trim();
-  const signals = parseSignals(map.signals);
-  if (signals && !Array.isArray(signals)) return signals;
-
   return {
     spec: {
       ...(id ? { id } : {}),
       series,
       expression,
       range,
-      ...(signals ? { signals } : {}),
+      ...seriesTitle(map),
       period,
-      ...(height !== undefined ? { height } : {}),
       ...(theme ? { theme } : {}),
       ...(lineWidth !== undefined ? { lineWidth } : {}),
       ...(lineColor ? { lineColor } : {}),
       ...(lineType ? { lineType } : {}),
       ...(style === "baseline" || style === "area" ? { style } : {}),
-      ...(widthAuto !== undefined ? { widthAuto } : {}),
-      ...(heightAuto !== undefined ? { heightAuto } : {}),
-      ...(bleed !== undefined ? { bleed } : {}),
       ...display,
       ...(viewStart ? { viewStart } : {}),
       ...(viewEnd ? { viewEnd } : {}),
@@ -208,14 +207,11 @@ export function stringifyOverlaySpec(spec: OverlaySpec): string {
   return stringify({
     series: spec.series,
     range: spec.range,
+    ...(spec.title ? { title: spec.title } : {}),
     ...(spec.period && spec.period !== "D" ? { period: spec.period } : {}),
     ...(spec.normalize && spec.normalize !== "percent" ? { normalize: spec.normalize } : {}),
     ...(spec.lineType ? { lineType: spec.lineType } : {}),
-    ...(spec.height ? { height: spec.height } : {}),
     ...(spec.theme && spec.theme !== "auto" ? { theme: spec.theme } : {}),
-    ...(spec.widthAuto === false ? { widthAuto: false } : {}),
-    ...(spec.heightAuto === false ? { heightAuto: false } : {}),
-    ...(spec.bleed != null && spec.bleed !== 8 ? { bleed: spec.bleed } : {}),
     ...displayOverridesYaml(spec),
     ...(spec.viewStart ? { viewStart: spec.viewStart } : {}),
     ...(spec.viewEnd ? { viewEnd: spec.viewEnd } : {}),
@@ -228,53 +224,26 @@ export function stringifySpreadSpec(spec: SpreadSpec): string {
     expression: spec.expression,
     series: spec.series,
     range: spec.range,
+    ...(spec.title ? { title: spec.title } : {}),
     ...(spec.period && spec.period !== "D" ? { period: spec.period } : {}),
-    ...(spec.height ? { height: spec.height } : {}),
     ...(spec.theme && spec.theme !== "auto" ? { theme: spec.theme } : {}),
     ...(spec.lineWidth != null && spec.lineWidth !== 2 ? { lineWidth: spec.lineWidth } : {}),
     ...(spec.lineColor ? { lineColor: spec.lineColor } : {}),
     ...(spec.lineType ? { lineType: spec.lineType } : {}),
     ...(spec.style ? { style: spec.style } : {}),
-    ...(spec.signals && spec.signals.length > 0 ? { signals: signalsYaml(spec.signals) } : {}),
-    ...(spec.widthAuto === false ? { widthAuto: false } : {}),
-    ...(spec.heightAuto === false ? { heightAuto: false } : {}),
-    ...(spec.bleed != null && spec.bleed !== 8 ? { bleed: spec.bleed } : {}),
     ...displayOverridesYaml(spec),
     ...(spec.viewStart ? { viewStart: spec.viewStart } : {}),
     ...(spec.viewEnd ? { viewEnd: spec.viewEnd } : {}),
   }, { lineWidth: 0, aliasDuplicateObjects: false }).trimEnd();
 }
 
-// signals: a single {source, code} map or a list of them (spread cards only —
-// overlay cards dropped 信号标注). code is REQUIRED — spread cards filter
-// events by it before merging them onto the single line.
-function parseSignals(raw: unknown): SignalRef[] | undefined | { error: string } {
-  if (raw === undefined || raw === null) return undefined;
-  const list = Array.isArray(raw) ? raw : [raw];
-  const signals: SignalRef[] = [];
-  for (let i = 0; i < list.length; i++) {
-    const entry = list[i];
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-      return { error: t("signals[{i}] 必须是一个 YAML 对象。", { i }) };
-    }
-    const m = entry as Record<string, unknown>;
-    const sourceId = String(m.source ?? "").trim();
-    const code = String(m.code ?? "").trim();
-    if (!sourceId) {
-      return { error: t("signals[{i}] 缺少有效的 source（信号源 id）。", { i }) };
-    }
-    if (!code) {
-      return { error: t("signals[{i}] 缺少有效的 code（信号标注的标的代码）。", { i }) };
-    }
-    signals.push({ sourceId, code });
-  }
-  return signals.length > 0 ? signals : undefined;
-}
-
-// YAML form uses {source, code} keys (English-key convention of series
-// specs), not the internal SignalRef field names.
-function signalsYaml(signals: SignalRef[]): { source: string; code?: string }[] {
-  return signals.map((s) => ({ source: s.sourceId, ...(s.code ? { code: s.code } : {}) }));
+// title: optional title override for the whole card (chart header,
+// watermark, export PNG title/file name).
+function seriesTitle(map: Record<string, unknown>): { title?: string } {
+  const raw = map["title"];
+  if (typeof raw !== "string") return {};
+  const title = raw.trim();
+  return title ? { title } : {};
 }
 
 // Returns the parsed YAML object, or an error message string.
@@ -302,7 +271,7 @@ function parseSeriesRef(raw: unknown, path: string, allowScale = false): SeriesR
   let scaleValue: number | undefined;
   if (map.scale !== undefined && map.scale !== null) {
     if (!allowScale) {
-      return t("{path} 不支持 scale 字段（缩放系数仅资产叠加卡可用）。", { path });
+      return t("{path} 不支持 scale 字段（缩放系数仅对比卡可用）。", { path });
     }
     const scale = Number(map.scale);
     if (!Number.isFinite(scale) || scale === 0) {
@@ -322,10 +291,10 @@ function parseSeriesRef(raw: unknown, path: string, allowScale = false): SeriesR
 
   if (source === "card") {
     // Legacy cardPath refs are recognized only to give a targeted error —
-    // they are never resolved. The one-click upgrade (设置 → 路径设置 →
+    // they are never resolved. The one-click upgrade (设置 → 高级 →
     // 清理维护) rewrites them; the file path stays in the YAML as a clue.
     if (map.cardPath !== undefined && map.cardPath !== null && String(map.cardPath).trim()) {
-      return t("{path} 是旧格式引用（cardPath），已无法解析。请到 设置 → 路径设置 → 清理维护 运行「升级卡片引用」，或编辑卡片重新选择系列。", { path });
+      return t("{path} 是旧格式引用（cardPath），已无法解析。请到 设置 → 高级 → 清理维护 运行「扫描并升级卡片引用」，或编辑卡片重新选择系列。", { path });
     }
     const cardId = String(map.cardId ?? "").trim();
     if (!cardId) {
@@ -403,15 +372,6 @@ function parseNormalize(raw: unknown): OverlayCompareMode | { error: string } {
   return value;
 }
 
-function parseHeight(raw: unknown): number | undefined | { error: string } {
-  if (raw === undefined || raw === null) return undefined;
-  const height = Number(raw);
-  if (!Number.isFinite(height) || height <= 0) {
-    return { error: t("无效的 height：{value}（应为正数，单位 px）。", { value: String(raw) }) };
-  }
-  return height;
-}
-
 const VALID_THEMES: ChartTheme[] = ["auto", "dark", "light"];
 
 function parseTheme(raw: unknown): ChartTheme | undefined | { error: string } {
@@ -459,15 +419,6 @@ function parseAutoFlag(raw: unknown, key: string): boolean | undefined | { error
     return { error: t("无效的 {key}：{value}（应为 true 或 false）。", { key, value: String(raw) }) };
   }
   return raw;
-}
-
-function parseBleed(raw: unknown): number | undefined | { error: string } {
-  if (raw === undefined || raw === null) return undefined;
-  const bleed = Number(raw);
-  if (!Number.isFinite(bleed) || bleed < 0 || bleed > MAX_CARD_BLEED) {
-    return { error: t("无效的 bleed：{value}（应为 0–{max}，单位 px）。", { value: String(raw), max: MAX_CARD_BLEED }) };
-  }
-  return Math.round(bleed);
 }
 
 // Opacity overrides are percents, clamped to 0–100.

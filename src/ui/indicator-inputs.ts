@@ -1,7 +1,5 @@
 /**
- * Shared parameter control for one indicator inputConfig entry, used by both
- * the card edit modal (per-card instance overrides) and the builtin-indicator
- * edit modal (global default overrides).
+ * Shared parameter control for one custom-indicator inputConfig entry.
  *
  * Values write back through onChange keyed by the caller; an empty/unset
  * control reports undefined so the caller deletes the key and the effective
@@ -17,9 +15,7 @@ export interface IndicatorInputRowOptions {
   /** Explicit override value; undefined = inherit the effective default. */
   value: unknown;
   /**
-   * Effective default shown as placeholder/fallback. In the card edit modal
-   * this is the builtin defval plus any settings-level override; in the
-   * builtin-indicator edit modal it is the raw defval.
+   * Effective default shown as placeholder/fallback.
    */
   defval: unknown;
   /** Optional parameter explanation, rendered as the row description (the

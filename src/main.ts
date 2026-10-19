@@ -2,17 +2,29 @@ import {
   ItemView,
   MarkdownRenderChild,
   MarkdownView,
+  Menu,
   Notice,
   Plugin,
   TFile,
   moment,
   type App,
   type Editor,
+  type EventRef,
   type WorkspaceLeaf,
 } from "obsidian";
-import { DEFAULT_SETTINGS, StrataBoardSettingTab, type StrataBoardSettings } from "./settings";
-import { DEFAULT_CARD_HEIGHT, DEFAULT_CARD_BLEED, parseCardSpec, stringifyCardSpec, type ParseResult } from "./modules/card-spec";
-import { DataAdapter } from "./modules/data-adapter";
+import { createHash } from "crypto";
+import * as nodePath from "path";
+import { readFile, realpath } from "fs/promises";
+import { DEFAULT_SETTINGS, StrataBoardSettingTab, openSettingsTab, openPrefilledSourceModal, type StrataBoardSettings } from "./settings";
+import { DEFAULT_CARD_HEIGHT, parseCardSpec, stringifyCardSpec, type ParseResult } from "./modules/card-spec";
+import { DataAdapter, type OhlcvLoadResult } from "./modules/data-adapter";
+import {
+  createPluginApiKeyResolver,
+  createPluginCredentialStore,
+  registerStoreForRedaction,
+  type ApiKeyResolver,
+  type CredentialStore,
+} from "./modules/credentials";
 import { SqliteCache } from "./modules/sqlite-cache";
 import { CardService, codeBlockTypeFor } from "./modules/card-service";
 import { ChartRenderer } from "./modules/chart-renderer";
@@ -20,59 +32,83 @@ import { CalendarRenderer } from "./modules/calendar-renderer";
 import { WidgetRenderer } from "./modules/widget-renderer";
 import { parseWidgetInput } from "./modules/widget-parser";
 import { CanvasToolbar } from "./modules/toolbar";
-import { ChartCardCodeBlockRenderer, applyCanvasDisplayOptions, type ChartCardRefreshHandle } from "./modules/chart-card-base";
-import { SeriesAdapter } from "./modules/series-adapter";
+import { ChartCardCodeBlockRenderer, type ChartCardRefreshHandle } from "./modules/chart-card-base";
+import { SeriesAdapter, type SeriesLoadMeta } from "./modules/series-adapter";
+import {
+  openCardFileInTab,
+  renderLoadError,
+  renderLoadingSkeleton,
+  renderParseError,
+  type EmptyKind,
+} from "./modules/card-status";
 import { CardIndex, newSpreadId } from "./modules/card-index";
 import { ensureSpreadId, hasLegacyCardRefs } from "./modules/card-ref-migration";
 import { formatExpressionTitle } from "./modules/expression";
-import { setRequestInterval } from "./modules/http";
-import { ensureBundledAssets } from "./modules/bundled-assets";
-import { SeriesChartRenderer, type SeriesChartLine } from "./modules/series-chart-renderer";
+import { setRequestInterval, setAllowedLoopbackHttpOrigins } from "./modules/http";
+import { redactSecrets, redactError } from "./modules/redact";
+import { SeriesChartRenderer } from "./modules/series-chart-renderer";
+import { buildOverlayLine, normalizeToPctChange, toZScore } from "./modules/overlay-lines";
 import {
   DEFAULT_OVERLAY_SPEC,
   DEFAULT_SPREAD_SPEC,
+  MAX_OVERLAY_SERIES,
   parseOverlaySpec,
   parseSpreadSpec,
   stringifyOverlaySpec,
   stringifySpreadSpec,
   type SeriesSpecParseResult,
 } from "./modules/series-spec";
-import { RemoteQuoteSearchModal } from "./ui/remote-quote-modal";
+import { buildOverlaySubtitle, buildSpreadSubtitle } from "./modules/series-summary";
 import { ManualSymbolModal } from "./ui/manual-symbol-modal";
-import { UnifiedSearchModal, type CategoryId } from "./ui/unified-search-modal";
+import { UnifiedSearchModal, type CategoryId, type SearchHistoryEntry } from "./ui/unified-search-modal";
 import { SourcePickerModal, type SourcePickerEntry } from "./ui/source-picker-modal";
 import { WidgetInputModal } from "./ui/widget-input-modal";
 import { UnifiedCardEditModal } from "./ui/unified-card-edit-modal";
 import { CalendarEditModal } from "./ui/calendar-edit-modal";
 import { OverlayEditModal } from "./ui/overlay-edit-modal";
 import { SpreadEditModal } from "./ui/spread-edit-modal";
-import { ConfirmModal } from "./ui/confirm-modal";
-import { cacheAssetKey, sourceSupportsRemoteSearch } from "./types";
-import type { AssetType, CustomSourceDef, Freq, OverlayCompareMode, OverlaySpec, ParsedCardSpec, ReferenceableCard, SeriesPoint, SeriesRef, SignalEvent, SignalRef, SpreadSpec, SymbolItem, ToolbarSourceId } from "./types";
+import { cacheAssetKey } from "./types";
+import type { AssetType, CustomSourceDef, Freq, OverlaySpec, ParsedCardSpec, ReferenceableCard, ResolvedCustomSourceDef, SeriesRef, SpreadSpec, SymbolItem } from "./types";
 import { resolveDateRange, formatIsoDate, parseDateYmd, formatDateTime } from "./utils/date";
 import { detectNativeFreq, maxFreq } from "./utils/frequency";
-import { normalizePath } from "./utils/slug";
-import { onAttached, nextFrameBounded } from "./utils/dom";
-import { getCanvasView, openPluginSettings, type CanvasNodeLike } from "./utils/obsidian-internals";
+import { normalizePath, sanitizeFileNamePart } from "./utils/slug";
+import { onAttached } from "./utils/dom";
+import { getCanvasView, openPluginSettings, type CanvasLike } from "./utils/obsidian-internals";
+import { extractCardBlock } from "./utils/card-block";
 import { t, setLanguage } from "./i18n";
 import { getScriptProvenance, syncScriptSources, type ScriptProvenance } from "./modules/script-sources";
-import { indicatorComputeCache, syncIndicatorFiles } from "./modules/indicators";
-import { hasLegacyMaKeys } from "./modules/card-ma-migration";
-import { runScript, type ScriptRunResult } from "./modules/script-runner";
+import { indicatorComputeCache, syncIndicatorFiles, type IndicatorApprovalDecision, type PendingIndicatorApproval } from "./modules/indicators";
+import { indicatorRegistry } from "./modules/indicators/registry";
+import { runScript, isPathInside, SCRIPT_TIMEOUT_MS, type ScriptRunResult } from "./modules/script-runner";
 import { parseCsvKline } from "./modules/csv-quote-client";
 import { ScriptManagerModal } from "./ui/script-manager-modal";
 import { SetupGuideModal } from "./ui/setup-guide-modal";
+import { ConfirmModal } from "./ui/confirm-modal";
+import { ScriptRunConfirmModal } from "./ui/script-run-confirm-modal";
+import { IndicatorConfirmModal } from "./ui/indicator-confirm-modal";
+import { IndicatorDescriptionModal } from "./ui/indicator-description-modal";
+import { AiPanelView, VIEW_TYPE_STRATABOARD_AI, type AiPanelHost } from "./ui/ai-panel-view";
+import { isAiConfigured, type AiConnectionConfig } from "./modules/ai/client";
+import type { AiTaskRequest } from "./modules/ai/tasks";
+import type { AiProposal } from "./modules/ai/proposals";
+import { fetchKlineSample } from "./modules/custom-quote-client";
+import {
+  detectBuiltinKlineFormat,
+  detectJsonMapping,
+  parseEastmoneyKline,
+  parseMappedKline,
+  parseTencentKline,
+} from "./modules/quote-format-parsers";
+import { CUSTOM_FORMAT_LABELS } from "./ui/custom-source-modal";
+import { ensureFolder } from "./modules/daily-notes";
 
-class QuoteCodeBlockRenderer extends MarkdownRenderChild {
-  private plugin: StrataBoardPlugin;
-  private source: string;
-  private sourcePath: string;
+// The canvas interaction model (double-click → chart mode, Esc/outside
+// click to exit, wheel zoom, node tagging) lives in ChartCardCodeBlockRenderer;
+// this class only renders the quote chart body and the quote-specific hooks.
+class QuoteCodeBlockRenderer extends ChartCardCodeBlockRenderer {
+  private fcPlugin: StrataBoardPlugin;
   private result: ParseResult;
   private chartRenderer: ChartRenderer | null = null;
-  private chartActive = false;
-  // The initial render's promise (render() handles its own errors, so it
-  // never rejects). whenReady() exposes it to the code-block processor.
-  private initialRender: Promise<void> = Promise.resolve();
   // Native frequency of the source's raw rows, detected on each render; gates
   // the footer's period buttons and the edit modal's 周期 dropdown.
   private nativeFreq: Freq = "D";
@@ -81,177 +117,140 @@ class QuoteCodeBlockRenderer extends MarkdownRenderChild {
   private appliedRange: { from: string; to: string } | null = null;
 
   constructor(plugin: StrataBoardPlugin, containerEl: HTMLElement, source: string, sourcePath: string) {
-    super(containerEl);
-    this.plugin = plugin;
-    this.source = source;
-    this.sourcePath = sourcePath;
-    this.result = parseCardSpec(source, { height: DEFAULT_CARD_HEIGHT });
+    super(plugin, containerEl, source, sourcePath);
+    this.fcPlugin = plugin;
+    this.result = parseCardSpec(source);
     this.containerEl.setAttribute("data-strataboard-block", "quote");
   }
 
-  onload() {
-    this.plugin.chartRenderers.add(this);
-    this.initialRender = this.render();
-
-    // Canvas interaction model (three tiers):
-    //  - single click/drag on the card: selects and moves the canvas node
-    //    (the node's content blocker keeps pointer events at canvas level);
-    //  - double-click: activates chart mode — the fc-chart-active class on
-    //    the node hides the blocker (styles.css), so hover drives the
-    //    crosshair and dragging pans the K-line;
-    //  - double-click while active: opens the settings modal.
-    // Outside a canvas (regular md pages) there is no blocker and the chart
-    // is always live, so double-click opens the modal directly.
-    //
-    // The listener sits on DOCUMENT (capture), not on the card: while
-    // inactive the card is covered by Obsidian's content blocker, which is a
-    // SIBLING of the node content rather than an ancestor of the card, so
-    // double-clicks on the covered card never bubble through the card's
-    // container — a card-level listener would never see them and Obsidian's
-    // own handler would open the node's source edit mode instead. preventDefault
-    // here also suppresses that native edit mode; source is edited only in
-    // the underlying md file.
-    this.registerDomEvent(
-      document,
-      "dblclick",
-      (event) => {
-        const target = event.target as HTMLElement | null;
-        if (!target) return;
-        const inCard = this.containerEl.contains(target);
-        const nodeEl = this.findCanvasNodeEl();
-        const onOwnBlocker =
-          nodeEl != null &&
-          nodeEl.contains(target) &&
-          target.classList.contains("canvas-node-content-blocker");
-        if (!inCard && !onOwnBlocker) return;
-        // Let header buttons (refresh / period tabs) keep their own behavior.
-        if (inCard && target.closest("button")) return;
-        event.preventDefault();
-        event.stopPropagation();
-        if (this.chartActive || !nodeEl) {
-          this.openEditModal();
-        } else {
-          this.setChartActive(true);
-        }
-      },
-      { capture: true }
-    );
-
-    // In chart mode keep the canvas' node-drag handler from starting a drag:
-    // Obsidian initiates node selection/dragging from POINTERDOWN listeners
-    // on ancestor elements (verified against app.asar), so stop pointerdown
-    // from bubbling past the card. Do NOT stop/preventDefault mousedown —
-    // lightweight-charts pans via mousedown on its own (descendant) elements,
-    // and canceling pointerdown would also suppress the compatibility mouse
-    // events the chart needs. (While inactive the blocker intercepts events
-    // before they reach the card at all.)
-    this.registerDomEvent(
-      this.containerEl,
-      "pointerdown",
-      (event) => {
-        if (this.chartActive) event.stopPropagation();
-      },
-      { capture: true }
-    );
-
-    // In chart mode, drive the time-axis wheel zoom manually from a
-    // window-capture listener: Obsidian's canvas intercepts wheel at window
-    // level (same pattern as the pointerdown exit, see below), so the
-    // chart's own wheel handler never sees the event. stopPropagation +
-    // preventDefault keep BOTH the canvas zoom and the library's wheel
-    // handler from acting — no double zoom. Outside chart mode the event
-    // flows untouched.
-    this.registerDomEvent(
-      window,
-      "wheel",
-      (event) => {
-        if (!this.chartActive || !this.containerEl.contains(event.target as Node)) return;
-        event.stopPropagation();
-        event.preventDefault();
-        this.chartRenderer?.applyTimeAxisWheelZoom(event.deltaY, event.clientX);
-      },
-      { capture: true, passive: false }
-    );
-
-    // Leave chart mode on outside click or Escape.
-    //
-    // The outside-click listener sits on WINDOW (capture), not on document:
-    // Obsidian's canvas initiates drag/pan from window-level capture
-    // pointerdown listeners and stops propagation there, so a document-level
-    // listener never sees the event and chart mode never exited (activation
-    // via dblclick was unaffected because that event flows to document).
-    this.registerDomEvent(
-      window,
-      "pointerdown",
-      (event) => {
-        if (this.containerEl.contains(event.target as Node)) return;
-        if (this.chartActive) {
-          this.setChartActive(false, true);
-        } else {
-          // Sweep a stale fc-chart-active left on the node by a destroyed
-          // instance (a re-render replaces the renderer but the canvas node
-          // keeps its classes).
-          this.containerEl.removeClass("fc-chart-active");
-          this.findCanvasNodeEl()?.removeClass("fc-chart-active");
-        }
-      },
-      { capture: true }
-    );
-    this.registerDomEvent(document, "keydown", (event) => {
-      if (this.chartActive && event.key === "Escape") {
-        this.setChartActive(false, true);
-      }
-    });
-  }
-
-  onunload() {
-    this.plugin.chartRenderers.delete(this);
-    // Not user-initiated: never persist during unload.
-    this.setChartActive(false);
-  }
-
-  // Public re-render entry for the plugin-level registry (script-output
-  // invalidation refreshes every chart card): same path as the header
-  // refresh button.
-  refreshCard(): void {
-    void this.render();
-  }
-
-  // Resolves when the INITIAL render settled and the chart canvas holds a
-  // painted frame. The code-block processor returns this promise so Obsidian
-  // awaits the chart before capturing the page (导出为 PDF renders the note
-  // in a hidden pass and snapshots whatever the DOM holds at that point).
-  // Never rejects: render() renders its own error state, and the trailing
-  // frame wait is bounded in case rAF never fires in the hidden pass.
-  whenReady(): Promise<void> {
-    return this.initialRender
-      .then(() => this.chartRenderer?.whenReady())
-      .then(() => {
-        this.chartRenderer?.forcePaint();
-      })
-      .then(() => nextFrameBounded());
-  }
-
-  private setChartActive(active: boolean, userInitiated = false) {
-    const wasActive = this.chartActive;
-    this.chartActive = active;
-    this.containerEl.toggleClass("fc-chart-active", active);
-    this.findCanvasNodeEl()?.toggleClass("fc-chart-active", active);
-    if (active && !wasActive) {
-      // Capture the settled baseline lazily on first entry: by then the
-      // chart has laid out and applied its initial range (persisted custom
-      // dates, preset, or fitContent).
-      this.appliedRange ??= this.chartRenderer?.getVisibleRangeYmd() ?? null;
-    } else if (!active && wasActive && userInitiated) {
-      this.persistVisibleRangeOnExit();
+  protected async renderBody() {
+    if (this.chartRenderer) {
+      this.removeChild(this.chartRenderer);
+      this.chartRenderer = null;
     }
+    this.appliedRange = null;
+    this.containerEl.empty();
+
+    if (!this.result.ok) {
+      // 解析失败: the edit modal needs a valid spec and cannot open, so the
+      // recovery entry is the card file itself (shared card-status UI).
+      renderParseError(this.containerEl, this.result.error.message, () =>
+        void openCardFileInTab(this.fcPlugin.app, this.sourcePath)
+      );
+      return;
+    }
+
+    const spec = this.result.spec;
+
+    // 本地脚本 provenance: script-produced sources get a header line
+    // (script · data-through · last run · staleness); the script rerun entry
+    // lives in the load-error block below. Non-script sources leave both
+    // undefined.
+    const prov = spec.assetType === "custom" && spec.sourceId ? getScriptProvenance(this.fcPlugin, spec.sourceId) : null;
+
+    // Skeleton while OHLCV data is fetched; ChartRenderer (or the error path
+    // below) empties the container when done.
+    renderLoadingSkeleton(this.containerEl);
+
+    try {
+      // 始终先取原始行（缓存按源的原始粒度存储），据此检测数据源的原生
+      // 周期，再决定实际显示周期：只支持小级别向大级别聚合，spec.freq 比
+      // 原始级别小时按原始级别钳制展示（不回写卡片文件）。
+      const rawResult = await this.loadData({ ...spec, freq: "D" });
+      const raw = rawResult.rows;
+      this.nativeFreq = detectNativeFreq(raw);
+      const effFreq = maxFreq(spec.freq, this.nativeFreq);
+      let fromCache = rawResult.fromCache;
+      let lastDataAt = rawResult.lastDataAt;
+      let data = raw;
+      if (effFreq !== "D") {
+        const effResult = await this.loadData({ ...spec, freq: effFreq });
+        data = effResult.rows;
+        fromCache = fromCache || effResult.fromCache;
+        lastDataAt = effResult.lastDataAt ?? lastDataAt;
+      }
+      const cachedSymbol = await this.fcPlugin.sqliteCache.lookupSymbol(
+        spec.symbol,
+        cacheAssetKey(spec.assetType, spec.sourceId)
+      );
+      const symbolInfo = cachedSymbol ? { ...cachedSymbol, assetType: "custom" as const, sourceId: spec.sourceId } : undefined;
+      // Empty-state copy: cache non-empty but nothing in range → the range is
+      // the problem; a cold cache with an empty response → the source is.
+      const emptyKind: EmptyKind | undefined =
+        data.length === 0
+          ? (await this.fcPlugin.dataAdapter.hasCachedData(spec))
+            ? "range-empty"
+            : "source-empty"
+          : undefined;
+      this.chartRenderer = new ChartRenderer(this.containerEl, {
+        spec,
+        data,
+        nativeFreq: this.nativeFreq,
+        theme: spec.theme ?? "auto",
+        chartType: spec.chartType ?? "candlestick",
+        riseColor: this.fcPlugin.pluginSettings.riseColor,
+        fallColor: this.fcPlugin.pluginSettings.fallColor,
+        symbolInfo,
+        // In Canvas, an omitted 高度 lets the flex card fill the node and
+        // therefore follows the user's Canvas resize. Outside Canvas keep a
+        // readable standalone-note baseline. A YAML 高度 is the manual mode.
+        height: spec.height ?? (this.findCanvasNodeEl() ? undefined : DEFAULT_CARD_HEIGHT),
+        onIndicatorLabelClick: (indicatorId) => void this.fcPlugin.openIndicatorDescription(indicatorId),
+        indicators: spec.indicators ?? [],
+        showLegend: spec.showLegend ?? this.fcPlugin.pluginSettings.showChartLegend,
+        legendFrosted: spec.legendFrosted ?? this.fcPlugin.pluginSettings.legendFrostedBackground,
+        legendOpacity: spec.legendOpacity ?? this.fcPlugin.pluginSettings.legendBackgroundOpacity,
+        showGrid: spec.showGrid ?? this.fcPlugin.pluginSettings.showChartGrid,
+        gridOpacity: spec.gridOpacity ?? this.fcPlugin.pluginSettings.gridOpacity,
+        scriptInfo: prov
+          ? {
+              scriptName: prov.scriptFile?.basename ?? prov.def.name,
+              lastRun: prov.outputFile?.stat.mtime ?? null,
+              // Edited after the output was last written → the data no
+              // longer reflects the script.
+              scriptStale:
+                !!prov.scriptFile && !!prov.outputFile && prov.scriptFile.stat.mtime > prov.outputFile.stat.mtime,
+            }
+          : undefined,
+        cacheBadge: fromCache ? { lastDataAt } : undefined,
+        emptyKind,
+        // Canvas view mode swallows clicks for node select/drag — only chart
+        // mode (or plain reading mode, where there is no canvas node) turns a
+        // bar click into a daily-note jump.
+        onDateClick: (ymd) => {
+          if (!this.chartActive && this.findCanvasNodeEl()) return;
+          void openDailyNote(this.fcPlugin.app, ymd);
+        },
+        onRefresh: () => this.refreshCard(),
+        onSwitchFreq: (freq) => void this.switchFrequency(freq),
+        onEdit: () => this.openEditModal(),
+      });
+      this.addChild(this.chartRenderer);
+    } catch (e) {
+      renderLoadError(this.containerEl, e, {
+        onRetry: () => this.refreshCard(),
+        onEditSource: () => openSettingsTab(this.fcPlugin.app, "data-sources"),
+        onRunScript: prov ? () => this.fcPlugin.runScriptForSource(prov.def.id) : undefined,
+      });
+    }
+  }
+
+  protected whenChartReady(): Promise<void> {
+    return this.chartRenderer?.whenReady() ?? Promise.resolve();
+  }
+
+  protected onChartModeEnter() {
+    // Capture the settled baseline lazily on first entry: by then the chart
+    // has laid out and applied its initial range (persisted custom dates,
+    // preset, or fitContent).
+    this.appliedRange ??= this.chartRenderer?.getVisibleRangeYmd() ?? null;
   }
 
   // Persists a user-changed visible range into the card spec when chart mode
   // exits — exactly one write, only when the range actually changed during
   // the session. The write re-renders the block; the fresh instance is
   // inactive, so no further writes happen (no loop).
-  private persistVisibleRangeOnExit() {
+  protected onChartModeExit() {
     if (!this.result.ok || !this.chartRenderer) return;
     const current = this.chartRenderer.getVisibleRangeYmd();
     if (!current) return;
@@ -263,219 +262,26 @@ class QuoteCodeBlockRenderer extends MarkdownRenderChild {
     void this.saveSpec({ ...spec, visibleStart: current.from, visibleEnd: current.to });
   }
 
-  private findCanvasNodeEl(): HTMLElement | null {
-    let el: HTMLElement | null = this.containerEl;
-    while (el && !el.classList.contains("canvas-node")) {
-      el = el.parentElement;
-    }
-    return el;
+  protected onChartWheel(event: WheelEvent) {
+    this.chartRenderer?.applyTimeAxisWheelZoom(event.deltaY, event.clientX);
   }
 
-  // 删除卡片 (footer trash button): removes the NODE from the canvas after
-  // confirmation; the underlying card file stays in the card library.
-  private deleteFromCanvas() {
-    const nodeEl = this.findCanvasNodeEl();
-    if (!nodeEl) return;
-    new ConfirmModal(this.plugin.app, t("从画布中移除该卡片？卡片文件仍保留在卡片库中。"), () => {
-      const canvas = getCanvasView(this.plugin.app)?.canvas;
-      if (!canvas?.nodes) {
-        new Notice(t("当前没有激活的 Canvas 视图。"));
-        return;
-      }
-      let target: CanvasNodeLike | null = null;
-      for (const node of canvas.nodes.values()) {
-        const el = node.nodeEl ?? node.el;
-        if (el === nodeEl || el?.contains(nodeEl)) {
-          target = node;
-          break;
-        }
-      }
-      if (!target) {
-        new Notice(t("找不到对应的画布节点。"));
-        return;
-      }
-      if (typeof canvas.removeNode === "function") {
-        canvas.removeNode(target);
-      } else if (typeof target.remove === "function") {
-        target.remove();
-      } else {
-        new Notice(t("当前 Obsidian 版本不支持从画布移除节点。"));
-        return;
-      }
-      canvas.requestSave?.();
-      new Notice(t("已从画布移除卡片（文件保留在卡片库中）。"));
-    }).open();
+  protected forcePaint() {
+    this.chartRenderer?.forcePaint();
   }
 
-  private async render() {
-    this.containerEl.empty();
-    this.containerEl.addClass("strataboard-card");
-    this.appliedRange = null;
-    // Obsidian's canvas file node enters its embedded edit mode when a click
-    // lands on node content — UNLESS the target is inside an element marked
-    // .interactive-child (the escape hatch its own bases embed uses; verified
-    // against app.asar). Mark the card so clicks in chart mode can never
-    // switch the node to source view; source is edited only in the md file.
-    this.containerEl.addClass("interactive-child");
-    onAttached(this.containerEl, () => {
-      this.tagParentPreviewAsCard();
-      // Canvas 设置 (统合编辑弹窗): bleed padding / fixed height, applied
-      // once attached so the canvas-node ancestor lookup works. No-op outside
-      // a canvas; widthAuto === false is handled by the chart's freezeWidth.
-      if (this.result.ok) {
-        const spec = this.result.spec;
-        applyCanvasDisplayOptions(this.containerEl, {
-          widthAuto: spec.widthAuto ?? true,
-          heightAuto: spec.heightAuto ?? true,
-          bleed: spec.bleed ?? DEFAULT_CARD_BLEED,
-        });
-      }
-    });
-
-    if (!this.result.ok) {
-      this.containerEl.createDiv({
-        text: t("错误：{msg}", { msg: this.result.error.message }),
-        cls: "strataboard-error",
-      });
-      return;
+  private async loadData(spec: ParsedCardSpec): Promise<OhlcvLoadResult> {
+    if (this.fcPlugin.pluginSettings.autoRefreshOnOpen) {
+      return this.fcPlugin.dataAdapter.loadOhlcv(spec);
     }
-
-    const spec = this.result.spec;
-
-    // Placeholder while OHLCV data is fetched; ChartRenderer (or the error
-    // path below) empties the container when done.
-    this.containerEl.createDiv({
-      cls: "strataboard-empty",
-      text: t("正在加载数据：{symbol}…", { symbol: spec.symbol }),
-    });
-
-    try {
-      // 始终先取原始行（缓存按源的原始粒度存储），据此检测数据源的原生
-      // 周期，再决定实际显示周期：只支持小级别向大级别聚合，spec.freq 比
-      // 原始级别小时按原始级别钳制展示（不回写卡片文件）。
-      const raw = await this.loadData({ ...spec, freq: "D" });
-      this.nativeFreq = detectNativeFreq(raw);
-      const effFreq = maxFreq(spec.freq, this.nativeFreq);
-      const data = effFreq === "D" ? raw : await this.loadData({ ...spec, freq: effFreq });
-      const cachedSymbol = await this.plugin.sqliteCache.lookupSymbol(
-        spec.symbol,
-        cacheAssetKey(spec.assetType, spec.sourceId)
-      );
-      const symbolInfo = cachedSymbol ? { ...cachedSymbol, assetType: "custom" as const, sourceId: spec.sourceId } : undefined;
-      // Signal markers (YAML 信号 → script-produced signal table). A signal
-      // failure never blocks the chart: warn and render without markers.
-      let signals: SignalEvent[] | undefined;
-      if (spec.signal) {
-        try {
-          const events = await this.plugin.dataAdapter.loadSignalEvents(spec.signal.sourceId);
-          const code = spec.signal.code ?? spec.symbol;
-          signals = events.filter((ev) => ev.code === code);
-        } catch (e) {
-          console.warn("[strataboard] 信号加载失败", e);
-        }
-      }
-      // 本地脚本 provenance: script-produced sources get a header line
-      // (script · data-through · last run · staleness) and a footer run
-      // button. Non-script sources leave both undefined.
-      const prov = spec.assetType === "custom" && spec.sourceId ? getScriptProvenance(this.plugin, spec.sourceId) : null;
-      this.chartRenderer = new ChartRenderer(this.containerEl, {
-        spec,
-        data,
-        nativeFreq: this.nativeFreq,
-        theme: spec.theme ?? "auto",
-        chartType: spec.chartType ?? "candlestick",
-        riseColor: spec.riseColor ?? "#ef4444",
-        fallColor: spec.fallColor ?? "#22c55e",
-        symbolInfo,
-        height: spec.height ?? DEFAULT_CARD_HEIGHT,
-        freezeWidth: spec.widthAuto === false,
-        indicators: spec.indicators ?? this.plugin.pluginSettings.defaultIndicators,
-        builtinIndicatorInputs: this.plugin.pluginSettings.builtinIndicatorInputs,
-        // Trading-day basis for period-based indicators on resampled charts
-        // (the raw daily rows are already loaded above).
-        nativeBars: effFreq !== "D" ? raw : null,
-        showLegend: spec.showLegend ?? this.plugin.pluginSettings.showChartLegend,
-        legendFrosted: spec.legendFrosted ?? this.plugin.pluginSettings.legendFrostedBackground,
-        legendOpacity: spec.legendOpacity ?? this.plugin.pluginSettings.legendBackgroundOpacity,
-        showGrid: spec.showGrid ?? this.plugin.pluginSettings.showChartGrid,
-        gridOpacity: spec.gridOpacity ?? this.plugin.pluginSettings.gridOpacity,
-        signals,
-        scriptInfo: prov
-          ? {
-              scriptName: prov.scriptFile?.basename ?? prov.def.name,
-              lastRun: prov.outputFile?.stat.mtime ?? null,
-              // Edited after the output was last written → the data no
-              // longer reflects the script.
-              scriptStale:
-                !!prov.scriptFile && !!prov.outputFile && prov.scriptFile.stat.mtime > prov.outputFile.stat.mtime,
-            }
-          : undefined,
-        onRunScript: prov ? () => this.plugin.runScriptForSource(prov.def.id) : undefined,
-        // Canvas view mode swallows clicks for node select/drag — only chart
-        // mode (or plain reading mode, where there is no canvas node) turns a
-        // bar click into a daily-note jump.
-        onDateClick: (ymd) => {
-          if (!this.chartActive && this.findCanvasNodeEl()) return;
-          void openDailyNote(this.plugin.app, ymd);
-        },
-        onRefresh: () => void this.refresh(),
-        onSwitchFreq: (freq) => void this.switchFrequency(freq),
-        onEdit: () => this.openEditModal(),
-        onDelete: () => this.deleteFromCanvas(),
-      });
-      this.addChild(this.chartRenderer);
-    } catch (e) {
-      this.containerEl.empty();
-      const errorEl = this.containerEl.createDiv({
-        cls: "strataboard-empty strataboard-load-error",
-      });
-      errorEl.createDiv({
-        text: t("加载数据失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }),
-      });
-      const retryBtn = errorEl.createEl("button", {
-        cls: "strataboard-retry-btn",
-        text: t("重试"),
-      });
-      retryBtn.addEventListener("click", () => void this.render());
+    const cached = await this.fcPlugin.dataAdapter.loadCachedOhlcv(spec);
+    if (cached.length > 0) {
+      // A deliberate cache read (auto-refresh off) is not a failure fallback.
+      return { rows: cached, fromCache: false };
     }
-  }
-
-  private async refresh() {
-    void this.render();
-  }
-
-  private async loadData(spec: ParsedCardSpec) {
-    if (this.plugin.pluginSettings.autoRefreshOnOpen) {
-      return this.plugin.dataAdapter.loadOhlcv(spec);
-    }
-    const cached = await this.plugin.dataAdapter.loadCachedOhlcv(spec);
-    if (cached.length > 0) return cached;
     // First use (or cache miss): fetch once even when auto-refresh is off,
-    // otherwise a card with an empty cache shows "暂无数据" forever.
-    return this.plugin.dataAdapter.loadOhlcv(spec);
-  }
-
-  private tagParentPreviewAsCard() {
-    let el: HTMLElement | null = this.containerEl;
-    let canvasNode: HTMLElement | null = null;
-    let markdownPreview: HTMLElement | null = null;
-
-    while (el) {
-      if (el.classList.contains("canvas-node")) {
-        canvasNode = el;
-      }
-      if (el.classList.contains("markdown-preview-view")) {
-        markdownPreview = el;
-      }
-      el = el.parentElement;
-    }
-
-    if (canvasNode) {
-      canvasNode.classList.add("strataboard-card-note");
-      if (markdownPreview) {
-        markdownPreview.classList.add("strataboard-card-note");
-      }
-    }
+    // otherwise a card with an empty cache shows 无数据 forever.
+    return this.fcPlugin.dataAdapter.loadOhlcv(spec);
   }
 
   private async switchFrequency(freq: Freq) {
@@ -483,27 +289,22 @@ class QuoteCodeBlockRenderer extends MarkdownRenderChild {
     await this.saveSpec({ ...this.result.spec, freq });
   }
 
-  private openEditModal() {
+  protected openEditModal() {
     if (!this.result.ok) return;
     const spec = this.result.spec;
-    // Resolve every display field against the built-in defaults so the modal
-    // shows the values the card is actually rendered with.
+    // Resolve the defaulted display fields so the modal shows the values the
+    // card is actually rendered with.
     const resolved: ParsedCardSpec = {
       ...spec,
       chartType: spec.chartType ?? "candlestick",
       theme: spec.theme ?? "auto",
-      riseColor: spec.riseColor ?? "#ef4444",
-      fallColor: spec.fallColor ?? "#22c55e",
-      height: spec.height ?? DEFAULT_CARD_HEIGHT,
     };
-    new UnifiedCardEditModal(this.plugin.app, {
+    new UnifiedCardEditModal(this.fcPlugin.app, {
       spec: resolved,
       minFreq: this.nativeFreq,
-      openSymbolPicker: (onSelect, sourceId) => this.plugin.openSymbolSearch(onSelect, sourceId),
-      customSources: this.plugin.enabledCustomSources(),
-      signalSources: this.plugin.enabledSignalSources(),
-      defaultIndicators: this.plugin.pluginSettings.defaultIndicators,
-      builtinIndicatorInputs: this.plugin.pluginSettings.builtinIndicatorInputs,
+      openSymbolPicker: (onSelect, sourceId) => this.fcPlugin.openSymbolSearch(onSelect, sourceId),
+      customSources: this.fcPlugin.enabledCustomSources(),
+      indicatorGroups: this.fcPlugin.pluginSettings.indicatorGroups,
       onSubmit: (newSpec) => {
         void this.saveSpec(newSpec);
       },
@@ -512,9 +313,9 @@ class QuoteCodeBlockRenderer extends MarkdownRenderChild {
 
   private async saveSpec(newSpec: ParsedCardSpec) {
     try {
-      await this.plugin.cardService.updateCardSpec(this.sourcePath, newSpec);
+      await this.fcPlugin.cardService.updateCardSpec(this.sourcePath, newSpec);
       this.result = { ok: true, spec: newSpec };
-      await this.render();
+      await this.runRender();
     } catch (e) {
       new Notice(t("保存卡片设置失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
     }
@@ -685,48 +486,6 @@ class CalendarCodeBlockRenderer extends MarkdownRenderChild {
     }
   }
 }
-// One overlay line plus whether it is a percent-ish series (drives the "%"
-// suffix in the legend).
-interface OverlayLine {
-  line: SeriesChartLine;
-  percentish: boolean;
-}
-
-// Quote series are normalized to % change from the first point in range.
-function normalizeToPctChange(points: SeriesPoint[]): SeriesPoint[] {
-  if (points.length === 0) return points;
-  const base = points[0].value;
-  if (base === 0) return points;
-  return points.map((p) => ({ date: p.date, value: (p.value / base - 1) * 100 }));
-}
-
-// Z-score standardization: (x − mean) / std over the loaded range. Puts every
-// line on an equal-volatility footing — the principled way to compare shape
-// between a high-vol series (stocks) and a low-vol one (FX).
-function toZScore(points: SeriesPoint[]): SeriesPoint[] {
-  if (points.length === 0) return points;
-  const mean = points.reduce((sum, p) => sum + p.value, 0) / points.length;
-  const variance = points.reduce((sum, p) => sum + (p.value - mean) ** 2, 0) / points.length;
-  const std = Math.sqrt(variance);
-  if (std === 0) return points.map((p) => ({ date: p.date, value: 0 }));
-  return points.map((p) => ({ date: p.date, value: (p.value - mean) / std }));
-}
-
-function buildOverlayLine(ref: SeriesRef, points: SeriesPoint[], mode: OverlayCompareMode, name: string): OverlayLine {
-  // Quote lines normalize to % change only in percent mode (the default);
-  // only then do they count as percent-ish for the legend suffix.
-  if (ref.source === "quote") {
-    if (mode === "percent") {
-      return { line: { name, points: normalizeToPctChange(points) }, percentish: true };
-    }
-    return { line: { name, points }, percentish: false };
-  }
-
-  // Card-ref lines (an existing 数据计算卡) are plotted raw and count as
-  // percent-ish — the common case is a spread of percent legs.
-  return { line: { name, points }, percentish: true };
-}
-
 // Opens (creating if missing) the daily note for a clicked chart bar. The
 // core 日记 plugin supplies the filename format/folder; the note opens in a
 // new tab so the canvas keeps its place.
@@ -760,22 +519,6 @@ async function openDailyNote(app: App, ymd: string): Promise<void> {
   if (file instanceof TFile) {
     await app.workspace.getLeaf("tab").openFile(file);
   }
-}
-
-// Loads each referenced signal table once (keyed by sourceId). Signal
-// failures never block chart rendering: warn and yield an empty table.
-async function loadSignalTables(plugin: StrataBoardPlugin, signals: SignalRef[]): Promise<Map<string, SignalEvent[]>> {
-  const bySource = new Map<string, SignalEvent[]>();
-  for (const ref of signals) {
-    if (bySource.has(ref.sourceId)) continue;
-    try {
-      bySource.set(ref.sourceId, await plugin.dataAdapter.loadSignalEvents(ref.sourceId));
-    } catch (e) {
-      console.warn("[strataboard] 信号加载失败", e);
-      bySource.set(ref.sourceId, []);
-    }
-  }
-  return bySource;
 }
 
 // Collects the distinct script-produced sources behind a card's series
@@ -829,39 +572,34 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     this.containerEl.empty();
 
     if (!this.result.spec) {
-      this.containerEl.createDiv({
-        text: t("错误：{msg}", { msg: this.result.error ?? t("无效的卡片配置。") }),
-        cls: "strataboard-error",
-      });
+      // 解析失败: the edit modal needs a valid spec and cannot open, so the
+      // recovery entry is the card file itself (shared card-status UI).
+      renderParseError(this.containerEl, this.result.error ?? t("无效的卡片配置。"), () =>
+        void openCardFileInTab(this.fcPlugin.app, this.sourcePath)
+      );
       return;
     }
     const spec = this.result.spec;
 
-    // Canvas 设置 (资产叠加卡弹窗): bleed padding / fixed height in
-    // canvas; widthAuto === false is handled by the chart's freezeWidth.
-    onAttached(this.containerEl, () => {
-      applyCanvasDisplayOptions(this.containerEl, {
-        widthAuto: spec.widthAuto ?? true,
-        heightAuto: spec.heightAuto ?? true,
-        bleed: spec.bleed ?? DEFAULT_CARD_BLEED,
-      });
-    });
+    // 本地脚本 provenance for the header note (quote legs only); the script
+    // rerun entry lives in the load-error block below.
+    const scriptProvs = collectScriptProvenances(this.fcPlugin, spec.series);
 
-    // Placeholder while series data is fetched; SeriesChartRenderer (or the
+    // Skeleton while series data is fetched; SeriesChartRenderer (or the
     // error path below) empties the container when done.
-    this.containerEl.createDiv({
-      cls: "strataboard-empty",
-      text: t("正在加载数据…"),
-    });
+    renderLoadingSkeleton(this.containerEl);
 
     try {
       const period = spec.period ?? "D";
       const compareMode = spec.normalize ?? "percent";
+      // Cache-serve signals from the quote legs (any leg on a failure
+      // fallback → the card shows the shared cache badge).
+      const meta: SeriesLoadMeta = { fromCache: false };
       const lineNames = await Promise.all(
         spec.series.map((ref) => this.fcPlugin.seriesAdapter.resolveLabel(ref))
       );
       const allPoints = await Promise.all(
-        spec.series.map((ref) => this.fcPlugin.seriesAdapter.loadSeries(ref, spec.range, period))
+        spec.series.map((ref) => this.fcPlugin.seriesAdapter.loadSeries(ref, spec.range, period, false, new Set(), meta))
       );
       const overlayLines = spec.series.map((ref, i) => {
         const built = buildOverlayLine(ref, allPoints[i], compareMode, lineNames[i]);
@@ -888,55 +626,49 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       const valueSuffix =
         displayed.length > 0 && displayed.every((l) => l.percentish) ? "%" : undefined;
 
-      // Title composes the line names plus the compare-mode marker.
-      let title = t("资产叠加（{names}）", { names: lineNames.join("+") });
-      if (compareMode === "percent") title += t("（归一化）");
-      else if (compareMode === "zscore") title += t("（标准化）");
-      else if (compareMode === "axis") title += t("（独立纵轴）");
-
-      // Subtitle explains the mode: percent shows the rebase date of each
-      // (quote) line — its first point's actual observation date (resampling
-      // keeps real dates); zscore/axis carry a short mode description.
-      let subtitle: string | undefined;
-      if (compareMode === "percent") {
-        const bases: { name: string; date: string }[] = [];
-        spec.series.forEach((ref, i) => {
-          if (ref.source === "quote" && allPoints[i].length > 0) {
-            bases.push({ name: lineNames[i], date: allPoints[i][0].date });
-          }
-        });
-        if (bases.length > 0) {
-          subtitle = bases.every((b) => b.date === bases[0].date)
-            ? t("归一基准：{date}", { date: bases[0].date })
-            : t("归一基准：{bases}", { bases: bases.map((b) => `${b.name} ${b.date}`).join(" · ") });
-        }
-      } else if (compareMode === "zscore") {
-        subtitle = t("标准化：z = (x − 区间均值) ÷ 区间标准差");
-      } else if (compareMode === "axis") {
-        subtitle = t("各系列使用独立纵轴，按各自数值范围缩放");
+      // Title composes the line names plus the compare-mode marker; a YAML
+      // 标题 overrides the whole composition (mode marker included).
+      let title: string;
+      if (spec.title) {
+        title = spec.title;
+      } else {
+        title = t("对比（{names}）", { names: lineNames.join("+") });
+        if (compareMode === "percent") title += t("（归一化）");
+        else if (compareMode === "zscore") title += t("（标准化）");
+        else if (compareMode === "axis") title += t("（独立纵轴）");
       }
 
+      // Subtitle: period · range · compare mode in short form, plus the mode
+      // explanation (rebase dates for percent) and 缩放系数 badges for any
+      // non-1 scales (series-summary.ts, shared with the headless renderer).
+      const subtitle = buildOverlaySubtitle(
+        spec,
+        lineNames,
+        allPoints.map((points) => points[0]?.date)
+      );
+
       this.containerEl.empty();
-      // 本地脚本 provenance for the header note + run button (quote legs only).
-      const scriptProvs = collectScriptProvenances(this.fcPlugin, spec.series);
+      // Empty-state copy: any leg with cached rows outside the range (or a
+      // referenced card, conservatively) → the range is the problem; all
+      // quote legs on a cold cache → the source is.
+      const emptyKind: EmptyKind | undefined =
+        displayed.length === 0 ? await this.resolveEmptyKind(spec) : undefined;
       this.chartRenderer = new SeriesChartRenderer(this.containerEl, {
         title,
         subtitle,
         scriptNote: scriptProvs.length > 0 ? formatScriptNote(scriptProvs) : undefined,
-        onRunScript:
-          scriptProvs.length > 0
-            ? async () => {
-                for (const p of scriptProvs) await this.fcPlugin.runScriptForSource(p.def.id);
-              }
-            : undefined,
         lines: overlayLines.map((l) => (spec.lineType ? { ...l.line, lineType: spec.lineType } : l.line)),
-        height: spec.height ?? DEFAULT_CARD_HEIGHT,
         valueSuffix,
         theme: spec.theme ?? "auto",
-        freezeWidth: spec.widthAuto === false,
+        riseColor: this.fcPlugin.pluginSettings.riseColor,
+        fallColor: this.fcPlugin.pluginSettings.fallColor,
         independentScales: compareMode === "axis",
         initialVisibleRange: spec.viewStart && spec.viewEnd ? { from: spec.viewStart, to: spec.viewEnd } : undefined,
         onEdit: () => this.openEditModal(),
+        onRefresh: () => this.refreshCard(),
+        freq: period,
+        cacheBadge: meta.fromCache ? { lastDataAt: meta.lastDataAt } : undefined,
+        emptyKind,
         showLegend: spec.showLegend ?? this.fcPlugin.pluginSettings.showChartLegend,
         legendFrosted: spec.legendFrosted ?? this.fcPlugin.pluginSettings.legendFrostedBackground,
         legendOpacity: spec.legendOpacity ?? this.fcPlugin.pluginSettings.legendBackgroundOpacity,
@@ -947,8 +679,38 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       });
       this.addChild(this.chartRenderer);
     } catch (e) {
-      this.renderLoadError(e);
+      renderLoadError(this.containerEl, e, {
+        onRetry: () => this.refreshCard(),
+        onEditSource: () => openSettingsTab(this.fcPlugin.app, "data-sources"),
+        onRunScript:
+          scriptProvs.length > 0
+            ? async () => {
+                for (const p of scriptProvs) await this.fcPlugin.runScriptForSource(p.def.id);
+              }
+            : undefined,
+      });
     }
+  }
+
+  // source-empty vs range-empty for the shared empty state (see card-status):
+  // a quote leg with ANY cached rows, or a referenced spread card
+  // (conservatively assumed to hold data outside the range), makes it a range
+  // problem; only all-cold quote legs mean the source returned nothing.
+  private async resolveEmptyKind(spec: OverlaySpec): Promise<EmptyKind> {
+    const flags = await Promise.all(
+      spec.series.map(async (ref) => {
+        if (ref.source === "card") return true;
+        return this.fcPlugin.dataAdapter.hasCachedData({
+          symbol: ref.tsCode!,
+          assetType: ref.assetType!,
+          sourceId: ref.sourceId,
+          freq: "D",
+          range: spec.range,
+          version: 1,
+        });
+      })
+    );
+    return flags.some(Boolean) ? "range-empty" : "source-empty";
   }
 
   protected openEditModal() {
@@ -997,21 +759,6 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
   protected forcePaint() {
     this.chartRenderer?.forcePaint();
   }
-
-  private renderLoadError(e: unknown) {
-    this.containerEl.empty();
-    const errorEl = this.containerEl.createDiv({
-      cls: "strataboard-empty strataboard-load-error",
-    });
-    errorEl.createDiv({
-      text: t("加载数据失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }),
-    });
-    const retryBtn = errorEl.createEl("button", {
-      cls: "strataboard-retry-btn",
-      text: t("重试"),
-    });
-    retryBtn.addEventListener("click", () => void this.renderBody());
-  }
 }
 
 class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
@@ -1036,10 +783,11 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     this.containerEl.empty();
 
     if (!this.result.spec) {
-      this.containerEl.createDiv({
-        text: t("错误：{msg}", { msg: this.result.error ?? t("无效的卡片配置。") }),
-        cls: "strataboard-error",
-      });
+      // 解析失败: the edit modal needs a valid spec and cannot open, so the
+      // recovery entry is the card file itself (shared card-status UI).
+      renderParseError(this.containerEl, this.result.error ?? t("无效的卡片配置。"), () =>
+        void openCardFileInTab(this.fcPlugin.app, this.sourcePath)
+      );
       return;
     }
     let spec = this.result.spec;
@@ -1054,58 +802,38 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       void this.fcPlugin.updateSpreadCard(this.sourcePath, spec, true);
     }
 
-    // Canvas 设置 (数据计算卡弹窗): bleed padding / fixed height in
-    // canvas; widthAuto === false is handled by the chart's freezeWidth.
-    onAttached(this.containerEl, () => {
-      applyCanvasDisplayOptions(this.containerEl, {
-        widthAuto: spec.widthAuto ?? true,
-        heightAuto: spec.heightAuto ?? true,
-        bleed: spec.bleed ?? DEFAULT_CARD_BLEED,
-      });
-    });
+    // 本地脚本 provenance for the header note (quote legs only); the script
+    // rerun entry lives in the load-error block below.
+    const scriptProvs = collectScriptProvenances(this.fcPlugin, spec.series);
 
-    this.containerEl.createDiv({
-      cls: "strataboard-empty",
-      text: t("正在加载数据…"),
-    });
+    renderLoadingSkeleton(this.containerEl);
 
     try {
       const labels = await Promise.all(
         spec.series.map((ref) => this.fcPlugin.seriesAdapter.resolveLabel(ref))
       );
-      const points = await this.fcPlugin.seriesAdapter.loadSpread(spec, spec.range, spec.period ?? "D");
-      const title = formatExpressionTitle(spec.expression, labels);
-
-      // Signal markers (YAML signals): every entry's events merge onto the
-      // card's single line.
-      let spreadSignals: SignalEvent[] | undefined;
-      if (spec.signals && spec.signals.length > 0) {
-        const tables = await loadSignalTables(this.fcPlugin, spec.signals);
-        spreadSignals = [];
-        for (const entry of spec.signals) {
-          if (!entry.code) continue;
-          spreadSignals.push(...(tables.get(entry.sourceId) ?? []).filter((ev) => ev.code === entry.code));
-        }
-      }
+      const meta: SeriesLoadMeta = { fromCache: false };
+      const points = await this.fcPlugin.seriesAdapter.loadSpread(spec, spec.range, spec.period ?? "D", new Set(), meta);
+      const title = spec.title ?? formatExpressionTitle(spec.expression, labels);
 
       this.containerEl.empty();
-      // 本地脚本 provenance for the header note + run button (quote legs only).
-      const scriptProvs = collectScriptProvenances(this.fcPlugin, spec.series);
+      const emptyKind: EmptyKind | undefined =
+        points.length === 0 ? await this.resolveEmptyKind(spec) : undefined;
       this.chartRenderer = new SeriesChartRenderer(this.containerEl, {
         title,
+        // "= A-B · 日线 · 近10年" (series-summary.ts, shared with headless).
+        subtitle: buildSpreadSubtitle(spec),
         scriptNote: scriptProvs.length > 0 ? formatScriptNote(scriptProvs) : undefined,
-        onRunScript:
-          scriptProvs.length > 0
-            ? async () => {
-                for (const p of scriptProvs) await this.fcPlugin.runScriptForSource(p.def.id);
-              }
-            : undefined,
         lines: [{ name: title, points, color: spec.lineColor, lineWidth: spec.lineWidth, lineType: spec.lineType, style: spec.style }],
-        height: spec.height ?? DEFAULT_CARD_HEIGHT,
         theme: spec.theme ?? "auto",
-        freezeWidth: spec.widthAuto === false,
+        riseColor: this.fcPlugin.pluginSettings.riseColor,
+        fallColor: this.fcPlugin.pluginSettings.fallColor,
         initialVisibleRange: spec.viewStart && spec.viewEnd ? { from: spec.viewStart, to: spec.viewEnd } : undefined,
         onEdit: () => this.openEditModal(),
+        onRefresh: () => this.refreshCard(),
+        freq: spec.period ?? "D",
+        cacheBadge: meta.fromCache ? { lastDataAt: meta.lastDataAt } : undefined,
+        emptyKind,
         showLegend: spec.showLegend ?? this.fcPlugin.pluginSettings.showChartLegend,
         legendFrosted: spec.legendFrosted ?? this.fcPlugin.pluginSettings.legendFrostedBackground,
         legendOpacity: spec.legendOpacity ?? this.fcPlugin.pluginSettings.legendBackgroundOpacity,
@@ -1113,12 +841,38 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
         showPointMarkers: spec.showPointMarkers ?? this.fcPlugin.pluginSettings.showSeriesPointMarkers,
         showGrid: spec.showGrid ?? this.fcPlugin.pluginSettings.showChartGrid,
         gridOpacity: spec.gridOpacity ?? this.fcPlugin.pluginSettings.gridOpacity,
-        signals: spreadSignals ? [spreadSignals] : undefined,
       });
       this.addChild(this.chartRenderer);
     } catch (e) {
-      this.renderLoadError(e);
+      renderLoadError(this.containerEl, e, {
+        onRetry: () => this.refreshCard(),
+        onEditSource: () => openSettingsTab(this.fcPlugin.app, "data-sources"),
+        onRunScript:
+          scriptProvs.length > 0
+            ? async () => {
+                for (const p of scriptProvs) await this.fcPlugin.runScriptForSource(p.def.id);
+              }
+            : undefined,
+      });
     }
+  }
+
+  // Same source-empty vs range-empty distinction as the overlay wrapper.
+  private async resolveEmptyKind(spec: SpreadSpec): Promise<EmptyKind> {
+    const flags = await Promise.all(
+      spec.series.map(async (ref) => {
+        if (ref.source === "card") return true;
+        return this.fcPlugin.dataAdapter.hasCachedData({
+          symbol: ref.tsCode!,
+          assetType: ref.assetType!,
+          sourceId: ref.sourceId,
+          freq: "D",
+          range: spec.range,
+          version: 1,
+        });
+      })
+    );
+    return flags.some(Boolean) ? "range-empty" : "source-empty";
   }
 
   protected openEditModal() {
@@ -1131,8 +885,7 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       },
       (onSelect, sourceId) => this.fcPlugin.openSymbolSearch(onSelect, sourceId),
       undefined,
-      this.fcPlugin.enabledCustomSources(),
-      this.fcPlugin.enabledSignalSources()
+      this.fcPlugin.enabledCustomSources()
     ).open();
   }
 
@@ -1160,27 +913,16 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
   protected forcePaint() {
     this.chartRenderer?.forcePaint();
   }
-
-  private renderLoadError(e: unknown) {
-    this.containerEl.empty();
-    const errorEl = this.containerEl.createDiv({
-      cls: "strataboard-empty strataboard-load-error",
-    });
-    errorEl.createDiv({
-      text: t("加载数据失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }),
-    });
-    const retryBtn = errorEl.createEl("button", {
-      cls: "strataboard-retry-btn",
-      text: t("重试"),
-    });
-    retryBtn.addEventListener("click", () => void this.renderBody());
-  }
 }
 
 export default class StrataBoardPlugin extends Plugin {
   pluginSettings!: StrataBoardSettings;
   sqliteCache!: SqliteCache;
   dataAdapter!: DataAdapter;
+  // Central credential seam (modules/credentials.ts): the only way UI, probe
+  // and data requests reach a runtime secret.
+  credentials!: CredentialStore;
+  resolveApiKey!: ApiKeyResolver;
   seriesAdapter!: SeriesAdapter;
   cardIndex!: CardIndex;
   cardService!: CardService;
@@ -1198,23 +940,23 @@ export default class StrataBoardPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
-    const pluginDir = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
     const dataCachePath = this.pluginSettings.dataCachePath;
     const symbolCachePath = this.pluginSettings.symbolCachePath;
 
-    // Store installs lack the release extras; fetch them before the SQLite
-    // cache init needs sql-wasm.wasm.
-    await ensureBundledAssets(this.app, pluginDir, this.manifest.version);
-
-    this.sqliteCache = new SqliteCache({ vault: this.app.vault, pluginDir });
+    this.sqliteCache = new SqliteCache({ vault: this.app.vault });
     await this.sqliteCache.init({
       ohlcvDbPath: `${dataCachePath}/ohlcv.db`,
       symbolsDbPath: `${symbolCachePath}/symbols.db`,
     });
 
+    this.credentials = createPluginCredentialStore(this.app);
+    this.resolveApiKey = createPluginApiKeyResolver(this.credentials);
+    registerStoreForRedaction(this.credentials);
+
     this.dataAdapter = new DataAdapter({
       cache: this.sqliteCache,
       customSources: this.pluginSettings.customSources,
+      resolveApiKey: this.resolveApiKey,
       readVaultFile: async (path) => {
         const file = this.app.vault.getAbstractFileByPath(path);
         if (!(file instanceof TFile)) {
@@ -1226,10 +968,17 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.cardIndex = new CardIndex(this.app, () => this.pluginSettings.cardLibraryPath);
     this.seriesAdapter = new SeriesAdapter({
-      app: this.app,
-      cache: this.sqliteCache,
       dataAdapter: this.dataAdapter,
-      cardIndex: this.cardIndex,
+      autoRefreshOnOpen: () => this.pluginSettings.autoRefreshOnOpen,
+      host: {
+        resolveCardId: (id) => this.cardIndex.resolve(id),
+        resolveCardIdSync: (id) => this.cardIndex.resolveSync(id),
+        readCardFile: async (path) => {
+          const file = this.app.vault.getAbstractFileByPath(path);
+          if (!(file instanceof TFile)) return null;
+          return this.app.vault.cachedRead(file);
+        },
+      },
     });
 
     this.cardService = new CardService({
@@ -1240,13 +989,17 @@ export default class StrataBoardPlugin extends Plugin {
       resolveSourceName: (sourceId) => this.pluginSettings.customSources.find((s) => s.id === sourceId)?.name,
     });
 
-    this.toolbar = new CanvasToolbar(this);
+    this.toolbar = new CanvasToolbar(this, () => void this.openAiPanel());
 
     this.addSettingTab(new StrataBoardSettingTab(this.app, this));
 
+    // AI task panel (right sidebar). First registerView/ItemView in the
+    // plugin; the host seam keeps the view out of settings/credentials.
+    this.registerView(VIEW_TYPE_STRATABOARD_AI, (leaf) => new AiPanelView(leaf, this.buildAiPanelHost()));
+
     this.addCommand({
       id: "open-settings",
-      name: t("打开金融卡片设置"),
+      name: t("打开 StrataBoard 设置"),
       callback: () => {
         openPluginSettings(this.app, this.manifest.id);
       },
@@ -1254,7 +1007,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-financial-card",
-      name: t("插入资产数据卡片"),
+      name: t("插入数据卡"),
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(ItemView);
         if (view?.getViewType() === "canvas") {
@@ -1299,7 +1052,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-overlay-card",
-      name: t("插入资产叠加卡片"),
+      name: t("创建对比卡"),
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(ItemView);
         if (view?.getViewType() === "canvas") {
@@ -1314,7 +1067,7 @@ export default class StrataBoardPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-spread-card",
-      name: t("插入数据计算卡片"),
+      name: t("创建计算卡"),
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(ItemView);
         if (view?.getViewType() === "canvas") {
@@ -1333,10 +1086,16 @@ export default class StrataBoardPlugin extends Plugin {
       callback: () => this.openScriptManager(),
     });
 
+    this.addCommand({
+      id: "open-ai-panel",
+      name: t("打开 AI 助手面板"),
+      callback: () => void this.openAiPanel(),
+    });
+
     // The chart-card processors RETURN the initial-render promise: Obsidian
     // collects post-processor promises and awaits them before capturing the
     // page, which is what makes 导出为 PDF wait for the chart instead of
-    // snapshotting the 正在加载数据 placeholder.
+    // snapshotting the loading skeleton.
     this.registerMarkdownCodeBlockProcessor("quote", (source, el, ctx) => {
       const renderer = new QuoteCodeBlockRenderer(this, el, source, ctx.sourcePath);
       ctx.addChild(renderer);
@@ -1380,7 +1139,7 @@ export default class StrataBoardPlugin extends Plugin {
         if (!(view instanceof MarkdownView)) return;
         menu.addItem((item) => {
           item
-            .setTitle(t("插入金融卡片"))
+            .setTitle(t("插入卡片"))
             .setIcon("line-chart")
             .onClick(() => this.insertCardIntoMd(editor));
         });
@@ -1400,8 +1159,8 @@ export default class StrataBoardPlugin extends Plugin {
         if (!type) return;
         const titles: Record<string, string> = {
           quote: t("编辑数据卡"),
-          overlay: t("编辑资产叠加卡"),
-          spread: t("编辑数据计算卡"),
+          overlay: t("编辑对比卡"),
+          spread: t("编辑计算卡"),
         };
         menu.addItem((item) => {
           item
@@ -1409,6 +1168,38 @@ export default class StrataBoardPlugin extends Plugin {
             .setIcon("pencil")
             .onClick(() => void this.openCardEditorFromMenu(file, type));
         });
+        // Quote and spread cards can seed a compare/calc card; overlay cards
+        // are excluded for the same reason listReferenceableCards skips them
+        // (a normalized line has no single referable series).
+        if (type === "quote" || type === "spread") {
+          menu.addItem((item) => {
+            item
+              .setTitle(t("加入序列进行对比"))
+              .setIcon("layers")
+              .onClick(() => void this.openDerivedSeriesCard(file, type, "overlay"));
+          });
+          menu.addItem((item) => {
+            item
+              .setTitle(type === "spread" ? t("以此计算卡创建计算") : t("以此序列创建计算"))
+              .setIcon("calculator")
+              .onClick(() => void this.openDerivedSeriesCard(file, type, "spread"));
+          });
+        }
+      })
+    );
+
+    // Canvas MULTI-selection context menu: right-clicking 2+ selected nodes
+    // does not go through "file-menu" — the canvas triggers the internal
+    // "canvas:selection-menu" workspace event (event name verified against
+    // the bundled app.js reference copy). Items must be added synchronously
+    // (Menu.addItem is a no-op once the menu is shown), so card types are
+    // read from node DOM attributes and the files are parsed on click.
+    this.registerEvent(
+      (this.app.workspace.on as unknown as (
+        name: string,
+        callback: (menu: Menu, canvas: CanvasLike) => void
+      ) => EventRef).call(this.app.workspace, "canvas:selection-menu", (menu, canvas) => {
+        this.addSelectionSeriesItems(menu, canvas);
       })
     );
 
@@ -1464,48 +1255,34 @@ export default class StrataBoardPlugin extends Plugin {
     void syncIndicatorFiles(this);
 
     // Legacy cleanup: the AI card-authoring guide used to be written into
-    // the card library on every load; it now lives in 设置 → AI 辅助.
+    // the card library on every load; it now lives in 设置 → AI 助手.
     void this.removeLegacyAiGuide();
 
     // One-time legacy card-ref detection: cardPath refs predate the cardId
     // format. Clean vaults are flagged off silently; affected vaults get a
-    // persistent Notice pointing at the one-click upgrade (设置 → 路径设置 →
+    // Notice pointing at the one-click upgrade (设置 → 高级 →
     // 清理维护). Deferred until the vault index is ready.
     this.app.workspace.onLayoutReady(() => void this.detectLegacyCardRefs());
-    // Same one-time gate for pre-indicator-system 均线 YAML keys (显示均线 /
-    // 均线周期), migrated by the 升级均线指标 maintenance action.
-    this.app.workspace.onLayoutReady(() => void this.detectLegacyMaKeys());
 
     this.attachToolbarToCanvas(this.app.workspace.getActiveViewOfType(ItemView)?.leaf ?? null);
   }
 
   // Runs the legacy cardPath scan once per vault (settings.cardRefsUpgraded
   // gates it). Never auto-migrates: the upgrade rewrites user files, so it
-  // stays an explicit click in settings.
+  // stays an explicit click in settings. The Notice is transient — the
+  // settings page already carries a persistent banner for this.
   private async detectLegacyCardRefs() {
     if (this.pluginSettings.cardRefsUpgraded) return;
     if (await hasLegacyCardRefs(this.app, this.pluginSettings.cardLibraryPath)) {
-      new Notice(t("检测到旧格式（cardPath）的卡片引用，请到 设置 → 路径设置 → 清理维护 运行「升级卡片引用」。"), 0);
+      new Notice(t("检测到旧格式（cardPath）的卡片引用，请到 设置 → 高级 → 清理维护 运行「扫描并升级卡片引用」。"));
       return;
     }
     this.pluginSettings.cardRefsUpgraded = true;
     await this.saveSettings();
   }
 
-  // Runs the legacy 均线-key scan once per vault (settings.maMigrationDone
-  // gates it). Never auto-migrates: the upgrade rewrites user files, so it
-  // stays an explicit click in settings (设置 → 路径设置 → 清理维护).
-  private async detectLegacyMaKeys() {
-    if (this.pluginSettings.maMigrationDone) return;
-    if (await hasLegacyMaKeys(this.app, this.pluginSettings.cardLibraryPath)) {
-      new Notice(t("检测到含旧版均线设置（显示均线/均线周期）的卡片，请到 设置 → 路径设置 → 清理维护 运行「升级均线指标」。"), 0);
-      return;
-    }
-    this.pluginSettings.maMigrationDone = true;
-    await this.saveSettings();
-  }
-
   onunload() {
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_STRATABOARD_AI);
     this.toolbar.detach();
     this.sqliteCache?.save().then(() => this.sqliteCache?.close()).catch((e) => {
       console.error("StrataBoard: failed to save SQLite cache on unload", e);
@@ -1523,47 +1300,50 @@ export default class StrataBoardPlugin extends Plugin {
       delete legacy.fredApiKey;
       delete legacy.dataSources;
       delete legacy.symbolListRefreshIntervalDays;
-      // 显示均线 toggle (pre-indicator-system): true → the four default 均线
-      // instances, false → no default indicators. Only derived when the
-      // stored data predates defaultIndicators entirely.
-      if (typeof legacy.showChartMA === "boolean" && stored.defaultIndicators === undefined) {
-        stored.defaultIndicators = legacy.showChartMA
-          ? [5, 10, 20, 60].map((length) => ({ id: "ma", inputs: { length } }))
-          : [];
-      }
+      delete legacy.builtinIndicatorInputs;
+      delete legacy.defaultIndicators;
+      delete legacy.maMigrationDone;
       delete legacy.showChartMA;
+      // Per-source toolbar visibility toggles were removed; drop the leftover.
+      delete legacy.toolbarSources;
+      // Custom source/group icons were removed; drop the persisted leftovers.
+      delete legacy.sourceGroupIcons;
+      if (Array.isArray(stored.customSources)) {
+        stored.customSources = stored.customSources.filter(
+          (source) => (source as CustomSourceDef & { purpose?: string }).purpose !== "signals"
+        );
+        // Credentials moved to SecretStorage (credentialId reference only);
+        // the old plaintext apiKey field is dropped, not migrated — the user
+        // re-selects the credential in the source editor.
+        for (const source of stored.customSources) {
+          delete (source as CustomSourceDef & { apiKey?: string }).apiKey;
+          delete (source as CustomSourceDef & { icon?: string }).icon;
+        }
+      }
     }
     this.pluginSettings = Object.assign({}, DEFAULT_SETTINGS, stored);
     setRequestInterval(this.pluginSettings.requestIntervalMs);
+    setAllowedLoopbackHttpOrigins(this.pluginSettings.allowedLoopbackHttpOrigins ?? []);
     setLanguage(this.pluginSettings.language);
-    // Merge per-source toolbar visibility so a stale data.json (missing
-    // sources added later) still gets defaults, and the live settings never
-    // share object references with DEFAULT_SETTINGS. Keys are filtered
-    // against the known sources so dropped ones vanish.
-    const storedSources: Record<string, boolean> = stored?.toolbarSources ?? {};
-    const knownSourceKeys = new Set<string>(Object.keys(DEFAULT_SETTINGS.toolbarSources));
-    this.pluginSettings.toolbarSources = { ...DEFAULT_SETTINGS.toolbarSources };
-    for (const [key, value] of Object.entries(storedSources)) {
-      if (knownSourceKeys.has(key)) {
-        this.pluginSettings.toolbarSources[key as ToolbarSourceId] = value;
-      }
-    }
     // Fresh object so a stale data.json gets the default and the live
     // settings never share a reference with DEFAULT_SETTINGS.
-    this.pluginSettings.sourceGroupIcons = { ...(stored?.sourceGroupIcons ?? {}) };
-    // Normalize the stored order: drop unknown ids, append entries the stored
-    // list doesn't know about yet (new plugin-version entries). 「插入图表」is
-    // pinned first — a stored legacy order must not push it down.
-    const defaultOrder = DEFAULT_SETTINGS.toolbarOrder;
-    const storedOrder = (stored?.toolbarOrder ?? []).filter((id) => defaultOrder.includes(id));
-    const merged = [
-      ...storedOrder,
-      ...defaultOrder.filter((id) => !storedOrder.includes(id)),
-    ];
-    this.pluginSettings.toolbarOrder = [
-      "insert-data",
-      ...merged.filter((id) => id !== "insert-data"),
-    ];
+    this.pluginSettings.approvedScriptHashes = { ...(stored?.approvedScriptHashes ?? {}) };
+    this.pluginSettings.approvedIndicatorHashes = { ...(stored?.approvedIndicatorHashes ?? {}) };
+    this.pluginSettings.indicatorOverrides = Object.fromEntries(
+      Object.entries(stored?.indicatorOverrides ?? {}).map(([id, value]) => [id, {
+        ...(typeof value?.name === "string" ? { name: value.name } : {}),
+        ...(typeof value?.description === "string" ? { description: value.description } : {}),
+        ...(value?.defaultInputs && typeof value.defaultInputs === "object" && !Array.isArray(value.defaultInputs)
+          ? { defaultInputs: { ...value.defaultInputs } } : {}),
+      }])
+    );
+    // Fresh array: never share a reference with DEFAULT_SETTINGS.
+    this.pluginSettings.indicatorGroups = [...(stored?.indicatorGroups ?? [])];
+    this.pluginSettings.searchHistory = [...(stored?.searchHistory ?? [])];
+    this.pluginSettings.allowedLoopbackHttpOrigins = [...(stored?.allowedLoopbackHttpOrigins ?? [])];
+    // Fresh object (BYOK 插件内 AI config): never share a reference with the
+    // loaded snapshot.
+    if (stored?.aiAssistant) this.pluginSettings.aiAssistant = { ...stored.aiAssistant };
     // Corner anchors; old "left" | "right" values (and anything unknown) map
     // to the bottom corner on the same side. Idempotent for valid values.
     const pos = this.pluginSettings.toolbarPosition as string;
@@ -1582,6 +1362,7 @@ export default class StrataBoardPlugin extends Plugin {
   // re-reads the live pluginSettings object.
   private applySettings() {
     setRequestInterval(this.pluginSettings.requestIntervalMs);
+    setAllowedLoopbackHttpOrigins(this.pluginSettings.allowedLoopbackHttpOrigins);
     this.dataAdapter?.setCustomSources(this.pluginSettings.customSources);
     this.cardService?.setPaths({
       cardLibraryPath: this.pluginSettings.cardLibraryPath,
@@ -1604,21 +1385,23 @@ export default class StrataBoardPlugin extends Plugin {
   }
 
   // Enabled custom sources, for the pickers and edit modals.
-  // Quote-data sources only — signals-purpose sources (script signal tables)
-  // are excluded: every caller of this list is a quote-data context (symbol
-  // pickers, kline fetching, edit modals).
   enabledCustomSources(): CustomSourceDef[] {
-    return this.pluginSettings.customSources.filter((s) => s.enabled && s.purpose !== "signals");
+    return this.pluginSettings.customSources.filter((s) => s.enabled);
   }
 
-  // Signals-purpose sources (script-produced signal tables), for the 信号
-  // pickers in the card edit modals.
-  enabledSignalSources(): CustomSourceDef[] {
-    return this.pluginSettings.customSources.filter((s) => s.enabled && s.purpose === "signals");
+  // ChartCardPluginHost hooks (modules/chart-card-base.ts): the one-shot
+  // 双击进入图表交互 hint shows once per vault, then stays off.
+  isChartModeHintShown(): boolean {
+    return this.pluginSettings.chartModeHintShown;
+  }
+
+  markChartModeHintShown(): void {
+    this.pluginSettings.chartModeHintShown = true;
+    void this.saveSettings();
   }
 
   // Trashes the pre-refactor copy of the AI guide in the card library (the
-  // guide moved into 设置 → AI 辅助). No-op once the file is gone.
+  // guide moved into 设置 → AI 助手). No-op once the file is gone.
   private async removeLegacyAiGuide() {
     try {
       const file = this.app.vault.getAbstractFileByPath(
@@ -1630,9 +1413,249 @@ export default class StrataBoardPlugin extends Plugin {
     }
   }
 
+  // ==================== 插件内 AI（BYOK 任务面板） ====================
+
+  // Reveals the right-sidebar AI task panel (creating its leaf on first
+  // use). With a task argument the panel starts it immediately — fix-source
+  // entries carry their current-config/error context inside the request.
+  async openAiPanel(task?: AiTaskRequest): Promise<void> {
+    let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_STRATABOARD_AI)[0];
+    if (!leaf) {
+      const rightLeaf = this.app.workspace.getRightLeaf(false);
+      if (!rightLeaf) return;
+      leaf = rightLeaf;
+      await leaf.setViewState({ type: VIEW_TYPE_STRATABOARD_AI, active: true });
+    }
+    await this.app.workspace.revealLeaf(leaf);
+    if (task) (leaf.view as AiPanelView).startTask(task);
+  }
+
+  // Host seam for the panel: BYOK config + credential resolution, the
+  // proposal-validator context (same enabled-source filter as the pickers),
+  // and the settings shortcut — the view never touches pluginSettings or
+  // the credential store directly. Source proposals (stage 4): applyProposal
+  // opens the prefilled source form (the AI never writes settings; saving
+  // runs through the form's own probe/validation/credential UI), and
+  // probeSourceDraft re-runs the form's detection chain read-only. Card /
+  // indicator / script proposals are wired by stages 5-6.
+  private buildAiPanelHost(): AiPanelHost {
+    return {
+      getAiConfig: () => {
+        const settings = this.pluginSettings.aiAssistant;
+        const cfg: AiConnectionConfig = {
+          baseUrl: settings?.baseUrl ?? "",
+          model: settings?.model ?? "",
+          apiKey: settings?.credentialId
+            ? this.credentials.get(settings.credentialId) ?? undefined
+            : undefined,
+        };
+        return { cfg, configured: isAiConfigured(settings) };
+      },
+      getProposalContext: () => ({
+        allowedLoopbackHttpOrigins: this.pluginSettings.allowedLoopbackHttpOrigins,
+        existingSourceIds: this.enabledCustomSources().map((s) => s.id),
+        existingIndicatorIds: indicatorRegistry.list().map((def) => def.id),
+      }),
+      getTaskContext: () => ({
+        existingSources: this.enabledCustomSources().map((s) => ({ id: s.id, name: s.name, format: s.format })),
+        existingIndicators: indicatorRegistry.list().map((def) => ({
+          id: def.id,
+          name: def.name,
+          overlay: def.metadata.overlay,
+          ...(def.description ? { description: def.description } : {}),
+        })),
+      }),
+      openAiSettings: () => openSettingsTab(this.app, "external-ai"),
+      applyProposal: (proposal) => this.applyAiProposal(proposal),
+      probeSourceDraft: (draft, sourceId) => this.probeSourceDraft(draft, sourceId),
+    };
+  }
+
+  // Stage-4 proposal execution: source kinds open the source form prefilled
+  // with the AI's draft / patch and count as applied the moment the form
+  // opens — the user still confirms and saves inside the form. fix-source
+  // merges the patch over the existing def so untouched fields survive.
+  private async applyAiProposal(proposal: AiProposal): Promise<void> {
+    if (proposal.kind === "add-source") {
+      openPrefilledSourceModal(this.app, this, proposal.draft);
+      new Notice(t("草稿已填入表单，请在表单中确认并保存。"));
+      return;
+    }
+    if (proposal.kind === "fix-source") {
+      const existing = this.pluginSettings.customSources.find((s) => s.id === proposal.sourceId);
+      if (!existing) {
+        new Notice(t("数据源「{id}」不存在或已删除，无法应用修复。", { id: proposal.sourceId }));
+        return;
+      }
+      openPrefilledSourceModal(this.app, this, { ...existing, ...proposal.patch, id: existing.id });
+      new Notice(t("草稿已填入表单，请在表单中确认并保存。"));
+    }
+    if (proposal.kind === "quote-card") {
+      new ConfirmModal(this.app, t("创建数据卡「{name}」？", { name: proposal.spec.title ?? proposal.spec.symbol }), () => {
+        void this.cardService.createOrReuse(proposal.spec, undefined, proposal.spec.title ?? proposal.spec.symbol)
+          .then((file) => { this.toolbar.placeFileNode(file); new Notice(t("数据卡已创建：{name}", { name: file.basename })); })
+          .catch((e) => new Notice(t("创建数据卡失败：{msg}", { msg: e instanceof Error ? e.message : String(e) })));
+      }).open();
+      return;
+    }
+    if (proposal.kind === "overlay-card") {
+      new ConfirmModal(this.app, t("创建对比卡？"), () => void this.createOverlayCard(proposal.spec)).open();
+      return;
+    }
+    if (proposal.kind === "spread-card") {
+      new ConfirmModal(this.app, t("创建计算卡？"), () => void this.createSpreadCard(proposal.spec)).open();
+      return;
+    }
+    if (proposal.kind === "indicator") {
+      const folder = normalizePath(this.pluginSettings.indicatorFolderPath);
+      const filename = `${proposal.title.replace(/[^a-zA-Z0-9一-龥_-]/g, "-").replace(/^-+|-+$/g, "") || "indicator"}.js`;
+      await ensureFolder(this.app, folder);
+      const path = `${folder}/${filename}`;
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      new ConfirmModal(this.app, t("保存指标文件「{name}」？保存后仍需通过指标审批才会运行。", { name: filename }), () => {
+        void (async () => {
+          if (existing instanceof TFile) await this.app.vault.modify(existing, proposal.code);
+          else await this.app.vault.create(path, proposal.code);
+          await syncIndicatorFiles(this);
+          new Notice(t("指标草稿已保存：{name}", { name: filename }));
+        })().catch((e) => new Notice(t("保存指标失败：{msg}", { msg: e instanceof Error ? e.message : String(e) })));
+      }).open();
+      return;
+    }
+    if (proposal.kind === "indicator-doc") {
+      const indicator = indicatorRegistry.resolve(proposal.indicatorId);
+      if (!indicator) {
+        new Notice(t("指标「{id}」不存在或尚未通过审批。", { id: proposal.indicatorId }));
+        return;
+      }
+      const folder = `${normalizePath(this.pluginSettings.indicatorFolderPath)}/说明`;
+      const assets = `${folder}/assets`;
+      await ensureFolder(this.app, assets);
+      const plotScriptFolder = `${normalizePath(this.pluginSettings.scriptFolderPath)}/ai-indicator-docs`;
+      await ensureFolder(this.app, plotScriptFolder);
+      const slug = sanitizeFileNamePart(proposal.indicatorId) || "indicator";
+      const mdPath = `${folder}/${slug}.md`;
+      const plotPath = `${assets}/${slug}.py`;
+      const runnerPlotPath = `${plotScriptFolder}/${slug}.py`;
+      const imageRef = `assets/${slug}.png`;
+      const markdown = proposal.markdown.includes(imageRef)
+        ? proposal.markdown
+        : `${proposal.markdown.trim()}\n\n## Matplotlib 示意图\n\n![${proposal.title}](${imageRef})\n`;
+      new ConfirmModal(this.app, t("保存指标说明「{name}」？将同时保存 Matplotlib 绘图脚本。", { name: proposal.title }), () => {
+        void (async () => {
+          const md = this.app.vault.getAbstractFileByPath(mdPath);
+          const py = this.app.vault.getAbstractFileByPath(plotPath);
+          const runner = this.app.vault.getAbstractFileByPath(runnerPlotPath);
+          if (md instanceof TFile) await this.app.vault.modify(md, markdown);
+          else await this.app.vault.create(mdPath, markdown);
+          if (py instanceof TFile) await this.app.vault.modify(py, proposal.plotCode);
+          else await this.app.vault.create(plotPath, proposal.plotCode);
+          const basePath = (this.app.vault.adapter as unknown as { getBasePath?: () => string }).getBasePath?.() ?? "";
+          const absolutePng = `${basePath}/${folder}/assets/${slug}.png`;
+          const runnerCode = [
+            "from pathlib import Path",
+            `OUTPUT_PATH = ${JSON.stringify(absolutePng)}`,
+            proposal.plotCode,
+            "",
+            "# Best-effort final save for scripts that expose fig or pyplot.",
+            "Path(OUTPUT_PATH).parent.mkdir(parents=True, exist_ok=True)",
+            "if 'fig' in globals(): fig.savefig(OUTPUT_PATH, dpi=160, bbox_inches='tight')",
+            "elif 'plt' in globals(): plt.savefig(OUTPUT_PATH, dpi=160, bbox_inches='tight')",
+            "",
+          ].join("\n");
+          if (runner instanceof TFile) await this.app.vault.modify(runner, runnerCode);
+          else await this.app.vault.create(runnerPlotPath, runnerCode);
+          this.pluginSettings.indicatorOverrides[proposal.indicatorId] = {
+            ...(this.pluginSettings.indicatorOverrides[proposal.indicatorId] ?? {}),
+            description: `[[${mdPath.slice(0, -3)}]]`,
+          };
+          await this.saveSettings();
+          new Notice(t("指标说明已保存：{name}", { name: mdPath }));
+          if (runner instanceof TFile || this.app.vault.getAbstractFileByPath(runnerPlotPath) instanceof TFile) {
+            const plotFile = this.app.vault.getAbstractFileByPath(runnerPlotPath);
+            if (plotFile instanceof TFile) {
+              const result = await this.runScriptFile(plotFile);
+              if (result.code === 0 && !result.cancelled) new Notice(t("Matplotlib 示意图已生成。"));
+            }
+          }
+        })().catch((e) => new Notice(t("保存指标说明失败：{msg}", { msg: e instanceof Error ? e.message : String(e) })));
+      }).open();
+      return;
+    }
+    if (proposal.kind === "script") {
+      const folder = normalizePath(this.pluginSettings.scriptFolderPath);
+      await ensureFolder(this.app, folder);
+      const path = `${folder}/${proposal.filename}`;
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      new ConfirmModal(this.app, t("保存脚本「{name}」？运行脚本时仍需单独确认。", { name: proposal.filename }), () => {
+        void (async () => {
+          if (existing instanceof TFile) await this.app.vault.modify(existing, proposal.code);
+          else await this.app.vault.create(path, proposal.code);
+          new Notice(t("脚本草稿已保存：{name}", { name: proposal.filename }));
+        })().catch((e) => new Notice(t("保存脚本失败：{msg}", { msg: e instanceof Error ? e.message : String(e) })));
+      }).open();
+    }
+  }
+
+  // Read-only probe behind the panel's「测试并预览」: mirrors the source
+  // form's detection chain (fetchKlineSample → builtin format → stored /
+  // guessed JSON mapping → parse). fix-source merges the patch onto the
+  // existing source and resolves its stored credential; add-source probes a
+  // synthetic def with no credential. Never throws, never saves.
+  private async probeSourceDraft(
+    draft: Partial<CustomSourceDef>,
+    sourceId?: string
+  ): Promise<{ ok: true; rows: number; format: string } | { ok: false; error: string }> {
+    const existing = sourceId ? this.pluginSettings.customSources.find((s) => s.id === sourceId) : undefined;
+    const merged: CustomSourceDef = existing
+      ? { ...existing, ...draft, id: existing.id }
+      : ({
+          id: "ai-draft-probe",
+          name: "",
+          enabled: true,
+          format: "tencent",
+          klineUrl: "",
+          ...draft,
+        } as CustomSourceDef);
+    if (merged.format === "csv" || !merged.klineUrl) {
+      return { ok: false, error: t("该草稿没有 K线 URL（CSV 文件源请在表单中验证）。") };
+    }
+    const resolved: ResolvedCustomSourceDef = {
+      ...merged,
+      apiKey: merged.credentialId ? this.credentials.get(merged.credentialId) ?? undefined : undefined,
+    };
+    try {
+      const code = merged.testCode ?? "sh000001";
+      const sample = await fetchKlineSample(resolved, code);
+      const builtin = detectBuiltinKlineFormat(sample.json, code);
+      let format: CustomSourceDef["format"];
+      let rows;
+      if (builtin) {
+        format = builtin;
+        rows = builtin === "tencent" ? parseTencentKline(sample.json, code) : parseEastmoneyKline(sample.json);
+      } else {
+        format = "json";
+        const map = merged.jsonMap ?? detectJsonMapping(sample.json);
+        rows = map ? parseMappedKline(sample.json, map) : [];
+      }
+      if (rows.length === 0) {
+        return { ok: false, error: t("已识别为{format}，但未解析出 K 线数据。", { format: t(CUSTOM_FORMAT_LABELS[format]) }) };
+      }
+      return { ok: true, rows: rows.length, format: t(CUSTOM_FORMAT_LABELS[format]) };
+    } catch (e) {
+      return { ok: false, error: redactError(e) };
+    }
+  }
+
+  // First-run guide (no enabled sources); the「让 AI 帮我配置」button hands
+  // straight into the panel's add-source task.
+  private openSetupGuide(): void {
+    new SetupGuideModal(this.app, () => void this.openAiPanel({ kind: "add-source", goal: "", context: { existingSources: [] } })).open();
+  }
+
   // ==================== 本地脚本 (user Python scripts → CSV sources) ====================
 
-  // Opens the script manager modal (toolbar 数据处理 menu + command).
+  // Opens the script manager modal (toolbar 更多 menu + command).
   openScriptManager() {
     new ScriptManagerModal(this.app, this).open();
   }
@@ -1641,12 +1664,73 @@ export default class StrataBoardPlugin extends Plugin {
   // the invalidation path immediately (register output / clear cache /
   // re-render all chart cards) without waiting for the vault watcher.
   // Shared by the script manager's 立即运行 and the chart cards' run button.
+  //
+  // Execution model (W02-A): the configured interpreter must be an absolute
+  // path; the script/folder/interpreter are resolved to REAL paths and the
+  // script must stay inside the script folder (symlink escape rejected); the
+  // approval binds the script's real path + content SHA-256; after the user
+  // confirms, the file is re-read and re-hashed right before spawn — a
+  // mismatch aborts and the next run asks again.
   async runScriptFile(file: TFile): Promise<ScriptRunResult> {
+    const cancelledResult = (): ScriptRunResult => ({
+      code: 126, stdout: "", stderr: "", timedOut: false, cancelled: true, truncated: false,
+    });
     const folder = normalizePath(this.pluginSettings.scriptFolderPath);
+    const interpreter = this.pluginSettings.pythonInterpreterPath.trim();
+    if (!interpreter) {
+      new Notice(t("运行本地脚本前，请先在设置页「高级」中配置 Python 解释器的绝对路径。"));
+      return cancelledResult();
+    }
+    if (!nodePath.isAbsolute(interpreter)) {
+      new Notice(t("Python 解释器必须配置为绝对路径（当前：{path}）。", { path: interpreter }));
+      return cancelledResult();
+    }
     const adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
     const basePath = adapter.getBasePath?.() ?? "";
-    const rel = file.path.slice(folder.length + 1);
-    const result = await runScript(`${basePath}/${folder}`, rel);
+
+    let folderReal: string, scriptReal: string, interpreterReal: string;
+    try {
+      [folderReal, scriptReal, interpreterReal] = await Promise.all([
+        realpath(`${basePath}/${folder}`),
+        realpath(`${basePath}/${file.path}`),
+        realpath(interpreter),
+      ]);
+    } catch (e) {
+      new Notice(t("无法解析脚本、脚本文件夹或解释器的真实路径：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
+      return cancelledResult();
+    }
+    if (!isPathInside(folderReal, scriptReal)) {
+      new Notice(t("脚本的真实路径不在脚本文件夹内（符号链接指向外部），已拒绝运行。"));
+      return cancelledResult();
+    }
+
+    // Hash the on-disk bytes — exactly what the interpreter will execute.
+    const hash = createHash("sha256").update(await readFile(scriptReal)).digest("hex");
+    const previousHash = this.pluginSettings.approvedScriptHashes[scriptReal];
+    if (previousHash !== hash) {
+      const approved = await new Promise<boolean>((resolve) => {
+        new ScriptRunConfirmModal(this.app, {
+          interpreterPath: interpreterReal,
+          scriptPath: scriptReal,
+          cwd: folderReal,
+          hashShort: hash.slice(0, 12),
+          changed: previousHash !== undefined,
+        }, resolve).open();
+      });
+      if (!approved) {
+        return cancelledResult();
+      }
+      // Re-read + re-hash right before spawning: the file may have been
+      // swapped while the confirmation modal was open.
+      const currentHash = createHash("sha256").update(await readFile(scriptReal)).digest("hex");
+      if (currentHash !== hash) {
+        new Notice(t("脚本内容在确认后发生变化，已取消运行；请重新运行并再次确认。"));
+        return cancelledResult();
+      }
+      this.pluginSettings.approvedScriptHashes[scriptReal] = hash;
+      await this.saveSettings();
+    }
+    const result = await runScript({ interpreter: interpreterReal, scriptPath: scriptReal, cwd: folderReal });
     if (result.code === 0 && !result.timedOut) {
       await this.invalidateScriptOutput(`${folder}/output/${file.basename}.csv`);
     }
@@ -1669,21 +1753,17 @@ export default class StrataBoardPlugin extends Plugin {
       new Notice(t("脚本「{name}」已禁用，请在本地脚本管理中启用后再运行。", { name: prov.scriptFile.basename }));
       return;
     }
-    const isSignals = prov.def.purpose === "signals";
-    const before = isSignals ? "" : await this.readScriptOutputMaxDate(prov.def);
+    const before = await this.readScriptOutputMaxDate(prov.def);
     new Notice(t("正在运行本地脚本：{name}…", { name: prov.scriptFile.basename }));
     const result = await this.runScriptFile(prov.scriptFile);
+    if (result.cancelled) return;
     if (result.timedOut) {
-      new Notice(t("本地脚本运行超时（{s} 秒），进程已终止。", { s: 180 }));
+      new Notice(t("本地脚本运行超时（{s} 秒），进程已终止。", { s: SCRIPT_TIMEOUT_MS / 1000 }));
       return;
     }
     if (result.code !== 0) {
-      const err = result.stderr.trim().split("\n").pop() ?? "";
+      const err = redactSecrets(result.stderr.trim().split("\n").pop() ?? "");
       new Notice(t("本地脚本运行失败（退出码 {code}）：{err}", { code: result.code, err }), 8000);
-      return;
-    }
-    if (isSignals) {
-      new Notice(t("本地脚本运行完成：{name}", { name: prov.scriptFile.basename }));
       return;
     }
     const after = await this.readScriptOutputMaxDate(prov.def);
@@ -1734,6 +1814,55 @@ export default class StrataBoardPlugin extends Plugin {
     );
   }
 
+  // IndicatorLoaderHost hook (W02-B): batch approval UI for indicator files
+  // whose path+hash have no stored approval. Approved entries are persisted
+  // (path → hash); the loader loads them immediately and skips the rejected
+  // ones for the rest of the session.
+  async confirmIndicatorApprovals(pending: PendingIndicatorApproval[]): Promise<IndicatorApprovalDecision> {
+    const decision = await new Promise<IndicatorApprovalDecision>((resolve) => {
+      new IndicatorConfirmModal(this.app, pending, resolve).open();
+    });
+    if (decision.approved.length > 0) {
+      for (const entry of decision.approved) {
+        this.pluginSettings.approvedIndicatorHashes[entry.path] = entry.hash;
+      }
+      await this.saveSettings();
+    }
+    return decision;
+  }
+
+  async openIndicatorDescription(indicatorId: string): Promise<void> {
+    const def = indicatorRegistry.resolve(indicatorId);
+    if (!def) return;
+    const overrides = this.pluginSettings.indicatorOverrides[indicatorId] ?? {};
+    const description = overrides.description?.trim();
+    if (description) {
+      const linkedNote = /^\[\[([^\]|]+)(?:\|[^\]]+)?\]\]$/.exec(description);
+      if (linkedNote) {
+        await this.app.workspace.openLinkText(linkedNote[1], "", true);
+        return;
+      }
+      new IndicatorDescriptionModal(this.app, def.name, description).open();
+      return;
+    }
+
+    const folder = `${normalizePath(this.pluginSettings.indicatorFolderPath)}/说明`;
+    await ensureFolder(this.app, folder);
+    const slug = sanitizeFileNamePart(indicatorId) || "indicator";
+    const path = `${folder}/${slug}.md`;
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (!(existing instanceof TFile)) {
+      await this.app.vault.create(path, `# ${def.name}\n\n请在这里填写指标说明。\n`);
+    }
+    const link = `[[${path.slice(0, -3)}]]`;
+    this.pluginSettings.indicatorOverrides[indicatorId] = {
+      ...overrides,
+      description: link,
+    };
+    await this.saveSettings();
+    await this.app.workspace.openLinkText(path.slice(0, -3), "", true);
+  }
+
   // Any .js under the indicator folder (recursive — matches the loader's
   // prefix scan).
   private isIndicatorFile(file: unknown): file is TFile {
@@ -1780,18 +1909,15 @@ export default class StrataBoardPlugin extends Plugin {
 
   // Unified 「插入图表」 entry (canvas toolbar submenu / command palette): one
   // search modal fanning out across the sources in scope. Picked items are
-  // upserted into the symbol cache first (keyed custom:<sourceId>) so chart
-  // headers resolve
-  // names later.
+  // recorded in the search history and upserted into the symbol cache first
+  // (keyed custom:<sourceId>) so chart headers resolve names later.
   openUnifiedSearch(scope: CategoryId = "all") {
-    const sources = this.enabledCustomSources();
-    if (sources.length === 0) {
-      new SetupGuideModal(this.app).open();
+    if (this.enabledCustomSources().length === 0) {
+      this.openSetupGuide();
       return;
     }
     new UnifiedSearchModal(this.app, {
-      customSources: sources,
-      searchCustom: (sourceId, text) => this.dataAdapter.searchRemoteQuotes(sourceId, text),
+      ...this.unifiedSearchBase(),
       onSymbol: (item) => this.insertSymbolCard(item),
       onManual: (sourceId, sourceName) =>
         new ManualSymbolModal(
@@ -1805,16 +1931,53 @@ export default class StrataBoardPlugin extends Plugin {
     }).open();
   }
 
+  // Modal-independent options shared by every UnifiedSearchModal open: all
+  // configured sources (the modal filters enabled ones itself), the remote /
+  // symbol-cache search backends, the 最近使用 history store, and the
+  // credential-presence probe for the 未配置凭据 marks.
+  private unifiedSearchBase() {
+    return {
+      customSources: this.pluginSettings.customSources,
+      searchCustom: (sourceId: string, text: string) => this.dataAdapter.searchRemoteQuotes(sourceId, text),
+      searchCached: (query: string, limit?: number) => this.sqliteCache.searchSymbols(query, limit),
+      history: {
+        list: (): SearchHistoryEntry[] => this.pluginSettings.searchHistory,
+        clear: (): void => {
+          this.pluginSettings.searchHistory = [];
+          void this.saveSettings();
+        },
+      },
+      hasCredential: (credentialId: string) => this.credentials.get(credentialId) !== null,
+    };
+  }
+
+  // Records a picked symbol in the unified-search history (name/code/source
+  // id only), deduped by sourceId+tsCode, newest first, capped at 20.
+  private recordSearchHistory(item: SymbolItem) {
+    const entry: SearchHistoryEntry = {
+      name: item.name,
+      tsCode: item.tsCode,
+      ...(item.sourceId ? { sourceId: item.sourceId } : {}),
+    };
+    const keyOf = (e: SearchHistoryEntry) => `${e.sourceId ?? ""}:${e.tsCode}`;
+    this.pluginSettings.searchHistory = [
+      entry,
+      ...this.pluginSettings.searchHistory.filter((e) => keyOf(e) !== keyOf(entry)),
+    ].slice(0, 20);
+    void this.saveSettings();
+  }
+
   private insertSymbolCard(item: SymbolItem) {
+    this.recordSearchHistory(item);
     void this.sqliteCache.upsertSymbols([item]);
     void this.insertCard(item);
   }
 
-  // Single entry point for the asset picker (toolbar menu + command). Every
-  // card is backed by a custom source: remote search when the source defines
-  // one (searchUrl / searchBodyTemplate), manual code entry otherwise; the
-  // picked item is upserted into the symbol cache (keyed custom:<sourceId>)
-  // so chart headers can resolve its name later.
+  // Series/symbol pick path (card edit modals, overlay/spread legs): the
+  // unified search modal pre-scoped to the given source. Picks are recorded
+  // in the search history and upserted into the symbol cache (keyed
+  // custom:<sourceId>) so chart headers can resolve names later; sources
+  // without remote search fall back to ManualSymbolModal via onManual.
   openSymbolSearch(onSelect: (item: SymbolItem) => void, sourceId?: string) {
     const def = this.pluginSettings.customSources.find((s) => s.id === sourceId && s.enabled);
     if (!def) {
@@ -1823,35 +1986,30 @@ export default class StrataBoardPlugin extends Plugin {
     }
     const onPick = (item: SymbolItem) => {
       const picked: SymbolItem = { ...item, assetType: "custom", sourceId: def.id };
+      this.recordSearchHistory(picked);
       void this.sqliteCache.upsertSymbols([picked]);
       onSelect(picked);
     };
-    if (sourceSupportsRemoteSearch(def)) {
-      new RemoteQuoteSearchModal(
-        this.app,
-        def.name,
-        (text) => this.dataAdapter.searchRemoteQuotes(def.id, text),
-        onPick
-      ).open();
-    } else {
-      new ManualSymbolModal(this.app, def.id, def.name, onPick, def.symbols).open();
-    }
+    new UnifiedSearchModal(this.app, {
+      ...this.unifiedSearchBase(),
+      onSymbol: onPick,
+      onManual: (sid, sname) =>
+        new ManualSymbolModal(
+          this.app,
+          sid,
+          sname,
+          onPick,
+          this.pluginSettings.customSources.find((s) => s.id === sid)?.symbols
+        ).open(),
+      scope: `custom:${def.id}`,
+    }).open();
   }
 
-  // 插入资产数据 unified entry (command palette counterpart of the toolbar):
-  // one entry per source group plus one per ungrouped source (project rule:
-  // any series usable in overlay/spread cards must also exist as a
-  // standalone card).
+  // Data-card insertion unified entry (command palette counterpart of the
+  // toolbar): the unified search modal covers every enabled source, with
+  // in-modal source/group scoping.
   insertAssetDataCard() {
-    const entries = this.buildSourcePickerEntries((def) =>
-      this.openSymbolSearch((item) => void this.insertCard(item), def.id)
-    );
-
-    if (entries.length === 0) {
-      new SetupGuideModal(this.app).open();
-      return;
-    }
-    new SourcePickerModal(this.app, entries).open();
+    this.openUnifiedSearch("all");
   }
 
   // Source-picker entries with grouped sources collapsed into one card per
@@ -1897,7 +2055,7 @@ export default class StrataBoardPlugin extends Plugin {
     // to configure one first. Widget/calendar stay reachable through their
     // own commands/menus — no exceptions in this guide.
     if (this.enabledCustomSources().length === 0) {
-      new SetupGuideModal(this.app).open();
+      this.openSetupGuide();
       return;
     }
     const entries: SourcePickerEntry[] = [
@@ -1935,7 +2093,9 @@ export default class StrataBoardPlugin extends Plugin {
       freq: "D",
       range: this.resolveDefaultRange(),
       version: 1,
-      height: DEFAULT_CARD_HEIGHT,
+      ...(this.pluginSettings.chartThemeDefault !== "obsidian"
+        ? { theme: this.pluginSettings.chartThemeDefault }
+        : {}),
     };
 
     if (editor) {
@@ -1965,7 +2125,7 @@ export default class StrataBoardPlugin extends Plugin {
   async insertWidgetCard(title: string, input: string, savePath?: string, editor?: Editor) {
     const parsed = parseWidgetInput(input, title || undefined);
     if (!parsed) {
-      new Notice(t("输入内容为空或无法解析。"));
+      new Notice(t("仅支持 TradingView 官方 HTTPS URL 或组件代码。"));
       return;
     }
 
@@ -2035,11 +2195,16 @@ export default class StrataBoardPlugin extends Plugin {
 
     new OverlayEditModal(
       this.app,
-      DEFAULT_OVERLAY_SPEC,
+      {
+        ...DEFAULT_OVERLAY_SPEC,
+        ...(this.pluginSettings.chartThemeDefault !== "obsidian"
+          ? { theme: this.pluginSettings.chartThemeDefault }
+          : {}),
+      },
       (spec) => void this.createOverlayCard(spec, editor),
       (onSelect, sourceId) => this.openSymbolSearch(onSelect, sourceId),
       () => this.listReferenceableCards(),
-      t("新建资产叠加卡"),
+      t("新建对比卡"),
       sources,
       (ref) => this.seriesAdapter.resolveLabelSync(ref)
     ).open();
@@ -2054,12 +2219,16 @@ export default class StrataBoardPlugin extends Plugin {
 
     new SpreadEditModal(
       this.app,
-      DEFAULT_SPREAD_SPEC,
+      {
+        ...DEFAULT_SPREAD_SPEC,
+        ...(this.pluginSettings.chartThemeDefault !== "obsidian"
+          ? { theme: this.pluginSettings.chartThemeDefault }
+          : {}),
+      },
       (spec) => void this.createSpreadCard(spec, editor),
       (onSelect, sourceId) => this.openSymbolSearch(onSelect, sourceId),
-      t("新建数据计算卡"),
-      sources,
-      this.enabledSignalSources()
+      t("新建计算卡"),
+      sources
     ).open();
   }
 
@@ -2070,11 +2239,11 @@ export default class StrataBoardPlugin extends Plugin {
     }
 
     try {
-      const file = await this.cardService.createRawCard("资产叠加.md", "overlay", stringifyOverlaySpec(spec));
+      const file = await this.cardService.createRawCard("对比.md", "overlay", stringifyOverlaySpec(spec));
       this.toolbar.placeFileNode(file);
     } catch (e) {
-      new Notice(t("创建资产叠加卡片失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
-      console.error("创建资产叠加卡片失败:", e);
+      new Notice(t("创建对比卡失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
+      console.error("创建对比卡失败:", e);
     }
   }
 
@@ -2094,10 +2263,9 @@ export default class StrataBoardPlugin extends Plugin {
     const cards: ReferenceableCard[] = [];
     for (const file of files) {
       const content = await this.app.vault.cachedRead(file);
-      const match = content.match(/```(quote|spread)\n([\s\S]*?)\n```/);
-      if (!match) continue;
-      if (match[1] === "quote") {
-        const result = parseCardSpec(match[2]);
+      const quoteBody = extractCardBlock(content, "quote");
+      if (quoteBody !== null) {
+        const result = parseCardSpec(quoteBody);
         if (!result.ok) continue;
         cards.push({
           path: file.path,
@@ -2109,11 +2277,12 @@ export default class StrataBoardPlugin extends Plugin {
             ...(result.spec.sourceId ? { sourceId: result.spec.sourceId } : {}),
           },
         });
-      } else {
-        const cardId = await ensureSpreadId(this.app, file);
-        if (!cardId) continue;
-        cards.push({ path: file.path, name: file.basename, kind: "spread", cardId });
+        continue;
       }
+      if (extractCardBlock(content, "spread") === null) continue;
+      const cardId = await ensureSpreadId(this.app, file);
+      if (!cardId) continue;
+      cards.push({ path: file.path, name: file.basename, kind: "spread", cardId });
     }
     return cards.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   }
@@ -2128,22 +2297,22 @@ export default class StrataBoardPlugin extends Plugin {
     }
 
     try {
-      const file = await this.cardService.createRawCard("数据计算.md", "spread", stringifySpreadSpec(withId));
+      const file = await this.cardService.createRawCard("计算.md", "spread", stringifySpreadSpec(withId));
       this.toolbar.placeFileNode(file);
     } catch (e) {
-      new Notice(t("创建数据计算卡片失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
-      console.error("创建数据计算卡片失败:", e);
+      new Notice(t("创建计算卡失败：{msg}", { msg: e instanceof Error ? e.message : String(e) }));
+      console.error("创建计算卡失败:", e);
     }
   }
 
   // Saves an edited overlay spec back into the card file. Called from the
   // edit modal; the canvas preview re-renders on the modify event.
   async updateOverlayCard(sourcePath: string, spec: OverlaySpec) {
-    await this.replaceCardBlock(sourcePath, "overlay", stringifyOverlaySpec(spec), "资产叠加卡片");
+    await this.replaceCardBlock(sourcePath, "overlay", stringifyOverlaySpec(spec), "对比卡");
   }
 
   async updateSpreadCard(sourcePath: string, spec: SpreadSpec, silent = false) {
-    await this.replaceCardBlock(sourcePath, "spread", stringifySpreadSpec(spec), "数据计算卡片", silent);
+    await this.replaceCardBlock(sourcePath, "spread", stringifySpreadSpec(spec), "计算卡", silent);
   }
 
   // Replaces only the fenced code block of the given type inside the card
@@ -2246,17 +2415,15 @@ export default class StrataBoardPlugin extends Plugin {
   // paths, so the canvas preview re-renders on the modify event.
   private async openCardEditorFromMenu(file: TFile, type: string) {
     const content = await this.app.vault.cachedRead(file);
-    const blockRe = new RegExp("```" + type + "\\n([\\s\\S]*?)\\n```");
-    const match = blockRe.exec(content);
-    if (!match) {
+    const body = extractCardBlock(content, type);
+    if (body === null) {
       new Notice(t("无法解析卡片配置。"));
       return;
     }
-    const body = match[1];
     const path = file.path;
 
     if (type === "quote") {
-      const result = parseCardSpec(body, { height: DEFAULT_CARD_HEIGHT });
+      const result = parseCardSpec(body);
       if (!result.ok) {
         new Notice(t("无法解析卡片配置。"));
         return;
@@ -2267,17 +2434,12 @@ export default class StrataBoardPlugin extends Plugin {
         ...spec,
         chartType: spec.chartType ?? "candlestick",
         theme: spec.theme ?? "auto",
-        riseColor: spec.riseColor ?? "#ef4444",
-        fallColor: spec.fallColor ?? "#22c55e",
-        height: spec.height ?? DEFAULT_CARD_HEIGHT,
       };
       new UnifiedCardEditModal(this.app, {
         spec: resolved,
         openSymbolPicker: (onSelect, sourceId) => this.openSymbolSearch(onSelect, sourceId),
         customSources: this.enabledCustomSources(),
-        signalSources: this.enabledSignalSources(),
-        defaultIndicators: this.pluginSettings.defaultIndicators,
-        builtinIndicatorInputs: this.pluginSettings.builtinIndicatorInputs,
+        indicatorGroups: this.pluginSettings.indicatorGroups,
         onSubmit: (newSpec) => {
           void this.cardService.updateCardSpec(path, newSpec);
         },
@@ -2316,10 +2478,151 @@ export default class StrataBoardPlugin extends Plugin {
         (newSpec) => void this.updateSpreadCard(path, newSpec),
         (onSelect, sourceId) => this.openSymbolSearch(onSelect, sourceId),
         undefined,
-        this.enabledCustomSources(),
-        this.enabledSignalSources()
+        this.enabledCustomSources()
       ).open();
     }
+  }
+
+  // Builds the series ref a card contributes to a compare/calc card: quote
+  // cards contribute their quote coordinates; spread cards contribute a card
+  // ref by their stable id (backfilling it into the file when missing).
+  // Returns the ref, or an error message string.
+  private async resolveCardSeriesRef(file: TFile, type: string): Promise<SeriesRef | string> {
+    const content = await this.app.vault.cachedRead(file);
+    const body = extractCardBlock(content, type);
+    if (body === null) return t("无法解析卡片配置。");
+    if (type === "quote") {
+      const result = parseCardSpec(body);
+      if (!result.ok) return result.error.message;
+      return {
+        source: "quote",
+        tsCode: result.spec.symbol,
+        assetType: result.spec.assetType,
+        ...(result.spec.sourceId ? { sourceId: result.spec.sourceId } : {}),
+      };
+    }
+    const result = parseSpreadSpec(body);
+    if (!result.spec) return result.error ?? t("无法解析卡片配置。");
+    const cardId = await ensureSpreadId(this.app, file);
+    if (!cardId) return t("无法解析卡片配置。");
+    return { source: "card", cardId };
+  }
+
+  // Opens the compare/calc editor pre-filled with the given series; 保存
+  // creates a new card on the canvas (same creation path as 创建对比卡 /
+  // 创建计算卡). The picker/label callbacks mirror insertOverlayCard /
+  // insertSpreadCard.
+  private openSeriesCardEditor(series: SeriesRef[], target: "overlay" | "spread") {
+    const sources = this.enabledCustomSources();
+    if (sources.length === 0) {
+      new Notice(t("请先在设置页添加并启用自定义数据源。"));
+      return;
+    }
+    const themeOverride =
+      this.pluginSettings.chartThemeDefault !== "obsidian" ? { theme: this.pluginSettings.chartThemeDefault } : {};
+    if (target === "overlay") {
+      new OverlayEditModal(
+        this.app,
+        { ...DEFAULT_OVERLAY_SPEC, ...themeOverride, series },
+        (spec) => void this.createOverlayCard(spec),
+        (onSelect, sourceId) => this.openSymbolSearch(onSelect, sourceId),
+        () => this.listReferenceableCards(),
+        t("新建对比卡"),
+        sources,
+        (ref) => this.seriesAdapter.resolveLabelSync(ref)
+      ).open();
+      return;
+    }
+    // A single seeded series leaves the default A-B formula unsatisfiable
+    // until the user adds a second series — the editor's live formula
+    // validation and its ≥2-series save floor carry that prompt naturally.
+    new SpreadEditModal(
+      this.app,
+      { ...DEFAULT_SPREAD_SPEC, ...themeOverride, series },
+      (spec) => void this.createSpreadCard(spec),
+      (onSelect, sourceId) => this.openSymbolSearch(onSelect, sourceId),
+      t("新建计算卡"),
+      sources
+    ).open();
+  }
+
+  // 「加入序列进行对比」/「以此序列创建计算」 (canvas single-card menu).
+  private async openDerivedSeriesCard(file: TFile, type: string, target: "overlay" | "spread") {
+    const ref = await this.resolveCardSeriesRef(file, type);
+    if (typeof ref === "string") {
+      new Notice(t("无法从该卡片提取序列：{msg}", { msg: ref }));
+      return;
+    }
+    this.openSeriesCardEditor([ref], target);
+  }
+
+  // Compare/calc entries on the canvas multi-selection menu. Only quote and
+  // spread cards count (same rule as listReferenceableCards); other node
+  // types are ignored. Synchronous — the parsing happens on click.
+  private addSelectionSeriesItems(menu: Menu, canvas: CanvasLike) {
+    const selection = canvas.selection;
+    if (!selection) return;
+    const seen = new Set<string>();
+    const candidates: { filePath: string; type: "quote" | "spread" }[] = [];
+    for (const node of selection) {
+      if (!node.filePath || seen.has(node.filePath)) continue;
+      const el = node.nodeEl ?? node.el;
+      const type = el?.querySelector("[data-strataboard-block]")?.getAttribute("data-strataboard-block");
+      if (type !== "quote" && type !== "spread") continue;
+      seen.add(node.filePath);
+      candidates.push({ filePath: node.filePath, type });
+    }
+    if (candidates.length < 2) return;
+    menu.addItem((item) => {
+      item
+        .setTitle(t("用选中的 {n} 张卡创建对比", { n: candidates.length }))
+        .setIcon("layers")
+        .onClick(() => void this.openSelectionSeriesEditor(candidates, "overlay"));
+    });
+    menu.addItem((item) => {
+      item
+        .setTitle(t("用选中的 {n} 张卡创建计算", { n: candidates.length }))
+        .setIcon("calculator")
+        .onClick(() => void this.openSelectionSeriesEditor(candidates, "spread"));
+    });
+  }
+
+  // Parses every selected card file (async — the menu has closed by now),
+  // skips the ones that fail, and opens the editor pre-filled with the
+  // surviving series.
+  private async openSelectionSeriesEditor(
+    candidates: { filePath: string; type: "quote" | "spread" }[],
+    target: "overlay" | "spread"
+  ) {
+    let pool = candidates;
+    if (pool.length > MAX_OVERLAY_SERIES) {
+      pool = pool.slice(0, MAX_OVERLAY_SERIES);
+      new Notice(t("最多使用 {max} 张卡片，超出的已忽略。", { max: MAX_OVERLAY_SERIES }));
+    }
+    const series: SeriesRef[] = [];
+    const failures: string[] = [];
+    for (const candidate of pool) {
+      const name = candidate.filePath.split("/").pop()!.replace(/\.md$/i, "");
+      const file = this.app.vault.getAbstractFileByPath(candidate.filePath);
+      if (!(file instanceof TFile)) {
+        failures.push(`${name}（${t("文件不存在：{path}", { path: candidate.filePath })}）`);
+        continue;
+      }
+      const ref = await this.resolveCardSeriesRef(file, candidate.type);
+      if (typeof ref === "string") {
+        failures.push(`${name}（${ref}）`);
+        continue;
+      }
+      series.push(ref);
+    }
+    if (failures.length > 0) {
+      new Notice(t("{n} 张卡片无法解析，已跳过：{details}", { n: failures.length, details: failures.join("；") }), 8000);
+    }
+    if (series.length < 2) {
+      new Notice(t("可解析的卡片不足两张，未创建卡片。"));
+      return;
+    }
+    this.openSeriesCardEditor(series, target);
   }
 
   private attachToolbarToCanvas(leaf: WorkspaceLeaf | null) {

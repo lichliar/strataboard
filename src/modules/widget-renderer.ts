@@ -3,6 +3,7 @@ import type { ParsedCardSpec } from "../types";
 import type StrataBoardPlugin from "../main";
 import { onAttached } from "../utils/dom";
 import { t } from "../i18n";
+import { parseWidgetInput } from "./widget-parser";
 
 export interface WidgetRendererOptions {
   height?: number;
@@ -50,7 +51,7 @@ export class WidgetRenderer extends MarkdownRenderChild {
     if (!src) {
       this.containerEl.createDiv({
         cls: "strataboard-empty",
-        text: t("未配置 iframe URL 或 HTML 内容。"),
+        text: t("仅支持 TradingView 官方 HTTPS URL 或组件代码。"),
       });
       return;
     }
@@ -58,6 +59,15 @@ export class WidgetRenderer extends MarkdownRenderChild {
     this.iframe = this.containerEl.createEl("iframe", {
       cls: "strataboard-widget-iframe",
       attr: {
+        // Sandbox review (W02-C): allow-scripts (widget code) + allow-popups
+        // (TradingView's outbound links) are the minimum the official widgets
+        // need; no downloads/forms/top-navigation. allow-same-origin was
+        // REMOVED and restored after real-machine verification: official
+        // widgets render blank without it (they need their own cookies /
+        // storage), so it stays — verified with headless Edge loading
+        // s3.tradingview.com embed widgets and /widgetembed/ pages both ways.
+        // The allowlist in widget-parser.ts still guarantees only official
+        // TradingView content reaches this iframe.
         sandbox: "allow-scripts allow-same-origin allow-popups",
         allow: "fullscreen",
         title: this.spec.widgetTitle ?? this.spec.symbol ?? "Widget",
@@ -95,10 +105,12 @@ export class WidgetRenderer extends MarkdownRenderChild {
 
   private resolveSrc(): string | null {
     if (this.spec.iframeUrl) {
-      return this.spec.iframeUrl;
+      return parseWidgetInput(this.spec.iframeUrl)?.iframeUrl ?? null;
     }
     if (this.spec.widgetHtml) {
-      return "data:text/html;charset=utf-8," + encodeURIComponent(this.withDefensiveStyles(this.spec.widgetHtml));
+      const parsed = parseWidgetInput(this.spec.widgetHtml);
+      if (!parsed?.widgetHtml) return null;
+      return "data:text/html;charset=utf-8," + encodeURIComponent(this.withDefensiveStyles(parsed.widgetHtml));
     }
     return null;
   }

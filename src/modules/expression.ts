@@ -1,4 +1,4 @@
-// Arithmetic expressions for the 数据计算卡 (spread card): lettered series
+// Arithmetic expressions for the spread (calc) card: lettered series
 // references (A/B/C…, assigned by series-list order), numeric literals, the
 // four operators and parentheses — e.g. A+B, A/B, (A+B)/2, A+C/B.
 // Pure module (no Obsidian imports): parsing, validation, evaluation and

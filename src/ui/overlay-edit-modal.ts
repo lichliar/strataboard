@@ -1,41 +1,20 @@
-import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
+import { App, Modal, Notice, Setting } from "obsidian";
 import type { ChartTheme, CustomSourceDef, DisplayOverrides, OverlayCompareMode, OverlaySpec, SeriesLineType, SeriesPeriod, SeriesRef } from "../types";
 import { SeriesRefEditor, type ListReferenceableCards, type OpenSymbolPicker } from "./series-ref-editor";
 import { SeriesAdapter } from "../modules/series-adapter";
-import { addStepper } from "./stepper";
 import { renderDisplayOverrideSettings } from "./display-overrides";
-import { DEFAULT_CARD_BLEED, MAX_CARD_BLEED } from "../modules/card-spec";
 import { MAX_OVERLAY_SERIES } from "../modules/series-spec";
+import { RANGE_OPTIONS, PERIOD_OPTIONS, THEME_OPTIONS } from "../modules/series-summary";
+import { createSubTabs } from "./sub-tabs";
 import { t } from "../i18n";
 
-// Overlay (资产叠加) card editor (wireframe #screen-overlay). Three sub-pages
-// matching the unified/calc modals: 系列编辑 (dynamic series rows), 数据设置
-// (range / period / 叠加方式 compare mode + per-series 缩放系数),
-// 显示设置 (fixed line type / 线型 + the Canvas 设置 and 图表设置
-// collapsibles). No expression input, so no error states — invalid rows are
-// reported via Notice at save time.
-
-const RANGE_OPTIONS: { value: string; label: string }[] = [
-  { value: "1y", label: "近1年" },
-  { value: "3y", label: "近3年" },
-  { value: "5y", label: "近5年" },
-  { value: "10y", label: "近10年" },
-  { value: "20y", label: "近20年" },
-  { value: "max", label: "全部" },
-];
-
-const PERIOD_OPTIONS: { value: SeriesPeriod; label: string }[] = [
-  { value: "D", label: "日线" },
-  { value: "M", label: "月线" },
-  { value: "Q", label: "季线" },
-  { value: "Y", label: "年线" },
-];
-
-const THEME_OPTIONS: { value: ChartTheme; label: string }[] = [
-  { value: "auto", label: "跟随 Obsidian 主题" },
-  { value: "dark", label: "深色" },
-  { value: "light", label: "浅色" },
-];
+// Overlay (compare) card editor (wireframe #screen-overlay). Two sub-pages
+// via createSubTabs (same pattern as the unified card modal): 数据 (series
+// rows + 周期 / 数据范围 / 叠加方式 compare mode + per-series 缩放系数
+// mirror rows) and 外观 (fixed line type / 线型 / 主题 + the 图表设置
+// collapsible). A compare card needs at least two series — enforced at save
+// time and by the row-delete floor. No expression input, so no error states
+// beyond that — invalid rows are reported via Notice at save time.
 
 const COMPARE_MODE_OPTIONS: { value: OverlayCompareMode; label: string }[] = [
   { value: "percent", label: "百分比归一化（默认）" },
@@ -44,13 +23,8 @@ const COMPARE_MODE_OPTIONS: { value: OverlayCompareMode; label: string }[] = [
   { value: "none", label: "原始值" },
 ];
 
-type SubPage = "series" | "data" | "display";
-
-const SUB_PAGES: { id: SubPage; label: string }[] = [
-  { id: "series", label: "系列编辑" },
-  { id: "data", label: "数据设置" },
-  { id: "display", label: "显示设置" },
-];
+// A compare card with fewer than two series has nothing to compare.
+const MIN_SERIES = 2;
 
 export class OverlayEditModal extends Modal {
   private initialSeries: SeriesRef[];
@@ -61,19 +35,13 @@ export class OverlayEditModal extends Modal {
   // Raw text of the per-series 缩放系数 inputs (indexed like the series rows);
   // empty = 1. Parsed and validated at save time.
   private scaleInputs: string[];
-  private height: string;
   private theme: ChartTheme;
-  private widthAuto: boolean;
-  private heightAuto: boolean;
-  private bleed: number;
   // Per-card 图表设置 overrides (undefined = follow the plugin-wide 显示设置).
   private displayOverrides: DisplayOverrides;
   private editors: SeriesRefEditor[] = [];
   private rowsEl: HTMLElement | null = null;
   private addRowEl: HTMLButtonElement | null = null;
-  private heightText: TextComponent | null = null;
   private scaleRowsEl: HTMLElement | null = null;
-  private activeSubPage: SubPage = "series";
   private onSubmit: (spec: OverlaySpec) => void;
   private openSymbolPicker: OpenSymbolPicker;
   private listReferenceableCards: ListReferenceableCards;
@@ -99,11 +67,7 @@ export class OverlayEditModal extends Modal {
     this.compareMode = spec.normalize ?? "percent";
     this.lineType = spec.lineType ?? "simple";
     this.scaleInputs = spec.series.map((ref) => (ref.scale !== undefined ? String(ref.scale) : ""));
-    this.height = spec.height ? String(spec.height) : "";
     this.theme = spec.theme ?? "auto";
-    this.widthAuto = spec.widthAuto ?? true;
-    this.heightAuto = spec.heightAuto ?? true;
-    this.bleed = spec.bleed ?? DEFAULT_CARD_BLEED;
     this.displayOverrides = {
       showLegend: spec.showLegend,
       legendFrosted: spec.legendFrosted,
@@ -118,7 +82,7 @@ export class OverlayEditModal extends Modal {
     this.listReferenceableCards = listReferenceableCards;
     this.customSources = customSources ?? [];
     this.resolveSeriesName = resolveSeriesName ?? ((ref) => ref.label || SeriesAdapter.defaultLabel(ref));
-    this.setTitle(title ?? t("编辑资产叠加卡"));
+    this.setTitle(title ?? t("编辑对比卡"));
   }
 
   onOpen() {
@@ -127,40 +91,25 @@ export class OverlayEditModal extends Modal {
     this.editors = [];
     this.rowsEl = null;
     this.addRowEl = null;
-    this.heightText = null;
 
-    const tabBar = contentEl.createDiv("fc-subtabs");
-    const pagesEl = contentEl.createDiv();
-    const pages: Record<SubPage, HTMLElement> = {
-      series: pagesEl.createDiv(),
-      data: pagesEl.createDiv(),
-      display: pagesEl.createDiv(),
-    };
-    const applyActive = () => {
-      for (const tab of SUB_PAGES) {
-        pages[tab.id].classList.toggle("fc-hidden", tab.id !== this.activeSubPage);
+    // The 缩放系数 rows mirror the series list; onActivate rebuilds them
+    // whenever the data page becomes visible so row edits show up (the
+    // initial fire lands before scaleRowsEl exists and is a no-op).
+    const subTabs = createSubTabs<"data" | "appearance">(
+      contentEl,
+      [
+        { id: "data", label: "数据" },
+        { id: "appearance", label: "外观" },
+      ],
+      {
+        onActivate: (id) => {
+          if (id === "data") this.renderScaleRows();
+        },
       }
-      tabBar.querySelectorAll(".fc-subtab").forEach((el, i) => {
-        el.classList.toggle("is-active", SUB_PAGES[i].id === this.activeSubPage);
-      });
-      // The 缩放系数 rows mirror the series list; rebuild them whenever the
-      // data page becomes visible so row edits on the series page show up.
-      if (this.activeSubPage === "data") {
-        this.renderScaleRows();
-      }
-    };
-    SUB_PAGES.forEach((tab) => {
-      const btn = tabBar.createEl("button", { text: t(tab.label), cls: "fc-subtab" });
-      btn.addEventListener("click", () => {
-        this.activeSubPage = tab.id;
-        applyActive();
-      });
-    });
-    applyActive();
+    );
 
-    this.renderSeriesPage(pages.series);
-    this.renderDataPage(pages.data);
-    this.renderDisplayPage(pages.display);
+    this.renderDataPage(subTabs.page("data"));
+    this.renderAppearancePage(subTabs.page("appearance"));
 
     const footer = contentEl.createDiv("fc-modal-footer");
     const cancelBtn = footer.createEl("button", { text: t("取消") });
@@ -173,67 +122,25 @@ export class OverlayEditModal extends Modal {
     this.contentEl.empty();
   }
 
-  // ==================== 系列编辑 ====================
+  // ==================== 数据 ====================
 
-  private renderSeriesPage(pageEl: HTMLElement) {
+  private renderDataPage(pageEl: HTMLElement) {
     pageEl.createDiv({
       cls: "fc-field-hint fc-hint-mb",
-      text: t("至少一个系列（最多 {max} 个）；行情类系列按区间首个数据点归一化为涨跌幅（%）。", { max: MAX_OVERLAY_SERIES }),
+      text: t("至少两个系列（最多 {max} 个）；行情类系列按区间首个数据点归一化为涨跌幅（%）。", { max: MAX_OVERLAY_SERIES }),
     });
     this.rowsEl = pageEl.createDiv({ cls: "fc-calc-series-rows" });
     for (const ref of this.initialSeries) {
       this.addRow(ref);
     }
-    // Fresh cards start with one empty row bound to the first custom source.
+    // Fresh cards start with two empty rows bound to the first custom source.
     if (this.initialSeries.length === 0) {
+      this.addRow();
       this.addRow();
     }
     this.addRowEl = pageEl.createEl("button", { cls: "fc-add-row", text: t("+ 添加系列"), attr: { type: "button" } });
     this.addRowEl.addEventListener("click", () => this.addRow());
     this.updateAddRow();
-  }
-
-  private addRow(initial?: SeriesRef) {
-    if (this.editors.length >= MAX_OVERLAY_SERIES) return;
-    const editor = new SeriesRefEditor(
-      this.rowsEl!,
-      initial ?? { source: "quote", assetType: "custom", sourceId: this.customSources[0]?.id ?? "" },
-      () => {
-        if (this.editors.length <= 1) {
-          new Notice(t("至少保留一个数据系列。"));
-          return;
-        }
-        this.editors = this.editors.filter((e) => e !== editor);
-        editor.el.remove();
-        this.updateAddRow();
-      },
-      true,
-      this.openSymbolPicker,
-      this.listReferenceableCards,
-      this.customSources
-    );
-    this.editors.push(editor);
-    this.updateAddRow();
-  }
-
-  private updateAddRow() {
-    if (!this.addRowEl) return;
-    const full = this.editors.length >= MAX_OVERLAY_SERIES;
-    this.addRowEl.textContent = full ? t("系列数量已达上限") : t("+ 添加系列");
-    this.addRowEl.disabled = full;
-  }
-
-  // ==================== 数据设置 ====================
-
-  private renderDataPage(pageEl: HTMLElement) {
-    new Setting(pageEl).setName(t("数据范围")).addDropdown((dropdown) => {
-      for (const option of RANGE_OPTIONS) {
-        dropdown.addOption(option.value, t(option.label));
-      }
-      dropdown.setValue(this.range).onChange((value) => {
-        this.range = value;
-      });
-    });
 
     new Setting(pageEl).setName(t("周期")).addDropdown((dropdown) => {
       for (const option of PERIOD_OPTIONS) {
@@ -241,6 +148,15 @@ export class OverlayEditModal extends Modal {
       }
       dropdown.setValue(this.period).onChange((value) => {
         this.period = value as SeriesPeriod;
+      });
+    });
+
+    new Setting(pageEl).setName(t("数据范围")).addDropdown((dropdown) => {
+      for (const option of RANGE_OPTIONS) {
+        dropdown.addOption(option.value, t(option.label));
+      }
+      dropdown.setValue(this.range).onChange((value) => {
+        this.range = value;
       });
     });
 
@@ -265,6 +181,38 @@ export class OverlayEditModal extends Modal {
     // the data tab is activated, so series-row edits are reflected.
     this.scaleRowsEl = pageEl.createDiv();
     this.renderScaleRows();
+  }
+
+  private addRow(initial?: SeriesRef) {
+    if (this.editors.length >= MAX_OVERLAY_SERIES) return;
+    const editor = new SeriesRefEditor(
+      this.rowsEl!,
+      initial ?? { source: "quote", assetType: "custom", sourceId: this.customSources[0]?.id ?? "" },
+      () => {
+        if (this.editors.length <= MIN_SERIES) {
+          new Notice(t("对比卡至少需要两个数据序列"));
+          return;
+        }
+        const index = this.editors.indexOf(editor);
+        if (index >= 0) this.scaleInputs.splice(index, 1);
+        this.editors = this.editors.filter((e) => e !== editor);
+        editor.el.remove();
+        this.updateAddRow();
+      },
+      true,
+      this.openSymbolPicker,
+      this.listReferenceableCards,
+      this.customSources
+    );
+    this.editors.push(editor);
+    this.updateAddRow();
+  }
+
+  private updateAddRow() {
+    if (!this.addRowEl) return;
+    const full = this.editors.length >= MAX_OVERLAY_SERIES;
+    this.addRowEl.textContent = full ? t("系列数量已达上限") : t("+ 添加系列");
+    this.addRowEl.disabled = full;
   }
 
   // One coefficient input per series row, labeled with the row's current
@@ -301,9 +249,9 @@ export class OverlayEditModal extends Modal {
     });
   }
 
-  // ==================== 显示设置 ====================
+  // ==================== 外观 ====================
 
-  private renderDisplayPage(pageEl: HTMLElement) {
+  private renderAppearancePage(pageEl: HTMLElement) {
     new Setting(pageEl)
       .setName(t("图表类型"))
       .setDesc(t("叠加对比固定为折线图。"))
@@ -326,64 +274,13 @@ export class OverlayEditModal extends Modal {
         });
       });
 
-    // Canvas 设置 collapsible (mirrors the unified edit modal).
-    const canvasDetails = pageEl.createEl("details", { cls: "fc-settings-sub" });
-    canvasDetails.createEl("summary", { text: t("Canvas 设置") });
-
-    new Setting(canvasDetails).setName(t("主题")).addDropdown((dropdown) => {
+    new Setting(pageEl).setName(t("主题")).addDropdown((dropdown) => {
       for (const option of THEME_OPTIONS) {
         dropdown.addOption(option.value, t(option.label));
       }
       dropdown.setValue(this.theme).onChange((value) => {
         this.theme = value as ChartTheme;
       });
-    });
-
-    new Setting(canvasDetails)
-      .setName(t("宽度自适应"))
-      .setDesc(t("卡片宽度跟随 Canvas 节点宽度缩放。"))
-      .addToggle((toggle) =>
-        toggle.setValue(this.widthAuto).onChange((value) => {
-          this.widthAuto = value;
-        })
-      );
-
-    new Setting(canvasDetails)
-      .setName(t("高度"))
-      .setDesc(t("可选，单位 px（200–1600，默认 400）；开启「高度自适应」后此字段失效。"))
-      .addText((text) => {
-        text
-          .setPlaceholder(t("如 400"))
-          .setValue(this.height)
-          .setDisabled(this.heightAuto)
-          .onChange((value) => {
-            this.height = value.trim();
-          });
-        text.inputEl.addClass("fc-mono");
-        this.heightText = text;
-      });
-
-    new Setting(canvasDetails)
-      .setName(t("高度自适应"))
-      .setDesc(t("开启后跟随节点高度，「高度」字段失效。"))
-      .addToggle((toggle) =>
-        toggle.setValue(this.heightAuto).onChange((value) => {
-          this.heightAuto = value;
-          this.heightText?.setDisabled(value);
-        })
-      );
-
-    const bleedSetting = new Setting(canvasDetails)
-      .setName(t("出血尺寸"))
-      .setDesc(t("卡片内容与 Canvas 节点边缘的留白。"));
-    addStepper(bleedSetting.controlEl, {
-      get: () => this.bleed,
-      set: (value) => {
-        this.bleed = value;
-      },
-      min: 0,
-      max: MAX_CARD_BLEED,
-      unit: "px",
     });
 
     // 图表设置 collapsible: per-card overrides of the plugin-wide 显示设置.
@@ -395,6 +292,10 @@ export class OverlayEditModal extends Modal {
   // ==================== Save ====================
 
   private save() {
+    if (this.editors.length < MIN_SERIES) {
+      new Notice(t("对比卡至少需要两个数据序列"));
+      return;
+    }
     const series: SeriesRef[] = [];
     for (let i = 0; i < this.editors.length; i++) {
       const editor = this.editors[i];
@@ -418,20 +319,6 @@ export class OverlayEditModal extends Modal {
       }
       series.push(ref);
     }
-    if (series.length === 0) {
-      new Notice(t("至少保留一个数据系列。"));
-      return;
-    }
-
-    let height: number | undefined;
-    if (this.height) {
-      const parsed = Number(this.height);
-      if (!Number.isInteger(parsed) || parsed < 200 || parsed > 1600) {
-        new Notice(t("高度应为 200–1600 的整数（单位 px）。"));
-        return;
-      }
-      height = parsed;
-    }
 
     this.close();
     this.onSubmit({
@@ -440,11 +327,7 @@ export class OverlayEditModal extends Modal {
       period: this.period,
       normalize: this.compareMode,
       ...(this.lineType !== "simple" ? { lineType: this.lineType } : {}),
-      ...(height !== undefined ? { height } : {}),
       ...(this.theme !== "auto" ? { theme: this.theme } : {}),
-      ...(this.widthAuto ? {} : { widthAuto: false }),
-      ...(this.heightAuto ? {} : { heightAuto: false }),
-      ...(this.bleed === DEFAULT_CARD_BLEED ? {} : { bleed: this.bleed }),
       // 图表设置 overrides: undefined fields are dropped by the serializer.
       ...this.displayOverrides,
     });

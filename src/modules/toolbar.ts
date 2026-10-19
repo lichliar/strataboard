@@ -1,8 +1,7 @@
 import { Menu, Notice, TFile, addIcon, setTooltip, type WorkspaceLeaf } from "obsidian";
-import { parseCardSpec } from "./card-spec";
-import { TB_ICONS } from "./toolbar-icons";
+import { TB_ICONS, TB_MENU_ICONS } from "./toolbar-icons";
 import { LOGO_SVG } from "./logo";
-import { SERIES_LINE_COLORS } from "./series-chart-renderer";
+import { SERIES_LINE_COLORS } from "./overlay-lines";
 import { appendSvg } from "../utils/dom";
 import {
   openPluginSettings,
@@ -13,50 +12,44 @@ import {
 } from "../utils/obsidian-internals";
 import { t } from "../i18n";
 import type StrataBoardPlugin from "../main";
-import type { ToolbarEntryId, ToolbarSourceId } from "../types";
 
 interface ToolbarMenuItem {
   text: string;
-  // Lucide icon name for menuItem.setIcon. Mutually exclusive with the two
-  // custom variants below.
+  // Lucide icon name for menuItem.setIcon. Mutually exclusive with dotColor.
   icon?: string;
-  // Custom SVG markup (a source's own icon), registered via addIcon.
-  iconSvg?: string;
-  // Palette color for a fallback dot icon when neither icon nor iconSvg.
+  // Palette color for the fallback dot icon (all sources/groups use this).
   dotColor?: string;
   onClick?: () => void;
   submenu?: ToolbarMenuItem[];
 }
 
 // Stable hash → palette color, so a given source/group always gets the same
-// fallback dot color.
-function paletteColor(key: string): string {
+// dot color. Shared with the settings page source rows (avatars there reuse
+// the same key scheme: def.id / `group:<名称>`).
+export function paletteColor(key: string): string {
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
   return SERIES_LINE_COLORS[Math.abs(h) % SERIES_LINE_COLORS.length];
 }
 
-// A reorderable top-level entry. `source` ties the entry to its 工具栏显示
-// toggle; entries without one (insert-data/data-tools/components) always render.
+// A top-level entry.
 interface ToolbarEntryDef {
-  id: ToolbarEntryId;
   label: string;
-  // Shorter label for text display mode, when the full label would stretch
-  // the toolbar (e.g. "TradingView Widget" → "TV Widget").
-  shortLabel?: string;
   icon: keyof typeof TB_ICONS;
-  source?: ToolbarSourceId;
   onClick?: () => void;
   menu?: ToolbarMenuItem[];
 }
 
 export class CanvasToolbar {
   private plugin: StrataBoardPlugin;
+  private onOpenAi: () => void;
   private toolbarEl: HTMLElement | null = null;
+  private logoEl: HTMLButtonElement | null = null;
   private activeLeaf: WorkspaceLeaf | null = null;
 
-  constructor(plugin: StrataBoardPlugin) {
+  constructor(plugin: StrataBoardPlugin, onOpenAi: () => void) {
     this.plugin = plugin;
+    this.onOpenAi = onOpenAi;
   }
 
   attach(leaf: WorkspaceLeaf) {
@@ -71,87 +64,64 @@ export class CanvasToolbar {
     // The toolbar always renders on the hermes dark palette.
     this.toolbarEl = container.createDiv({ cls: "strataboard-toolbar fc-hermes" });
 
-    // Logo: brand mark from logo.ts (icon mode) or a horizontal "StrataBoard"
-    // word mark (text mode); click to collapse/expand the toolbar (state
-    // persists in settings).
-    const logo = this.toolbarEl.createDiv("fc-tb-logo");
-    if (this.plugin.pluginSettings.toolbarStyle === "text") {
-      logo.addClass("fc-tb-logo-text");
-      logo.setText("StrataBoard");
-    } else {
-      appendSvg(logo, LOGO_SVG);
-    }
-    setTooltip(logo, t("StrataBoard — 点击展开/折叠工具栏"));
-    logo.addEventListener("click", () => this.toggleCollapsed());
+    // Menu-item icons resolve through Obsidian's global registry; register the
+    // non-Lucide glyphs (overwrite-safe on re-register).
+    for (const [name, svg] of Object.entries(TB_MENU_ICONS)) addIcon(name, svg);
 
-    // Drag handle: drag moves the bar in 2D, offset persists.
+    // Logo: brand mark from logo.ts; a real <button> so collapse/expand is
+    // keyboard-reachable (state persists in settings).
+    this.logoEl = this.toolbarEl.createEl("button", { cls: "fc-tb-logo" });
+    appendSvg(this.logoEl, LOGO_SVG);
+    this.updateLogoTooltip();
+    this.logoEl.addEventListener("click", () => this.toggleCollapsed());
+
+    // Drag handle: drag moves the bar in 2D, offset persists. Not keyboard
+    // operable, so tooltip only.
     const drag = this.toolbarEl.createDiv("fc-tb-drag");
     setTooltip(drag, t("拖拽移动工具栏"));
     drag.addEventListener("pointerdown", (event) => this.startDrag(event));
 
-    // Width handle: vertical strip on the canvas-facing edge; dragging it
-    // resizes the bar (persists as toolbarWidth).
-    const resize = this.toolbarEl.createDiv("fc-tb-resize");
-    setTooltip(resize, t("拖拽调整工具栏宽度"));
-    resize.addEventListener("pointerdown", (event) => this.startResize(event));
-
-    // Source-classified entries, rendered in the user-defined order. Entries
-    // tied to a source are gated by its 工具栏显示 toggle; 「插入图表」offers
-    // every source in its submenu and 「数据处理」/「组件」are cross-source
-    // tools, so they always render. Configuration guidance lives in the
-    // plugin methods themselves (openUnifiedSearch / …), so hidden-source
-    // gating is the only filtering here.
-    const sources = this.plugin.pluginSettings.toolbarSources;
+    // Primary creation entries in a fixed order, then the low-frequency
+    // 「更多」 menu; refresh + settings pin to the tail.
     for (const def of this.entryDefs()) {
-      if (def.source && !(sources[def.source] ?? true)) continue;
-      if (def.menu) this.createMenuButton(def.icon, def.label, def.menu, def.shortLabel);
-      else if (def.onClick) this.createButton(def.icon, def.label, def.onClick, def.shortLabel);
+      if (def.menu) this.createMenuButton(def.icon, def.label, def.menu);
+      else if (def.onClick) this.createButton(def.icon, def.label, def.onClick);
     }
 
-    this.createButton("refresh", "全部刷新", () => void this.refreshAll());
-    this.createButton("settings", "设置", () => this.openSettings());
+    this.createButton("refresh", "刷新全部卡片", () => void this.refreshAll());
+    this.createButton("settings", "打开设置", () => this.openSettings());
 
     this.applyCollapsed();
     this.applyPosition();
+    this.maybeShowFirstHint();
   }
 
-  // Entry metadata in one place; render order comes from settings.toolbarOrder.
+  // Entry metadata in one place; render order is fixed. 「插入图表」 offers
+  // every source in its submenu and 「更多」 groups the low-frequency tools,
+  // so they always render. Configuration guidance lives in the plugin methods
+  // themselves (openUnifiedSearch / …).
   private entryDefs(): ToolbarEntryDef[] {
-    const defs: Record<ToolbarEntryId, ToolbarEntryDef> = {
-      "insert-data": {
-        id: "insert-data",
+    return [
+      {
         label: "插入图表",
         icon: "insert-data",
         menu: this.buildInsertDataMenu(),
       },
-      "data-tools": {
-        id: "data-tools",
-        label: "数据处理",
-        icon: "data-tools",
+      { label: "创建对比卡", icon: "layers", onClick: () => this.insertOverlay() },
+      { label: "创建计算卡", icon: "calculator", onClick: () => this.insertSpread() },
+      // AI workbench: always visible (W08 plan §3.2); the panel itself shows
+      // the unconfigured state when BYOK is not set up.
+      { label: "AI 创建", icon: "ai", onClick: () => this.onOpenAi() },
+      {
+        label: "打开更多工具",
+        icon: "more",
         menu: [
-          { text: "数据叠加", icon: "layers", onClick: () => this.insertOverlay() },
-          { text: "数据计算", icon: "calculator", onClick: () => this.insertSpread() },
+          { text: "TradingView 小组件", icon: "tradingview", onClick: () => this.insertWidget() },
           { text: "本地脚本", icon: "file-code-corner", onClick: () => this.plugin.openScriptManager() },
-        ],
-      },
-      tradingview: {
-        id: "tradingview",
-        label: "TradingView Widget",
-        shortLabel: "TV Widget",
-        icon: "tradingview",
-        source: "tradingview",
-        onClick: () => this.insertWidget(),
-      },
-      components: {
-        id: "components",
-        label: "组件",
-        icon: "components",
-        menu: [
           { text: "日历", icon: "calendar-days", onClick: () => this.insertCalendar() },
         ],
       },
-    };
-    return this.plugin.pluginSettings.toolbarOrder.map((id) => defs[id]);
+    ];
   }
 
   // 「插入图表」 submenu: 「全部」 merged search first, then one item per
@@ -169,14 +139,12 @@ export class CanvasToolbar {
         const group = def.group;
         items.push({
           text: group,
-          iconSvg: this.plugin.pluginSettings.sourceGroupIcons[group],
           dotColor: paletteColor(`group:${group}`),
           onClick: () => this.plugin.openUnifiedSearch(`group:${group}`),
         });
       } else {
         items.push({
           text: def.name,
-          iconSvg: def.icon,
           dotColor: paletteColor(def.id),
           onClick: () => this.plugin.openUnifiedSearch(`custom:${def.id}`),
         });
@@ -190,6 +158,7 @@ export class CanvasToolbar {
       this.toolbarEl.remove();
       this.toolbarEl = null;
     }
+    this.logoEl = null;
     this.activeLeaf = null;
   }
 
@@ -197,8 +166,8 @@ export class CanvasToolbar {
     this.applyPosition();
   }
 
-  // Rebuilds the bar in place (visibility toggles / icon-text style changes
-  // in settings take effect immediately, without waiting for a leaf change).
+  // Rebuilds the bar in place (settings changes take effect immediately,
+  // without waiting for a leaf change).
   reload() {
     const leaf = this.activeLeaf;
     this.detach();
@@ -209,11 +178,44 @@ export class CanvasToolbar {
     this.plugin.pluginSettings.toolbarCollapsed = !this.plugin.pluginSettings.toolbarCollapsed;
     void this.plugin.saveSettings();
     this.applyCollapsed();
+    this.updateLogoTooltip();
     this.applyPosition();
   }
 
   private applyCollapsed() {
     this.toolbarEl?.classList.toggle("is-collapsed", this.plugin.pluginSettings.toolbarCollapsed);
+  }
+
+  // Logo tooltip/aria follow the collapse state: a collapsed bar offers
+  // 「展开工具栏」, an expanded one 「折叠工具栏」.
+  private updateLogoTooltip() {
+    if (!this.logoEl) return;
+    const label = t(this.plugin.pluginSettings.toolbarCollapsed ? "展开工具栏" : "折叠工具栏");
+    setTooltip(this.logoEl, label);
+    this.logoEl.setAttribute("aria-label", label);
+  }
+
+  // One-shot hint bubble next to the bar (settings.toolbarHintShown gates
+  // it): points out that every icon carries a hover tooltip.
+  private maybeShowFirstHint() {
+    if (!this.toolbarEl || this.plugin.pluginSettings.toolbarHintShown) return;
+    this.plugin.pluginSettings.toolbarHintShown = true;
+    // saveSettings() rebuilds the toolbar via applySettings → reload, so the
+    // bubble is appended only after the rebuild settles.
+    void this.plugin.saveSettings().then(() => this.showFirstHint());
+  }
+
+  private showFirstHint() {
+    if (!this.toolbarEl) return;
+    const hint = this.toolbarEl.createDiv("fc-tb-first-hint");
+    // The bar may hug the right edge; flip the bubble to its inner side.
+    if (this.plugin.pluginSettings.toolbarPosition.endsWith("right")) {
+      hint.addClass("fc-tb-hint-left");
+    }
+    hint.createSpan({ text: t("工具栏图标可悬停查看说明") });
+    const close = hint.createEl("button", { text: "×", attr: { "aria-label": t("关闭") } });
+    close.addEventListener("click", () => hint.remove());
+    window.setTimeout(() => hint.remove(), 6000);
   }
 
   // Drag on the handle moves the bar in 2D. Each offset measures the distance
@@ -243,56 +245,24 @@ export class CanvasToolbar {
     window.addEventListener("pointerup", onUp, { once: true });
   }
 
-  // Horizontal drag on the edge strip: resizes the bar. The strip sits on the
-  // canvas-facing edge, so dragging flips the delta sign on right-anchored
-  // bars (same convention as startDrag).
-  private startResize(event: PointerEvent) {
-    if (!this.toolbarEl) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const settings = this.plugin.pluginSettings;
-    const startX = event.clientX;
-    const startWidth = this.toolbarEl.offsetWidth;
-    const sign = settings.toolbarPosition.endsWith("left") ? 1 : -1;
-    const onMove = (moveEvent: PointerEvent) => {
-      settings.toolbarWidth = Math.min(
-        320,
-        Math.max(36, Math.round(startWidth + (moveEvent.clientX - startX) * sign))
-      );
-      this.applyPosition();
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      void this.plugin.saveSettings();
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp, { once: true });
-  }
-
-  // Buttons render as a bare icon (tooltip carries the name) or a text label,
-  // per the 显示效果 setting. Icons are inline Tabler SVGs from TB_ICONS.
-  // label arrives as a Chinese i18n key and is translated here.
-  private createButton(icon: keyof typeof TB_ICONS, label: string, onClick: () => void, shortLabel?: string) {
+  // Buttons render as a bare icon; the tooltip carries the action label and
+  // doubles as the aria-label (both are verb phrases). Icons are inline
+  // Lucide SVGs from TB_ICONS. label arrives as a Chinese i18n key and is
+  // translated here.
+  private createButton(icon: keyof typeof TB_ICONS, label: string, onClick: () => void) {
     const btn = this.toolbarEl!.createEl("button");
-    if (this.plugin.pluginSettings.toolbarStyle === "text") {
-      btn.setText(t(shortLabel ?? label));
-      btn.addClass("fc-tb-text-btn");
-    } else {
-      appendSvg(btn, TB_ICONS[icon]);
-      setTooltip(btn, t(label));
-    }
+    appendSvg(btn, TB_ICONS[icon]);
+    setTooltip(btn, t(label));
+    btn.setAttribute("aria-label", t(label));
     btn.addEventListener("click", onClick);
   }
 
-  private createMenuButton(icon: keyof typeof TB_ICONS, label: string, items: ToolbarMenuItem[], shortLabel?: string) {
+  private createMenuButton(icon: keyof typeof TB_ICONS, label: string, items: ToolbarMenuItem[]) {
     const btn = this.toolbarEl!.createEl("button");
-    if (this.plugin.pluginSettings.toolbarStyle === "text") {
-      btn.setText(t(shortLabel ?? label));
-      btn.addClass("fc-tb-text-btn");
-    } else {
-      appendSvg(btn, TB_ICONS[icon]);
-      setTooltip(btn, t(label));
-    }
+    appendSvg(btn, TB_ICONS[icon]);
+    setTooltip(btn, t(label));
+    btn.setAttribute("aria-label", t(label));
+    btn.setAttribute("aria-haspopup", "true");
     btn.addEventListener("click", (event) => {
       // Force DOM menus: on macOS Obsidian defaults to native menus, which
       // create no .menu element and can't host hover submenus.
@@ -306,15 +276,10 @@ export class CanvasToolbar {
     });
   }
 
-  // Resolves a menu item's icon to a name usable with setIcon: custom SVG
-  // and palette dots are registered into Obsidian's icon registry via
-  // addIcon (global, overwrite-safe on re-register).
-  private resolveMenuIcon(item: ToolbarMenuItem, index: number): string | undefined {
-    if (item.iconSvg) {
-      const name = `fc-src-icon-${index}-${item.iconSvg.length}`;
-      addIcon(name, item.iconSvg);
-      return name;
-    }
+  // Resolves a menu item's icon to a name usable with setIcon: palette dots
+  // are registered into Obsidian's icon registry via addIcon (global,
+  // overwrite-safe on re-register).
+  private resolveMenuIcon(item: ToolbarMenuItem): string | undefined {
     if (item.dotColor) {
       const name = `fc-dot-${item.dotColor.slice(1)}`;
       addIcon(
@@ -327,10 +292,10 @@ export class CanvasToolbar {
   }
 
   private addMenuItems(menu: Menu, items: ToolbarMenuItem[]) {
-    items.forEach((item, index) => {
+    items.forEach((item) => {
       menu.addItem((menuItem) => {
         menuItem.setTitle(t(item.text));
-        const iconName = this.resolveMenuIcon(item, index);
+        const iconName = this.resolveMenuIcon(item);
         if (iconName) menuItem.setIcon(iconName);
         if (item.submenu) {
           // setSubmenu() is internal (absent from obsidian.d.ts) but is how
@@ -370,12 +335,6 @@ export class CanvasToolbar {
     } else {
       this.toolbarEl.setCssProps({ bottom: `${offsetY}px` });
     }
-
-    // Width + icon size are user-tunable; CSS consumes these vars.
-    this.toolbarEl.style.setProperty("--fc-tb-w", `${settings.toolbarWidth}px`);
-    this.toolbarEl.style.setProperty("--fc-tb-icon", `${settings.toolbarIconSize}px`);
-    // Resize strip hugs the canvas-facing edge (left edge when right-anchored).
-    this.toolbarEl.classList.toggle("fc-tb-anchor-right", !isLeft);
   }
 
   private insertWidget() {
@@ -399,57 +358,21 @@ export class CanvasToolbar {
     openPluginSettings(this.plugin.app, this.plugin.manifest.id);
   }
 
-  private async refreshAll() {
-    const view = this.activeLeaf?.view as CanvasViewLike | undefined;
-    if (!view?.canvas) return;
-
-    const libraryPath = this.plugin.pluginSettings.cardLibraryPath;
-    const nodes = Array.from(view.canvas.nodes.values());
-    const cardNodes = nodes.filter(
-      (node): node is CanvasNodeLike & { filePath: string } =>
-        typeof node.filePath === "string" && node.filePath.startsWith(libraryPath + "/")
-    );
-
-    if (cardNodes.length === 0) {
-      new Notice(t("当前画布上没有金融卡片。"));
+  // 刷新全部卡片: every live chart card re-loads and re-renders itself through
+  // its refreshCard() entry (quote/overlay/spread all register in
+  // plugin.chartRenderers), so all three card types are covered — no
+  // quote-only cache pre-warming shortcut. Failures surface on the cards
+  // themselves (shared error block with retry), the Notice is a pure summary.
+  private refreshAll() {
+    const renderers = [...this.plugin.chartRenderers];
+    if (renderers.length === 0) {
+      new Notice(t("当前画布上没有 StrataBoard 卡片。"));
       return;
     }
-
-    let refreshed = 0;
-    let failed = 0;
-    const concurrency = 5;
-    let index = 0;
-
-    const worker = async () => {
-      while (index < cardNodes.length) {
-        const node = cardNodes[index++];
-        try {
-          const file = this.plugin.app.vault.getAbstractFileByPath(node.filePath);
-          if (!(file instanceof TFile)) continue;
-          const content = await this.plugin.app.vault.cachedRead(file);
-          const match = content.match(/```quote\n([\s\S]*?)\n```/);
-          if (!match) continue;
-          const result = parseCardSpec(match[1]);
-          if (!result.ok) continue;
-          await this.plugin.dataAdapter.loadOhlcv(result.spec);
-          refreshed++;
-        } catch {
-          failed++;
-        }
-      }
-    };
-
-    const workers: Promise<void>[] = [];
-    for (let i = 0; i < Math.min(concurrency, cardNodes.length); i++) {
-      workers.push(worker());
+    for (const renderer of renderers) {
+      renderer.refreshCard();
     }
-    await Promise.all(workers);
-
-    new Notice(
-      failed > 0
-        ? t("已刷新 {n} 张卡片，{m} 张失败。", { n: refreshed, m: failed })
-        : t("已刷新 {n} 张卡片。", { n: refreshed })
-    );
+    new Notice(t("已刷新 {n} 张卡片。", { n: String(renderers.length) }));
   }
 
   placeFileNode(file: TFile | string) {

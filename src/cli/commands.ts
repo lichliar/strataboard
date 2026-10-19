@@ -11,24 +11,25 @@ import {
   parseOverlaySpec,
   parseSpreadSpec,
 } from "../modules/series-spec";
-import { setRequestInterval } from "../modules/http";
-import { CustomQuoteClient, fetchKlineSample, type SearchFetchStats } from "../modules/custom-quote-client";
-import { CsvQuoteClient, parseSignalTable } from "../modules/csv-quote-client";
+import { setRequestInterval, setAllowedLoopbackHttpOrigins } from "../modules/http";
+import { CustomQuoteClient, type SearchFetchStats } from "../modules/custom-quote-client";
+import { CsvQuoteClient } from "../modules/csv-quote-client";
 import type { KlineParseStats } from "../modules/quote-format-parsers";
-import { hasCodeSpecificParams, auditSearchCoverage, compileDeadCodes, type SearchCoverageAudit } from "../utils/symbol-list";
+import { hasCodeSpecificParams, compileDeadCodes } from "../utils/symbol-list";
 import { formatDate } from "../utils/date";
+import { renderCardBlockPng } from "../modules/render-headless";
+import { createRenderRuntime } from "./fs-host";
 import {
   ASSET_TYPES,
-  KNOWN_JSON_MAP_KEYS,
-  KNOWN_SOURCE_DEF_KEYS,
-  resolveApiKeySource,
-  resolveGroupApiKey,
-  searchProbeQuery,
   sourceNeedsApiKey,
-  sourceSupportsRemoteSearch,
   type AssetType,
   type CustomSourceDef,
+  type IndicatorGroup,
+  type IndicatorInstance,
+  type ResolvedCustomSourceDef,
 } from "../types";
+import { envVarNameForSource } from "../modules/credentials";
+import { cliApiKeyResolver } from "./runtime-credentials";
 
 const PLUGIN_ID = "strataboard";
 
@@ -37,10 +38,27 @@ export interface CliSettings {
   customSources?: CustomSourceDef[];
   symbolCachePath?: string;
   requestIntervalMs?: number;
+  // Loopback http origins confirmed in the plugin settings (url-policy.ts).
+  allowedLoopbackHttpOrigins?: string[];
   // 本地脚本 folder (vault-relative); output/*.csv auto-registers as sources.
   scriptFolderPath?: string;
-  // 指标管理 folder (vault-relative); *.js files load as custom indicators.
+  // 指标 folder (vault-relative); *.js files load as custom indicators.
   indicatorFolderPath?: string;
+  // 卡片库 folder (vault-relative): spread-card references (source: card)
+  // resolve against an index of this folder. Never hardcoded — the value is
+  // whatever the user configured in the plugin settings.
+  cardLibraryPath?: string;
+  dataCachePath?: string;
+  // 指标组 (设置 → 指标 → 指标组): named indicator bundles, listed
+  // read-only via CLI `groups` / MCP `list_indicator_groups`.
+  indicatorGroups?: IndicatorGroup[];
+  showSeriesLatestValue?: boolean;
+  showSeriesPointMarkers?: boolean;
+  showChartGrid?: boolean;
+  gridOpacity?: number;
+  // Global rise/fall colors (通用 tab); read by the headless renderers.
+  riseColor?: string;
+  fallColor?: string;
 }
 
 export interface VaultContext {
@@ -91,7 +109,8 @@ function loadSettings(vault: string): CliSettings {
 export function createVaultContext(vaultOverride?: string): VaultContext {
   const vault = resolveVaultDir(vaultOverride);
   const settings = loadSettings(vault);
-  setRequestInterval(settings.requestIntervalMs ?? 500);
+  setRequestInterval(settings.requestIntervalMs ?? 1000);
+  setAllowedLoopbackHttpOrigins(settings.allowedLoopbackHttpOrigins ?? []);
   return { vault, settings };
 }
 
@@ -206,7 +225,7 @@ export async function searchSymbols(
 
 export function listSources(ctx: VaultContext): {
   ok: true;
-  sources: { id: string; name: string; format: string; enabled: boolean; group?: string; purpose?: "signals"; symbolCount: number; isScriptOutput: boolean }[];
+  sources: { id: string; name: string; format: string; enabled: boolean; group?: string; symbolCount: number; isScriptOutput: boolean }[];
 } {
   const sources = (ctx.settings.customSources ?? []).map((def) => ({
     id: def.id,
@@ -214,12 +233,22 @@ export function listSources(ctx: VaultContext): {
     format: def.format,
     enabled: def.enabled,
     group: def.group,
-    purpose: def.purpose,
     symbolCount: def.symbols?.length ?? 0,
     // 本地脚本产物自动注册的源，id 形如 script:<文件名>。
     isScriptOutput: def.id.startsWith("script:"),
   }));
   return { ok: true, sources };
+}
+
+// ---------------------------------------------------------------------------
+// groups (指标组)
+// ---------------------------------------------------------------------------
+
+export function listIndicatorGroups(ctx: VaultContext): {
+  ok: true;
+  groups: IndicatorGroup[];
+} {
+  return { ok: true, groups: ctx.settings.indicatorGroups ?? [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +268,45 @@ export interface BlockCheck {
   line: number;
   ok: boolean;
   error?: string;
+}
+
+export interface CardBlock {
+  lang: string;
+  line: number;      // 1-based line number of the opening fence
+  startLine: number; // 0-based line index of the opening fence
+  endLine: number;   // 0-based line index of the closing fence (-1: unclosed)
+  body: string;
+}
+
+// Extracts every StrataBoard fenced block from a markdown document. Shared by
+// validateCards (checks) and the render commands (rendering + block
+// replacement).
+export function findCardBlocks(markdown: string): { lines: string[]; blocks: CardBlock[] } {
+  const lines = markdown.split(/\r?\n/);
+  const blocks: CardBlock[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const m = lines[i].match(/^```([\w-]+)\s*$/);
+    if (m && KNOWN_BLOCK_TYPES.has(m[1])) {
+      const lang = m[1];
+      const startLine = i;
+      const body: string[] = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+        body.push(lines[i]);
+        i++;
+      }
+      blocks.push({
+        lang,
+        line: startLine + 1,
+        startLine,
+        endLine: i < lines.length ? i : -1,
+        body: body.join("\n"),
+      });
+    }
+    i++;
+  }
+  return { lines, blocks };
 }
 
 // Validates one fenced block body with the same parser the plugin's renderer
@@ -282,32 +350,19 @@ export function validateCards(opts: { markdown: string; label?: string }): {
   label?: string;
   blocks: BlockCheck[];
 } {
-  const lines = opts.markdown.split(/\r?\n/);
-  const blocks: BlockCheck[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const m = lines[i].match(/^```(\w+)\s*$/);
-    if (m && KNOWN_BLOCK_TYPES.has(m[1])) {
-      const lang = m[1];
-      const startLine = i + 1; // 1-based, points at the opening fence
-      const body: string[] = [];
-      i++;
-      while (i < lines.length && !/^```\s*$/.test(lines[i])) {
-        body.push(lines[i]);
-        i++;
-      }
-      if (i >= lines.length) {
-        blocks.push({ lang, line: startLine, ok: false, error: "围栏代码块未闭合。" });
-      } else {
-        const error = validateBlock(lang, body.join("\n"));
-        blocks.push(error ? { lang, line: startLine, ok: false, error } : { lang, line: startLine, ok: true });
-      }
+  const { blocks } = findCardBlocks(opts.markdown);
+  const checks: BlockCheck[] = blocks.map((block) => {
+    if (block.endLine < 0) {
+      return { lang: block.lang, line: block.line, ok: false, error: "围栏代码块未闭合。" };
     }
-    i++;
-  }
+    const error = validateBlock(block.lang, block.body);
+    return error
+      ? { lang: block.lang, line: block.line, ok: false, error }
+      : { lang: block.lang, line: block.line, ok: true };
+  });
 
-  const ok = blocks.every((b) => b.ok);
-  return { ok, ...(opts.label ? { label: opts.label } : {}), blocks };
+  const ok = checks.every((b) => b.ok);
+  return { ok, ...(opts.label ? { label: opts.label } : {}), blocks: checks };
 }
 
 // ---------------------------------------------------------------------------
@@ -334,10 +389,9 @@ export interface ProbeOutput {
   firstDate?: string;
   lastDate?: string;
   lastClose?: number;
-  // Where the runtime apiKey comes from (only when the source's templates
-  // carry an {apiKey} placeholder): own entry / group member / missing.
-  apiKeySource?: "self" | "group" | "none";
-  apiKeyDonor?: string;
+  // Runtime credential provenance (only when the source's templates carry an
+  // {apiKey} placeholder): CLI/MCP resolve secrets from per-source env vars.
+  credential?: { source: "env"; envVar: string };
   // Set when the call succeeded but returned no data — likely reasons
   // (permissions/points, wrong code, too-narrow window, misspelled column).
   hint?: string;
@@ -384,12 +438,12 @@ function createDeclaredProfileLookup(ctx: VaultContext): {
 }
 
 // Fetches one window of kline rows for a source def, collecting parse-drop
-// stats (json format). Shared by probeData and validateConfig.
+// stats (json format) used by probeData.
 // declaredProfile: the classification declared for this code at search time
 // (outranks codeRules — see resolveSymbolParams).
 async function fetchWithStats(
   ctx: VaultContext,
-  def: CustomSourceDef,
+  def: ResolvedCustomSourceDef,
   code: string,
   start: string,
   end: string,
@@ -422,42 +476,15 @@ export async function probeData(
   const all = ctx.settings.customSources ?? [];
   const found = all.find((s) => s.id === sourceId);
   if (!found) fail(`自定义数据源不存在: ${sourceId}（用 list_sources / sources 命令查看可用 id）。`);
-  const def: CustomSourceDef = { ...found, apiKey: resolveGroupApiKey(found, all) };
-  const keyInfo = sourceNeedsApiKey(found) ? resolveApiKeySource(found, all) : undefined;
-  const keyFields = keyInfo
-    ? { apiKeySource: keyInfo.source, ...(keyInfo.donorName ? { apiKeyDonor: keyInfo.donorName } : {}) }
-    : {};
-  // Signals sources carry a fixed-column signal table: probe = parse the
-  // vault CSV and count this code's events.
-  if (def.purpose === "signals") {
-    await profileLookup.close();
-    if (!def.filePath) fail(`信号源「${def.name}」缺少 filePath（vault 内信号表 CSV）。`);
-    const file = path.isAbsolute(def.filePath) ? def.filePath : path.join(ctx.vault, def.filePath);
-    if (!fs.existsSync(file)) fail(`信号表文件不存在: ${def.filePath}`);
-    const { events, dropped, total } = parseSignalTable(fs.readFileSync(file, "utf8"));
-    const filtered = events.filter((ev) => ev.code === code);
-    if (filtered.length === 0) {
-      return {
-        ok: true,
-        type,
-        sourceId,
-        code,
-        rows: 0,
-        ...(dropped > 0 ? { dropped } : {}),
-        hint: `信号表共 ${total} 行，其中 ${code} 的信号 0 条——检查 code 列取值是否与本卡的代码一致`,
-      };
-    }
-    return {
-      ok: true,
-      type,
-      sourceId,
-      code,
-      rows: filtered.length,
-      ...(dropped > 0 ? { dropped } : {}),
-      firstDate: filtered[0].date,
-      lastDate: filtered[filtered.length - 1].date,
-    };
+  // Runtime credential: env var only, never data.json. A missing one is a
+  // structured failure naming the exact variable to export.
+  const envVar = envVarNameForSource(found.id);
+  const { key, missing } = cliApiKeyResolver()(found);
+  if (missing) {
+    fail(`缺少运行时凭据：数据源「${found.name}」需要 API Key。请为进程设置环境变量 ${envVar} 后重试（不要把密钥写进命令行参数）。`);
   }
+  const def: ResolvedCustomSourceDef = { ...found, apiKey: key };
+  const keyFields = sourceNeedsApiKey(found) ? { credential: { source: "env" as const, envVar } } : {};
   const { rows, stats } = await fetchWithStats(ctx, def, code, start, end, await profileLookup.get(sourceId, code));
   await profileLookup.close();
   if (rows.length === 0) {
@@ -486,17 +513,6 @@ export async function probeData(
     lastClose: rows[rows.length - 1].close,
   };
 }
-
-// ---------------------------------------------------------------------------
-// validate-config
-// ---------------------------------------------------------------------------
-
-// Known CustomSourceDef / JsonSourceMap keys live in types.ts
-// (KNOWN_SOURCE_DEF_KEYS / KNOWN_JSON_MAP_KEYS), shared with the settings
-// import path so the two never drift — anything else in an imported entry is
-// almost certainly a misplaced field (the classic mistake: searchBodyTemplate
-// nested inside jsonMap, where it is silently ignored).
-const KNOWN_FORMATS = new Set(["tencent", "eastmoney", "json", "csv"]);
 
 // Why a probe parsed 0 rows. Names the exact column when the mapping is
 // provably wrong — a fields set-diff hit, or every row's date/close cell
@@ -547,662 +563,157 @@ function templateUsesSymbolParams(def: CustomSourceDef): boolean {
   return templates.some((tpl) => typeof tpl === "string" && tpl.includes("{p."));
 }
 
-// Whether a wider probe window could change the outcome: no when the
-// mapping is provably broken (a typo heals in no window), yes otherwise
-// (a delisted/suspended symbol simply has no recent bars).
-function mappingProvablyBroken(stats: KlineParseStats): boolean {
-  if ((stats.unmappedCols?.length ?? 0) > 0) return true;
-  if (stats.dropped > 0) return true;
-  if (stats.total !== undefined && stats.total > 0 && (stats.emptyDate === stats.total || stats.badClose === stats.total || stats.missingClose === stats.total)) {
-    return true;
-  }
-  return false;
+// ---------------------------------------------------------------------------
+// render-card / render-doc (headless PNG rendering)
+// ---------------------------------------------------------------------------
+
+// Only chart cards render to a static image; financial-widget embeds
+// third-party HTML and calendar is a DOM UI — both stay as-is in the output.
+const RENDERABLE_BLOCK_TYPES = new Set(["quote", "overlay", "spread"]);
+
+const UNSUPPORTED_RENDER_MESSAGE = (lang: string) =>
+  `「${lang}」类型的卡片不支持渲染为图片（仅支持 quote/overlay/spread）。`;
+
+export interface RenderCardPngResult {
+  ok: true;
+  title: string;
+  width: number;
+  height: number;
+  pngBase64: string;
 }
 
-// Probe caveats that must surface even on a GREEN probe: rows skipped for an
-// empty close (a missing value is not a 0), and a paginated fetch that
-// stopped short of the declared total / page cap (silent truncation).
-function pushProbeStatWarnings(result: ValidateConfigSourceResult, code: string, stats: KlineParseStats): void {
-  if ((stats.missingClose ?? 0) > 0) {
-    result.warnings.push(`代码 ${code}：${stats.missingClose} 行 close 为空（null/空串）被跳过——缺失值不会当作 0；若不该缺失，检查 close 列映射或接口数据`);
-  }
-  if (stats.truncated) {
-    const total = stats.truncated.total;
-    result.warnings.push(`代码 ${code}：取数疑似被截断，只取回 ${stats.truncated.fetched}${total ? ` / ${total}` : ""} 行——检查 paginate.pageSize 是否与服务端单页上限一致，或调大 maxPages`);
-  }
-}
-
-// Signals-source probe: parse the vault signal table (date/code/side[/text])
-// and count usable events. `code` carries the filePath — there is no symbol
-// to probe, the table itself is the subject.
-function probeSignalTable(ctx: VaultContext, def: CustomSourceDef): ValidateConfigProbe {
-  const label = def.filePath ?? "";
-  if (!def.filePath) {
-    return { code: label, ok: false, rows: 0, reason: "信号源缺少 filePath（vault 内信号表 CSV）" };
-  }
-  const file = path.isAbsolute(def.filePath) ? def.filePath : path.join(ctx.vault, def.filePath);
-  if (!fs.existsSync(file)) {
-    return { code: label, ok: false, rows: 0, reason: `信号表文件不存在: ${def.filePath}` };
-  }
-  try {
-    const { events, dropped, total } = parseSignalTable(fs.readFileSync(file, "utf8"));
-    if (events.length === 0) {
-      return {
-        code: label,
-        ok: false,
-        rows: 0,
-        ...(dropped > 0 ? { dropped } : {}),
-        reason: total > 0
-          ? `信号表 ${total} 行全部无法解析——检查列名（date/time/datetime/日期、code/symbol/代码、side/direction/方向）与 side 取值（buy/sell/买/卖）`
-          : "信号表为空（脚本还没有产出信号）",
-      };
-    }
-    return { code: label, ok: true, rows: events.length, ...(dropped > 0 ? { dropped } : {}) };
-  } catch (e) {
-    return { code: label, ok: false, rows: 0, reason: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-export interface ValidateConfigProbe {
-  code: string;
-  ok: boolean;
-  rows: number;
-  dropped?: number;
-  reason?: string;  sample?: string; // first 300 chars of the raw response, on failure only
-  note?: string;   // ok with a caveat (e.g. no recent bars, but older data exists — likely delisted)
-  via?: "search";  // this code came from the search probe (not the declared symbols) — exercises the {p.*}-vs-search path
-  profile?: string; // wiring-audit sampling: the effective profile this code was classified into
-}
-
-export interface ValidateConfigSourceResult {
-  source: string;
-  structuralErrors: string[];
-  warnings: string[];
-  // Where the runtime apiKey comes from when the source's templates carry an
-  // {apiKey} placeholder: own entry / group member / vault source with the
-  // same name or group / injected via --api-key / missing.
-  apiKeySource?: "self" | "group" | "vault" | "injected" | "none";
-  apiKeyDonor?: string;
-  search?: { ok: boolean; results?: number; reason?: string; query?: string; defaulted?: boolean; skippedRows?: number; truncated?: { fetched: number; total?: number; allowed?: boolean }; audit?: SearchCoverageAudit };
-  probes: ValidateConfigProbe[];
-}
-
-// Structural sanity checks for one imported entry; errors block probing,
-// warnings do not. Returns the entry normalized to a CustomSourceDef when
-// it is sound enough to probe.
-function checkConfigEntry(entry: any, index: number): { def?: CustomSourceDef; errors: string[]; warnings: string[] } {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-  const label = entry?.name ? `「${entry.name}」` : `#${index + 1}`;
-  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-    return { errors: [`${label}: 条目不是对象`] , warnings };
-  }
-  for (const key of Object.keys(entry)) {
-    if (!KNOWN_SOURCE_DEF_KEYS.has(key)) warnings.push(`${label}: 未知字段 "${key}"（会被忽略，检查是否放错了层级）`);
-  }
-  if (typeof entry.name !== "string" || !entry.name.trim()) errors.push(`${label}: 缺少 name`);
-  if (!KNOWN_FORMATS.has(entry.format)) errors.push(`${label}: format 必须是 tencent/eastmoney/json/csv 之一`);
-  if (entry.purpose !== undefined && entry.purpose !== "signals") errors.push(`${label}: purpose 只支持 "signals"（脚本产物信号表）`);
-  if (entry.format === "csv") {
-    const hasFile = typeof entry.filePath === "string" && !!entry.filePath;
-    const hasUrl = typeof entry.klineUrl === "string" && !!entry.klineUrl;
-    if (entry.purpose === "signals") {
-      // Signal tables are vault-local script outputs only.
-      if (!hasFile) errors.push(`${label}: 信号源需要 filePath（vault 内信号表 CSV，date/code/side 列）`);
-    } else if (!hasFile && !hasUrl) errors.push(`${label}: csv 格式需要 filePath（vault 内文件）或 klineUrl（远程 CSV）之一`);
-  } else if (typeof entry.klineUrl !== "string" || !entry.klineUrl) {
-    errors.push(`${label}: 缺少 klineUrl`);
-  }
-  if (entry.transport !== undefined && entry.transport !== "node") errors.push(`${label}: transport 只支持 "node"`);
-  if (entry.method !== undefined && entry.method !== "GET" && entry.method !== "POST") errors.push(`${label}: method 只支持 GET/POST`);
-  if (entry.bodyEncoding !== undefined && entry.bodyEncoding !== "json" && entry.bodyEncoding !== "form") {
-    errors.push(`${label}: bodyEncoding 只支持 "json"/"form"`);
-  }
-  if (entry.bodyEncoding === "form" && entry.method !== "POST") {
-    warnings.push(`${label}: bodyEncoding 为 form 但 method 不是 POST——不会生效`);
-  }
-  if (entry.paginate !== undefined) {
-    if (entry.paginate === null || typeof entry.paginate !== "object" || Array.isArray(entry.paginate)
-      || !Number.isInteger(Number(entry.paginate.pageSize)) || Number(entry.paginate.pageSize) <= 0) {
-      errors.push(`${label}: paginate 必须是 {"pageSize": 正整数, "maxPages"?, "totalPath"?} 对象`);
-    } else if (!String(entry.klineUrl ?? "").includes("{offset}") && !String(entry.bodyTemplate ?? "").includes("{offset}")) {
-      warnings.push(`${label}: 配了 paginate 但 klineUrl/bodyTemplate 里没有 {offset} 占位符——不会翻页`);
-    }
-  }
-  if (entry.method === "POST" && typeof entry.bodyTemplate !== "string") {
-    warnings.push(`${label}: method 为 POST 但没有 bodyTemplate`);
-  }
-  if (entry.headers !== undefined && (entry.headers === null || typeof entry.headers !== "object" || Array.isArray(entry.headers))) {
-    errors.push(`${label}: headers 必须是 {"头名": "值"} 对象`);
-  }
-  const map = entry.jsonMap;
-  // Signal tables have no jsonMap: their columns are fixed by the contract.
-  if (entry.purpose !== "signals" && (entry.format === "json" || entry.format === "csv") && !map) {
-    errors.push(`${label}: ${entry.format} 格式需要 jsonMap 字段映射`);
-  }
-  if (map !== undefined) {
-    if (map === null || typeof map !== "object" || Array.isArray(map)) {
-      errors.push(`${label}: jsonMap 必须是对象`);
-    } else {
-      for (const key of Object.keys(map)) {
-        if (!KNOWN_JSON_MAP_KEYS.has(key)) warnings.push(`${label}: jsonMap 里的未知字段 "${key}"（searchUrl/searchBodyTemplate 等是源级字段，不属于 jsonMap）`);
-      }
-      const cols = map.cols;
-      if (!cols || typeof cols.date !== "string" || !cols.date || typeof cols.close !== "string" || !cols.close) {
-        errors.push(`${label}: jsonMap.cols 至少需要非空的 date 与 close`);
-      }
-      const KNOWN_ROW_KINDS = new Set(["array", "object", "fields", "map", "columns"]);
-      if (map.rowKind !== undefined && !KNOWN_ROW_KINDS.has(map.rowKind)) {
-        errors.push(`${label}: rowKind 只支持 array/object/fields/map/columns`);
-      }
-      if (map.rowKind === "fields" && typeof map.fieldsPath !== "string") {
-        errors.push(`${label}: rowKind 为 fields 时需要 fieldsPath`);
-      }
-      if (map.percentScale !== undefined && (typeof map.percentScale !== "number" || !(map.percentScale > 0))) {
-        errors.push(`${label}: percentScale 必须是正数（如 100 表示 "1.5%" 读作 0.015）`);
-      }
-    }
-  }
-  if (entry.symbols !== undefined) {
-    if (!Array.isArray(entry.symbols)) {
-      errors.push(`${label}: symbols 必须是数组`);
-    } else {
-      for (const s of entry.symbols) {
-        if (!s || typeof s !== "object" || typeof s.code !== "string" || !s.code.trim()) {
-          errors.push(`${label}: symbols 里的每条必须是 {"code","name"} 对象且 code 非空`);
-          break;
-        }
-        if (s.params !== undefined && (s.params === null || typeof s.params !== "object" || Array.isArray(s.params)
-          || Object.values(s.params).some((v: unknown) => typeof v !== "string"))) {
-          errors.push(`${label}: symbols[].params 必须是 {"变量名": "字符串值"} 对象`);
-          break;
-        }
-        if (s.profile !== undefined && typeof s.profile !== "string") {
-          errors.push(`${label}: symbols[].profile 必须是字符串（profiles 里的档位名）`);
-          break;
-        }
-      }
-    }
-  }
-  if (entry.params !== undefined && (entry.params === null || typeof entry.params !== "object" || Array.isArray(entry.params)
-    || Object.values(entry.params).some((v: unknown) => typeof v !== "string"))) {
-    errors.push(`${label}: params 必须是 {"变量名": "字符串值"} 对象（{p.*} 占位符的源级默认值）`);
-  }
-  if (entry.profiles !== undefined) {
-    if (entry.profiles === null || typeof entry.profiles !== "object" || Array.isArray(entry.profiles)
-      || Object.values(entry.profiles).some((p: unknown) => p === null || typeof p !== "object" || Array.isArray(p)
-        || Object.values(p as object).some((v: unknown) => typeof v !== "string"))) {
-      errors.push(`${label}: profiles 必须是 {"档位名": {"变量名": "字符串值"}} 对象`);
-    }
-  }
-  if (entry.codeRules !== undefined) {
-    if (!Array.isArray(entry.codeRules)) {
-      errors.push(`${label}: codeRules 必须是 [{"match": "正则", "profile": "档位名"}] 数组`);
-    } else {
-      for (const r of entry.codeRules) {
-        if (!r || typeof r !== "object" || Array.isArray(r)
-          || typeof r.match !== "string" || !r.match.trim() || typeof r.profile !== "string" || !r.profile.trim()) {
-          errors.push(`${label}: codeRules 里的每条必须是 {"match": "正则", "profile": "档位名"} 对象`);
-          break;
-        }
-        try {
-          new RegExp(r.match);
-        } catch {
-          errors.push(`${label}: codeRules 的 match "${r.match}" 不是合法正则`);
-          break;
-        }
-        if (entry.profiles && typeof entry.profiles === "object" && !Array.isArray(entry.profiles)
-          && !(r.profile in entry.profiles)) {
-          warnings.push(`${label}: codeRules 的 profile "${r.profile}" 在 profiles 里没有对应档位——不会生效`);
-        }
-      }
-    }
-  }
-  if (entry.searchPaginate !== undefined) {
-    if (entry.searchPaginate === null || typeof entry.searchPaginate !== "object" || Array.isArray(entry.searchPaginate)
-      || !Number.isInteger(Number(entry.searchPaginate.pageSize)) || Number(entry.searchPaginate.pageSize) <= 0) {
-      errors.push(`${label}: searchPaginate 必须是 {"pageSize": 正整数, "maxPages"?, "totalPath"?, "allowTruncated"?} 对象`);
-    } else if (![entry.searchUrl, entry.searchBodyTemplate, entry.klineUrl].some((tpl) => String(tpl ?? "").includes("{offset}"))) {
-      warnings.push(`${label}: 配了 searchPaginate 但 searchUrl/searchBodyTemplate/klineUrl 里没有 {offset} 占位符——不会翻页`);
-    }
-  }
-  if (entry.searchProfile !== undefined) {
-    if (typeof entry.searchProfile !== "string" || !entry.searchProfile.trim()) {
-      errors.push(`${label}: searchProfile 必须是字符串（profiles 里的档位名，声明主搜索端点返回代码的资产类别）`);
-    } else if (entry.profiles && typeof entry.profiles === "object" && !Array.isArray(entry.profiles)
-      && !(entry.searchProfile in entry.profiles)) {
-      warnings.push(`${label}: searchProfile "${entry.searchProfile}" 在 profiles 里没有对应档位——不会生效`);
-    }
-  }
-  if (entry.deadCodes !== undefined) {
-    if (!Array.isArray(entry.deadCodes) || entry.deadCodes.some((d: unknown) => typeof d !== "string" || !d.trim())) {
-      errors.push(`${label}: deadCodes 必须是正则字符串数组（已知不可画代码的标记——跳过探测并在搜索结果里标注，不是剔除）`);
-    } else {
-      for (const d of entry.deadCodes) {
-        try {
-          new RegExp(d);
-        } catch {
-          errors.push(`${label}: deadCodes 的 "${d}" 不是合法正则`);
-          break;
-        }
-      }
-    }
-  }
-  for (const p of [entry.paginate, entry.searchPaginate]) {
-    if (p && typeof p === "object" && !Array.isArray(p) && p.allowTruncated !== undefined && typeof p.allowTruncated !== "boolean") {
-      errors.push(`${label}: paginate.allowTruncated 必须是布尔值（true = 截断只告警不判红）`);
-      break;
-    }
-  }
-  if (entry.searches !== undefined) {
-    if (!Array.isArray(entry.searches)) {
-      errors.push(`${label}: searches 必须是数组`);
-    } else {
-      for (const s of entry.searches) {
-        if (!s || typeof s !== "object" || Array.isArray(s)
-          || (typeof s.url !== "string" || !s.url.trim()) && (typeof s.bodyTemplate !== "string" || !s.bodyTemplate.trim())) {
-          errors.push(`${label}: searches 里的每条必须是 {"url"?,"bodyTemplate"?} 对象，且至少有一个非空`);
-          break;
-        }
-        if (s.searchCols !== undefined && (s.searchCols === null || typeof s.searchCols !== "object" || Array.isArray(s.searchCols)
-          || typeof s.searchCols.code !== "string" || typeof s.searchCols.name !== "string")) {
-          errors.push(`${label}: searches[].searchCols 必须是 {"code","name","market"?} 对象`);
-          break;
-        }
-        if (s.searchRowsPath !== undefined && typeof s.searchRowsPath !== "string") {
-          errors.push(`${label}: searches[].searchRowsPath 必须是字符串`);
-          break;
-        }
-        if (s.paginate !== undefined && (s.paginate === null || typeof s.paginate !== "object" || Array.isArray(s.paginate)
-          || !Number.isInteger(Number(s.paginate.pageSize)) || Number(s.paginate.pageSize) <= 0)) {
-          errors.push(`${label}: searches[].paginate 必须是 {"pageSize": 正整数, "maxPages"?, "totalPath"?, "allowTruncated"?} 对象，且模板需含 {offset} 占位符`);
-          break;
-        }
-        if (s.paginate?.allowTruncated !== undefined && typeof s.paginate.allowTruncated !== "boolean") {
-          errors.push(`${label}: searches[].paginate.allowTruncated 必须是布尔值`);
-          break;
-        }
-        if (s.profile !== undefined) {
-          if (typeof s.profile !== "string" || !s.profile.trim()) {
-            errors.push(`${label}: searches[].profile 必须是字符串（profiles 里的档位名，声明该端点返回代码的资产类别）`);
-            break;
-          }
-          if (entry.profiles && typeof entry.profiles === "object" && !Array.isArray(entry.profiles)
-            && !(s.profile in entry.profiles)) {
-            warnings.push(`${label}: searches[].profile "${s.profile}" 在 profiles 里没有对应档位——不会生效`);
-          }
-        }
-        if (s.paginate && !(String(s.url ?? "").includes("{offset}") || String(s.bodyTemplate ?? "").includes("{offset}"))) {
-          warnings.push(`${label}: searches[] 配了 paginate 但模板里没有 {offset} 占位符——不会翻页`);
-        }
-      }
-    }
-  }
-  if (errors.length > 0) return { errors, warnings };
-  const def: CustomSourceDef = {
-    id: typeof entry.id === "string" && entry.id ? entry.id : `validate-${index}`,
-    name: entry.name,
-    enabled: entry.enabled !== false,
-    format: entry.format,
-    ...entry,
-  };
-  return { def, errors, warnings };
-}
-
-// Dry-run a not-yet-imported source config file (the JSON array the AI 辅助
-// flow writes into the vault): structural checks per entry, then a live
-// probe of testCode + every symbols row (default 400-day window so monthly
-// and quarterly series also prove out; --days overrides), plus one search
-// request per source that configures one. A clean 0-row probe retries once
-// with a ~10-year window to tell "delisted/suspended" apart from "wrong
-// code". Keys never live in the delivered file, so keyed sources resolve
-// one via opts.apiKeys (a map of 组名/源名 → key, "" = global fallback) /
-// STRATABOARD_API_KEY / a same-name-or-group vault source;
-// --structural-only skips all network probes. Nothing is written to
-// settings.
-export async function validateConfig(
+// Renders the FIRST card block in the given markdown text to a PNG (in
+// memory). Shared by the CLI's render-card (writes a file) and the MCP
+// render_card_png tool (returns image content).
+export async function renderCardPngBase64(
   ctx: VaultContext,
-  opts: { file: string; days?: number; apiKey?: string; apiKeys?: Record<string, string>; structuralOnly?: boolean }
-): Promise<{ ok: boolean; file: string; sources: ValidateConfigSourceResult[] }> {
-  const file = path.isAbsolute(opts.file) ? opts.file : path.join(ctx.vault, opts.file);
-  if (!fs.existsSync(file)) fail(`配置文件不存在: ${file}`);
-  let entries: unknown;
+  opts: { markdown: string; width?: number; height?: number }
+): Promise<RenderCardPngResult> {
+  const { blocks } = findCardBlocks(opts.markdown);
+  const block = blocks[0];
+  if (!block) fail("没有找到 StrataBoard 卡片块（```quote/overlay/spread 围栏块）。");
+  if (block.endLine < 0) fail(`第 ${block.line} 行的卡片块未闭合。`);
+  if (!RENDERABLE_BLOCK_TYPES.has(block.lang)) fail(UNSUPPORTED_RENDER_MESSAGE(block.lang));
+  const runtime = await createRenderRuntime(ctx.vault, ctx.settings);
   try {
-    entries = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch (e) {
-    fail(`配置文件不是合法 JSON: ${file} — ${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (!Array.isArray(entries)) fail(`配置文件必须是数据源数组（[ {...}, {...} ]）: ${file}`);
-
-  const days = opts.days ?? 400;
-  // Injected keys: named entries target one group or source by name; the ""
-  // entry is the global fallback, ahead of the env var. A legacy single
-  // opts.apiKey becomes the "" entry.
-  const injectedKeys: Record<string, string> = {
-    ...(opts.apiKey?.trim() ? { "": opts.apiKey.trim() } : {}),
-    ...opts.apiKeys,
-  };
-  const envKey = process.env.STRATABOARD_API_KEY?.trim() || undefined;
-  const injectedKeyFor = (def: CustomSourceDef): string | undefined => {
-    const group = def.group?.trim();
-    if (group && injectedKeys[group]) return injectedKeys[group];
-    const name = def.name.trim();
-    if (injectedKeys[name]) return injectedKeys[name];
-    return injectedKeys[""] || envKey;
-  };
-  const vaultSources = ctx.settings.customSources ?? [];
-  const defs = entries
-    .map((entry: any) => checkConfigEntry(entry, 0).def)
-    .filter((d): d is CustomSourceDef => Boolean(d));
-  const { start, end } = recentWindow(days);
-  const sources: ValidateConfigSourceResult[] = [];
-
-  for (let i = 0; i < entries.length; i++) {
-    const { def, errors, warnings } = checkConfigEntry(entries[i], i);
-    const result: ValidateConfigSourceResult = {
-      source: typeof entries[i]?.name === "string" ? entries[i].name : `#${i + 1}`,
-      structuralErrors: errors,
-      warnings,
-      probes: [],
+    const rendered = await renderCardBlockPng(block.lang, block.body, runtime.deps, {
+      width: opts.width,
+      height: opts.height,
+    });
+    return {
+      ok: true,
+      title: rendered.title,
+      width: rendered.width,
+      height: rendered.height,
+      pngBase64: rendered.png.toString("base64"),
     };
-    sources.push(result);
-    if (!def) continue;
+  } finally {
+    await runtime.save();
+  }
+}
 
-    // Key resolution chain: the file's own entry/group first, then an
-    // injected key (named apiKeys entry matching the group, then the name,
-    // then the global fallback / STRATABOARD_API_KEY), then a vault source
-    // with the same name or group (which is what the import will resolve
-    // to). Only consulted when the templates actually carry {apiKey}.
-    let resolved: CustomSourceDef = { ...def, apiKey: resolveGroupApiKey(def, defs) };
-    if (sourceNeedsApiKey(def)) {
-      let keyInfo = resolveApiKeySource(def, defs);
-      const injectedKey = keyInfo.source === "none" ? injectedKeyFor(def) : undefined;
-      if (keyInfo.source === "none" && injectedKey) {
-        resolved = { ...resolved, apiKey: injectedKey };
-        keyInfo = { key: injectedKey, source: "injected" };
-      }
-      if (keyInfo.source === "none") {
-        const candidate =
-          vaultSources.find((s) => s.name.trim() === def.name.trim()) ??
-          (def.group?.trim() ? vaultSources.find((s) => s.group?.trim() === def.group!.trim()) : undefined);
-        const vaultKey = candidate ? resolveApiKeySource(candidate, vaultSources) : undefined;
-        if (candidate && vaultKey?.key) {
-          resolved = { ...resolved, apiKey: vaultKey.key };
-          keyInfo = { key: vaultKey.key, source: "vault", donorName: candidate.name };
-        }
-      }
-      result.apiKeySource = keyInfo.source;
-      if (keyInfo.donorName) result.apiKeyDonor = keyInfo.donorName;
-      if (keyInfo.source === "none") {
-        result.warnings.push("模板含 {apiKey} 但未找到密钥（文件内、vault 同名/同组源、--api-key 注入都没有）——请求很可能被鉴权拒绝");
-      }
-    }
+// File name safe on every platform (titles may contain / : etc.).
+function sanitizeFileName(name: string): string {
+  return name.replace(/[\\/:*?"<>|[\]]/g, "_").trim() || "card";
+}
 
-    if (opts.structuralOnly) continue;
+// CLI render-card: renders the first card block of the input text and writes
+// the PNG to --out (default ./<标题>-<日期>.png).
+export async function renderCardToFile(
+  ctx: VaultContext,
+  opts: { markdown: string; out?: string; width?: number; height?: number }
+): Promise<{ ok: true; file: string; title: string; width: number; height: number }> {
+  const rendered = await renderCardPngBase64(ctx, opts);
+  const target = path.resolve(opts.out ?? `./${sanitizeFileName(rendered.title)}-${formatDate(new Date())}.png`);
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  await fs.promises.writeFile(target, Buffer.from(rendered.pngBase64, "base64"));
+  return { ok: true, file: target, title: rendered.title, width: rendered.width, height: rendered.height };
+}
 
-    // Signals sources carry a fixed-column signal table instead of kline
-    // data: probe = parse the vault CSV and count usable events.
-    if (def.purpose === "signals") {
-      result.probes.push(probeSignalTable(ctx, def));
-      if (result.probes[0].dropped) {
-        result.warnings.push(`信号表有 ${result.probes[0].dropped} 行无法解析被丢弃（检查 date/code/side 列名与取值：side 只认 buy/sell/买/卖）`);
-      }
-      continue;
-    }
+export interface RenderDocBlockResult {
+  lang: string;
+  line: number;
+  ok: boolean;
+  image?: string;
+  error?: string;
+}
 
-    let searchOnlyCode: string | undefined;
-    let auditSamples: SearchCoverageAudit["sampleCodes"] = [];
-    if (sourceSupportsRemoteSearch(resolved)) {
-      const probe = searchProbeQuery(resolved);
-      try {
-        const searchStats: SearchFetchStats = {};
-        const items = await new CustomQuoteClient(resolved).searchQuotes(probe.query, searchStats);
-        const skippedRows = searchStats.skipped ?? 0;
-        result.search = {
-          ok: true,
-          results: items.length,
-          query: probe.query,
-          ...(probe.defaulted ? { defaulted: true } : {}),
-          ...(skippedRows > 0 ? { skippedRows } : {}),
-          ...(searchStats.truncated ? { truncated: searchStats.truncated } : {}),
-        };
-        if (skippedRows > 0) {
-          result.warnings.push(`搜索响应有 ${skippedRows} 行因缺 code 或 name 被丢弃——若是整表接口，检查该端点的 searchCols 列名是否与实际字段一致（可用 searches[].searchCols 单独覆盖）`);
-        }
-        if (searchStats.truncated) {
-          const tr = searchStats.truncated;
-          result.warnings.push(`搜索结果被截断，只取回 ${tr.fetched}${tr.total ? ` / ${tr.total}` : ""} 行——检查该端点 paginate.pageSize 是否与服务端单页上限一致，或调大 maxPages`);
-          // Truncation means incomplete data — fail the search unless the
-          // endpoint's paginate config explicitly opted out.
-          if (!tr.allowed) {
-            result.search.ok = false;
-            result.search.reason = `搜索结果被截断（只取回 ${tr.fetched}${tr.total ? ` / ${tr.total}` : ""} 行）——调大 maxPages / 校正 pageSize，或确认无误后给该端点 paginate 加 "allowTruncated": true`;
-          }
-        }
-        // Offline wiring audit: classify every searchable code by endpoint
-        // declaration / codeRules and report what would fetch with the wrong
-        // (source-default) interface — zero extra requests, the items are
-        // already in hand.
-        const hasWiring = (resolved.codeRules?.length ?? 0) > 0
-          || !!resolved.searchProfile
-          || (resolved.searches ?? []).some((s) => s.profile);
-        if (hasWiring && items.length > 0) {
-          const audit = auditSearchCoverage(resolved, items);
-          result.search.audit = audit;
-          auditSamples = audit.sampleCodes;
-          if (audit.unmatched > 0) {
-            const top = audit.unmatchedTop
-              .slice(0, 3)
-              .map((s) => `${s.shape} ×${s.count}（如 ${s.samples.join("、")}）`)
-              .join("；");
-            result.warnings.push(`搜索审计：${audit.unmatched}/${audit.total} 条可搜索代码未命中任何 codeRules 或端点声明，将用源级默认参数取数（top 形态：${top}）——确认它们属于默认接口，或补 codeRules`);
-          }
-          if (audit.overlapCount > 0) {
-            const ex = audit.overlaps.map((o) => `${o.code} 命中 [${o.profiles.join(", ")}]`).join("；");
-            result.warnings.push(`搜索审计：${audit.overlapCount} 条代码同时命中多条 codeRules（首条生效，顺序敏感）：${ex}——调整规则顺序或收窄正则`);
-          }
-          if (audit.conflictCount > 0) {
-            const ex = audit.conflicts.map((c) => `${c.code} 端点声明=${c.declared} 规则命中=${c.rule}`).join("；");
-            result.warnings.push(`搜索审计：${audit.conflictCount} 条代码的端点声明与 codeRules 命中不一致（以端点声明为准）：${ex}——修正规则或端点声明`);
-          }
-        }
-        if (items.length === 0) {
-          result.search = {
-            ok: false,
-            results: 0,
-            query: probe.query,
-            ...(probe.defaulted ? { defaulted: true } : {}),
-            reason: `搜索 "${probe.query}" 返回 0 条——检查搜索模板与 searchRowsPath/searchCols 映射`,
-          };
-        }
-        // Templates using {p.*} + remote search: searched codes are never in
-        // the static symbols table, so probe one of them too — otherwise the
-        // declared-symbol probes (all carrying params) give false confidence.
-        const usesSymbolParams = templateUsesSymbolParams(resolved);
-        if (usesSymbolParams && items.length > 0) {
-          const known = new Set((resolved.symbols ?? []).flatMap((s) => [s.code, s.code.split("@")[0]]));
-          searchOnlyCode = items.find((it) => !known.has(it.tsCode))?.tsCode;
-        }
-      } catch (e) {
-        result.search = { ok: false, query: probe.query, ...(probe.defaulted ? { defaulted: true } : {}), reason: e instanceof Error ? e.message : String(e) };
-      }
-      if (probe.defaulted) {
-        result.warnings.push("没有 testCode 或 symbols 可取查询词，搜索探针使用了默认查询词 000001（英文/全球源可能误判）");
-      }
-    }
+export interface RenderDocResult {
+  ok: boolean;
+  file: string;
+  outputMarkdown: string;
+  images: string[];
+  blocks: RenderDocBlockResult[];
+}
 
-    const codes: string[] = [];
-    if (resolved.testCode?.trim()) codes.push(resolved.testCode.trim());
-    for (const s of resolved.symbols ?? []) {
-      if (typeof s?.code === "string" && s.code.trim() && !codes.includes(s.code.trim())) codes.push(s.code.trim());
-    }
-    if (codes.length === 0) {
-      result.warnings.push("没有 testCode 或 symbols，无法实际探测——建议至少配一个 testCode");
-    }
-    const dead = compileDeadCodes(resolved);
-    for (const code of codes) {
-      // Declared known-unplottable: skip the request, leave a trail (probe
-      // note + warning) instead of a red failure.
-      if (dead?.test(code.split("@")[0])) {
-        result.probes.push({ code, ok: true, rows: 0, note: "deadCodes 命中（已知不可画），跳过探测" });
-        result.warnings.push(`代码 ${code} 被 deadCodes 标记为已知不可画，已跳过探测——若上游恢复供数请移除该标记`);
+// CLI render-doc / MCP render_doc_images: renders every card block in a
+// markdown file to a PNG under the assets dir, then writes a copy of the
+// document with each successfully rendered block replaced by an image link
+// (relative to the output markdown). Failed/unsupported blocks keep their
+// original text. ok = every renderable block rendered.
+export async function renderDoc(
+  ctx: VaultContext,
+  opts: { file: string; outDir?: string; outMd?: string; width?: number; height?: number }
+): Promise<RenderDocResult> {
+  const absFile = path.isAbsolute(opts.file) ? opts.file : path.join(ctx.vault, opts.file);
+  if (!fs.existsSync(absFile)) fail(`文件不存在: ${absFile}`);
+  const markdown = await fs.promises.readFile(absFile, "utf8");
+  const { lines, blocks } = findCardBlocks(markdown);
+  if (blocks.length === 0) fail(`没有找到 StrataBoard 卡片块: ${absFile}`);
+
+  const dir = path.dirname(absFile);
+  const base = path.basename(absFile).replace(/\.md$/i, "");
+  const outDir = opts.outDir ? path.resolve(opts.outDir) : path.join(dir, `${base}.assets`);
+  const outMd = opts.outMd ? path.resolve(opts.outMd) : path.join(dir, `${base}.images.md`);
+  await fs.promises.mkdir(outDir, { recursive: true });
+
+  const runtime = await createRenderRuntime(ctx.vault, ctx.settings);
+  const results: RenderDocBlockResult[] = [];
+  // 0-based line index → replacement lines ([] deletes the line).
+  const replacements = new Map<number, string[]>();
+  try {
+    for (const block of blocks) {
+      if (!RENDERABLE_BLOCK_TYPES.has(block.lang)) {
+        results.push({ lang: block.lang, line: block.line, ok: false, error: `${UNSUPPORTED_RENDER_MESSAGE(block.lang)}已保留原文。` });
+        continue;
+      }
+      if (block.endLine < 0) {
+        results.push({ lang: block.lang, line: block.line, ok: false, error: "围栏代码块未闭合。" });
         continue;
       }
       try {
-        const { rows, stats } = await fetchWithStats(ctx, resolved, code, start, end);
-        if (rows.length > 0) {
-          // A truncated paginated fetch means the window is incomplete —
-          // fail the probe unless paginate.allowTruncated opted out.
-          if (stats.truncated && resolved.paginate?.allowTruncated !== true) {
-            const tr = stats.truncated;
-            result.probes.push({
-              code,
-              ok: false,
-              rows: rows.length,
-              reason: `取数被截断，只取回 ${tr.fetched}${tr.total ? ` / ${tr.total}` : ""} 行——检查 paginate.pageSize 是否与服务端单页上限一致、调大 maxPages，或确认无误后给 paginate 加 "allowTruncated": true`,
-            });
-            continue;
-          }
-          result.probes.push({ code, ok: true, rows: rows.length, ...(stats.dropped > 0 ? { dropped: stats.dropped } : {}) });
-          pushProbeStatWarnings(result, code, stats);
-          continue;
-        }
-        // Clean 0 rows: retry once with a ~10-year window. A delisted or
-        // suspended symbol has no recent bars but older ones, which is a
-        // fact about the symbol, not a config error.
-        if (!mappingProvablyBroken(stats) && days < WIDEN_PROBE_DAYS) {
-          const wide = recentWindow(WIDEN_PROBE_DAYS);
-          try {
-            const widened = await fetchWithStats(ctx, resolved, code, wide.start, wide.end);
-            if (widened.rows.length > 0) {
-              if (widened.stats.truncated && resolved.paginate?.allowTruncated !== true) {
-                const tr = widened.stats.truncated;
-                result.probes.push({
-                  code,
-                  ok: false,
-                  rows: widened.rows.length,
-                  reason: `取数被截断，只取回 ${tr.fetched}${tr.total ? ` / ${tr.total}` : ""} 行——检查 paginate.pageSize 是否与服务端单页上限一致、调大 maxPages，或确认无误后给 paginate 加 "allowTruncated": true`,
-                });
-                continue;
-              }
-              result.probes.push({
-                code,
-                ok: true,
-                rows: widened.rows.length,
-                note: `近 ${days} 天无数据，但近 ${Math.round(WIDEN_PROBE_DAYS / 365)} 年有 ${widened.rows.length} 行——疑似已退市/停更，代码与映射正常`,
-              });
-              pushProbeStatWarnings(result, code, widened.stats);
-              continue;
-            }
-          } catch {
-            // Widening is best-effort; fall through to the original failure.
-          }
-        }
-        result.probes.push({
-          code,
-          ok: false,
-          rows: 0,
-          ...(stats.dropped > 0 ? { dropped: stats.dropped } : {}),
-          reason: emptyProbeReason(resolved, stats, code),
-          sample: await rawSample(resolved, code),
+        const rendered = await renderCardBlockPng(block.lang, block.body, runtime.deps, {
+          width: opts.width,
+          height: opts.height,
         });
+        const pngPath = path.join(outDir, `${base}-card-${block.line}.png`);
+        await fs.promises.writeFile(pngPath, rendered.png);
+        const rel = path.relative(path.dirname(outMd), pngPath).split(path.sep).join("/");
+        replacements.set(block.startLine, [`![${sanitizeFileName(rendered.title)}](${rel})`]);
+        for (let i = block.startLine + 1; i <= block.endLine; i++) replacements.set(i, []);
+        results.push({ lang: block.lang, line: block.line, ok: true, image: pngPath });
       } catch (e) {
-        result.probes.push({ code, ok: false, rows: 0, reason: e instanceof Error ? e.message : String(e), sample: await rawSample(resolved, code) });
+        results.push({ lang: block.lang, line: block.line, ok: false, error: e instanceof Error ? e.message : String(e) });
       }
     }
-
-    // The search-only code probe ({p.*} templates + remote search): a code
-    // the static table doesn't know exercises the source-level default
-    // params path. Failure here means searched symbols can't be fetched.
-    if (searchOnlyCode) {
-      const code = searchOnlyCode;
-      const prefix = "搜索结果的代码（不在代码表中）：";
-      try {
-        const { rows, stats } = await fetchWithStats(ctx, resolved, code, start, end);
-        if (rows.length > 0) {
-          result.probes.push({ code, ok: true, rows: rows.length, via: "search" });
-          pushProbeStatWarnings(result, code, stats);
-        } else {
-          result.probes.push({
-            code,
-            ok: false,
-            rows: 0,
-            via: "search",
-            reason: prefix + emptyProbeReason(resolved, stats, code),
-            sample: await rawSample(resolved, code),
-          });
-        }
-      } catch (e) {
-        result.probes.push({
-          code,
-          ok: false,
-          rows: 0,
-          via: "search",
-          reason: prefix + (e instanceof Error ? e.message : String(e)),
-          sample: await rawSample(resolved, code),
-        });
-      }
-    }
-
-    // Wiring-audit sampling: probe ONE searched code per effective profile
-    // (endpoint-declared or codeRules-hit), closing the
-    // "rule → interface → rows" loop the offline audit can't. This is the
-    // built-in version of a per-family manual regression.
-    for (const sample of auditSamples) {
-      if (sample.code === searchOnlyCode) continue; // already probed above
-      const prefix = `接线审计抽样（profile=${sample.profile}，${sample.declared ? "端点声明" : "codeRules 命中"}）：`;
-      const code = sample.code;
-      try {
-        const { rows, stats } = await fetchWithStats(
-          ctx, resolved, code, start, end,
-          sample.declared ? sample.profile : undefined
-        );
-        if (rows.length > 0) {
-          result.probes.push({ code, ok: true, rows: rows.length, via: "search", profile: sample.profile });
-          pushProbeStatWarnings(result, code, stats);
-        } else {
-          result.probes.push({
-            code,
-            ok: false,
-            rows: 0,
-            via: "search",
-            profile: sample.profile,
-            reason: prefix + emptyProbeReason(resolved, stats, code, sample.declared ? sample.profile : undefined),
-            sample: await rawSample(resolved, code),
-          });
-        }
-      } catch (e) {
-        result.probes.push({
-          code,
-          ok: false,
-          rows: 0,
-          via: "search",
-          profile: sample.profile,
-          reason: prefix + (e instanceof Error ? e.message : String(e)),
-          sample: await rawSample(resolved, code),
-        });
-      }
-    }
+  } finally {
+    await runtime.save();
   }
 
-  const ok = sources.every(
-    (s) => s.structuralErrors.length === 0 && (s.search?.ok ?? true) && s.probes.every((p) => p.ok)
-  );
-  return { ok, file, sources };
-}
+  const outLines: string[] = [];
+  lines.forEach((line, i) => {
+    const replacement = replacements.get(i);
+    if (replacement) outLines.push(...replacement);
+    else outLines.push(line);
+  });
+  await fs.promises.writeFile(outMd, outLines.join("\n") + "\n");
 
-// Second-chance window for probes that come back cleanly empty (see
-// validateConfig): roughly ten years of history.
-const WIDEN_PROBE_DAYS = 3650;
-
-// Raw response excerpt for a failed probe — the "view raw response" escape
-// hatch, one extra request per failure.
-async function rawSample(def: CustomSourceDef, code: string): Promise<string | undefined> {
-  if (def.format === "csv") return undefined;
-  try {
-    const sample = await fetchKlineSample(def, code);
-    return sample.text.slice(0, 300);
-  } catch {
-    return undefined;
-  }
+  const renderable = results.filter((r) => RENDERABLE_BLOCK_TYPES.has(r.lang));
+  return {
+    ok: renderable.every((r) => r.ok),
+    file: absFile,
+    outputMarkdown: outMd,
+    images: results.flatMap((r) => (r.image ? [r.image] : [])),
+    blocks: results,
+  };
 }

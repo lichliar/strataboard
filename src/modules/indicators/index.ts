@@ -1,20 +1,32 @@
 /**
  * Indicator system barrel: contract types, registry + cache singletons,
- * custom-indicator loader, bar converters, palette.
+ * custom-indicator loader, bar converters.
  */
 
 export type {
   IndicatorDef,
   IndicatorInstance,
   IndicatorCalculate,
-  IndicatorContext,
   IndicatorResultLike,
   ValidateIndicatorResult,
 } from "./contract";
-export { validateIndicatorDef } from "./contract";
-export { BUILTIN_INDICATORS } from "./builtins";
+export { validateIndicatorDef, formatIndicatorLabel } from "./contract";
 export { IndicatorRegistry, indicatorRegistry } from "./registry";
 export { IndicatorComputeCache, indicatorComputeCache } from "./compute-cache";
-export { syncIndicatorFiles, getIndicatorLoadErrors, type IndicatorLoaderHost, type IndicatorLoadError } from "./loader";
+export {
+  syncIndicatorFiles,
+  getIndicatorLoadErrors,
+  getUnapprovedIndicators,
+  type IndicatorLoaderHost,
+  type IndicatorLoadError,
+  type PendingIndicatorApproval,
+  type IndicatorApprovalDecision,
+} from "./loader";
 export { ohlcvToBars, adaptResultTimes } from "./bars";
-export { INDICATOR_PALETTE } from "./palette";
+export {
+  computeIndicatorForInstance,
+  recordIndicatorRuntimeError,
+  getIndicatorRuntimeError,
+  getIndicatorRuntimeErrors,
+  clearIndicatorRuntimeErrors,
+} from "./compute";

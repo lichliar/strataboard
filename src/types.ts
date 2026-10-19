@@ -34,9 +34,8 @@ export interface SearchEndpoint {
   // truncation detection: stopping short of the declared total is reported
   // instead of passing silently.
   paginate?: { pageSize: number; maxPages?: number; totalPath?: string; allowTruncated?: boolean };
-  //   ^ allowTruncated: opt out of the validator treating a truncated fetch
-  //   (maxPages hit / declared total not reached) as a failure — it stays a
-  //   warning. Default: truncation fails validation (data is incomplete).
+  //   ^ allowTruncated: marks an intentionally partial fetch so diagnostics
+  //   can distinguish it from accidental truncation.
   // Declared classification: every code this endpoint returns belongs to this
   // profiles tier. Declared beats guessed: it outranks codeRules regex hits in
   // resolveSymbolParams, and persists into the symbol cache on pick so the
@@ -56,12 +55,7 @@ export interface CustomSourceDef {
   name: string;                     // user label: pickers / toolbar / card file names
   enabled: boolean;
   group?: string;                   // source-group label: sources sharing a name collapse into one grouped entry (unified search fans out across members); absent = ungrouped
-  icon?: string;                    // optional custom SVG markup shown in the 插入图表 submenu; absent = colored dot from the series palette
   format: "tencent" | "eastmoney" | "json" | "csv";
-  // "signals" = annotation source (a script-produced event CSV: date, code,
-  // side, text) — NOT a quote data source: excluded from quote pickers and
-  // kline resolution, referenced by cards' 信号/signals fields instead.
-  purpose?: "signals";
   searchUrl?: string;               // GET search template, {query} placeholder; empty = no GET search
   searchBodyTemplate?: string;      // POST search body; same placeholders as bodyTemplate plus {query} (raw, not URL-encoded). When set, search goes POST to searchUrl, falling back to klineUrl. A search template WITHOUT {query} means "fetch the whole list, filter locally" (cached in data-adapter).
   searches?: SearchEndpoint[];      // additional search endpoints (merged source covering several search interfaces); results merge deduped by code
@@ -75,8 +69,8 @@ export interface CustomSourceDef {
   codeRules?: { match: string; profile: string }[]; // code-shape rules for codes NOT in the static symbols table (e.g. picked from remote search): the first rule whose `match` regex hits the code contributes the named profile, merged over source-level params. This is the FALLBACK for codes with no declared classification — a search endpoint's `profile` declaration (persisted into the symbol cache on pick) outranks it.
   searchPaginate?: SearchEndpoint["paginate"]; // pagination for the PRIMARY searchUrl/searchBodyTemplate pair (extra `searches` entries carry their own paginate); same contract as SearchEndpoint.paginate, template needs {offset}
   searchProfile?: string;          // declared profiles tier for codes returned by the PRIMARY search pair (like SearchEndpoint.profile)
-  deadCodes?: string[];            // regexes for codes known to be unplottable (the interface serves the class but not these codes, e.g. a delisted family): validate-config skips probing them with a warning instead of failing, and search results mark (not remove) them
-  apiKey?: string;                  // secret, stored plaintext in data.json; never sent to AI context; stripped on export. Empty falls back to the first non-empty key in the same group (resolveGroupApiKey)
+  deadCodes?: string[];            // regexes for codes known to be unplottable (the interface serves the class but not these codes, e.g. a delisted family); search results mark (not remove) them
+  credentialId?: string;            // reference into Obsidian SecretStorage (see modules/credentials.ts); the secret itself is NEVER persisted in data.json
   apiKeyHeader?: string;            // optional auth header spec: "Name" or "Name: value-template" where the template may contain {apiKey} (e.g. "Authorization: Bearer {apiKey}")
   headers?: Record<string, string>; // static extra headers (values may contain {apiKey}); applied first, apiKeyHeader wins on a name conflict
   method?: "GET" | "POST";          // default GET; POST sends bodyTemplate as the request body
@@ -89,8 +83,7 @@ export interface CustomSourceDef {
   //   back short or maxPages (default 20) is hit. totalPath (dotted path to a
   //   total-count field in the response) enables truncation detection: when
   //   paging ends short of the declared total, the gap is reported instead of
-  //   passing silently — and validate-config fails the probe unless
-  //   allowTruncated opts out.
+  //   passing silently; allowTruncated opts out of that warning.
   transport?: "node";               // absent = Obsidian requestUrl; "node" = Node https (HTTP/1.1), for hosts that fail under Electron's HTTP/2 stack (e.g. api.stlouisfed.org)
 }
 
@@ -134,32 +127,12 @@ export function searchProbeQuery(def: CustomSourceDef): { query: string; default
   return query ? { query, defaulted: false } : { query: "000001", defaulted: true };
 }
 
-// Runtime credential fallback: a source with an empty apiKey borrows the
-// first non-empty apiKey among enabled sources in the same group (one key
-// covers a whole platform split into per-endpoint sources). Resolution
-// happens at request time only — the borrowed key is never persisted or
-// exported. Group names compare trimmed (a stray trailing space in one
-// entry must not silently cut it off from the group's key).
-export interface ApiKeyResolution {
-  key?: string;
-  // self = own entry; group = borrowed from a group member; vault/injected
-  // = validate-config only (borrowed from a same-name/same-group vault
-  // source / passed via --api-key or STRATABOARD_API_KEY); none = missing.
-  source: "self" | "group" | "vault" | "injected" | "none";
-  donorName?: string; // source === "group"/"vault": name of the entry the key was borrowed from
-}
-
-export function resolveApiKeySource(def: CustomSourceDef, all: CustomSourceDef[]): ApiKeyResolution {
-  const own = def.apiKey?.trim();
-  if (own) return { key: def.apiKey, source: "self" };
-  const group = def.group?.trim();
-  if (!group) return { source: "none" };
-  const donor = all.find((s) => s.id !== def.id && s.enabled && s.group?.trim() === group && s.apiKey?.trim());
-  return donor ? { key: donor.apiKey, source: "group", donorName: donor.name } : { source: "none" };
-}
-
-export function resolveGroupApiKey(def: CustomSourceDef, all: CustomSourceDef[]): string | undefined {
-  return resolveApiKeySource(def, all).key;
+// Runtime-only view of a source with its credential resolved (see
+// modules/credentials.ts). Produced at request time and NEVER persisted —
+// the `apiKey` here is the real secret, so a ResolvedCustomSourceDef must
+// never be serialized, logged, or sent to AI context.
+export interface ResolvedCustomSourceDef extends CustomSourceDef {
+  apiKey?: string;
 }
 
 // Whether any template/header of the source carries an {apiKey} placeholder
@@ -168,26 +141,16 @@ export function resolveGroupApiKey(def: CustomSourceDef, all: CustomSourceDef[])
 export function sourceNeedsApiKey(def: CustomSourceDef): boolean {
   if (def.apiKeyHeader?.includes("{apiKey}")) return true;
   if (def.apiKeyHeader?.trim() && !def.apiKeyHeader.includes(":")) return true; // bare header name = raw key as value
-  for (const template of [def.klineUrl, def.bodyTemplate, def.searchUrl, def.searchBodyTemplate]) {
-    if (template?.includes("{apiKey}")) return true;
-  }
+  const templates = [
+    def.klineUrl,
+    def.bodyTemplate,
+    def.searchUrl,
+    def.searchBodyTemplate,
+    ...(def.searches ?? []).flatMap((s) => [s.url, s.bodyTemplate]),
+  ];
+  if (templates.some((template) => template?.includes("{apiKey}"))) return true;
   return Object.values(def.headers ?? {}).some((v) => v.includes("{apiKey}"));
 }
-
-// Whitelists for config validation/import: anything outside these in an
-// imported entry is almost certainly a misplaced field (the classic mistake:
-// searchBodyTemplate nested inside jsonMap). Shared by the CLI validator and
-// the settings import path so the two never drift.
-export const KNOWN_SOURCE_DEF_KEYS: ReadonlySet<string> = new Set([
-  "id", "name", "enabled", "group", "icon", "format", "purpose", "searchUrl", "searchBodyTemplate",
-  "searches", "klineUrl", "filePath", "testCode", "jsonMap", "symbols", "params",
-  "profiles", "codeRules", "searchPaginate", "searchProfile", "deadCodes", "apiKey", "apiKeyHeader", "headers", "method", "bodyTemplate",
-  "bodyEncoding", "paginate", "transport",
-]);
-export const KNOWN_JSON_MAP_KEYS: ReadonlySet<string> = new Set([
-  "rowsPath", "rowKind", "fieldsPath", "cols", "errorPath", "errorMessagePath",
-  "okValues", "percentScale", "searchRowsPath", "searchCols",
-]);
 
 // One row of a custom source's static code table (code + display name).
 // `params` carries per-symbol template variables: a {p.<name>} placeholder
@@ -247,21 +210,18 @@ export function cacheAssetKey(assetType: string, sourceId?: string): string {
 export type Freq = "D" | "W" | "M" | "Q" | "Y";
 export type RangePreset = "1y" | "3y" | "5y" | "10y" | "20y" | "ytd" | "max";
 export type ChartTheme = "auto" | "dark" | "light";
+// Plugin-wide default theme for NEWLY created cards (通用 tab);
+// "obsidian" maps to the card-level "auto" (follow Obsidian).
+export type ChartThemeDefault = "obsidian" | "dark" | "light";
 export type ChartType = "candlestick" | "line";
 // The toolbar is a compact vertical bar anchored to a canvas corner
 // (default bottom-left, so it never covers the canvas back button).
 export type ToolbarPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
-// Toolbar buttons show an icon (with tooltip) or a plain text label.
-export type ToolbarStyle = "icon" | "text";
-// Sources with a top-level toolbar button, each toggleable in settings.
-// Data insert flows all live behind the single 「插入图表」 entry, so only
-// TradingView remains a per-source toggle.
-export type ToolbarSourceId = "tradingview";
-// Reorderable top-level toolbar entries: 「插入图表」, 「数据处理」(overlay +
-// spread menu), TradingView, 「组件」. 全部刷新/设置 follow the list, not
-// reorderable.
-export type ToolbarEntryId = "insert-data" | "data-tools" | "tradingview" | "components";
-export type VisibleRangePreset = "1m" | "3m" | "6m" | "1y" | "ytd" | "max";
+// Global rise/fall colors (红涨绿跌 defaults) — the single source for every
+// card's up/down coloring; the headless renderer falls back to these when the
+// CLI/MCP settings carry no override.
+export const DEFAULT_RISE_COLOR = "#ef4444";
+export const DEFAULT_FALL_COLOR = "#22c55e";
 export type WidgetType = "iframe" | "html";
 export type CardContentType = "quote" | "widget" | "calendar";
 
@@ -300,39 +260,48 @@ export interface DisplayOverrides {
 }
 
 export interface IndicatorInstance {
-  id: string;                          // indicator registry id (builtin or custom)
+  id: string;                          // user-provided custom indicator id
   inputs?: Record<string, unknown>;    // parameter overrides, keyed by inputConfig id
   hidden?: boolean;                    // true = kept in the list but not drawn
+  group?: string;                       // card-local applied group name
 }
+
+// A named bundle of indicator instances (设置 → 指标 → 指标组). Settings-
+// Settings-level groups are copied into cards as instances carrying a local
+// group label, so cards can batch-toggle visibility without tracking future
+// edits to the settings group.
+export interface IndicatorGroup {
+  id: string;                    // stable id (grp-<timestamp36>-<index>); referenced only inside settings
+  name: string;
+  note: string;                  // design note, Markdown, may contain [[wikilink]]; "" = none
+  indicators: IndicatorInstance[];
+}
+
+// Whitelist for indicator-group import validation.
+export const KNOWN_INDICATOR_GROUP_KEYS: ReadonlySet<string> = new Set(["id", "name", "note", "indicators"]);
 
 export interface ParsedCardSpec {
   contentType?: CardContentType;
   symbol: string;
+  title?: string; // YAML title: overrides the default chart title (header / watermark / export)
   assetType: AssetType;
   sourceId?: string; // which CustomSourceDef feeds this card
   freq: Freq;
   range: string;
   version: number;
+  // Optional YAML 高度. Quote cards omit it to follow their containing
+  // Canvas node; widget/calendar cards use the default when omitted.
   height?: number;
-  paneRatios?: number[];
   chartType?: ChartType;
   theme?: ChartTheme;
-  riseColor?: string;
-  fallColor?: string;
   showHeader?: boolean;
   showVolume?: boolean; // default true: 成交量副图 pane（卡片级可关）
-  visibleRange?: VisibleRangePreset;
   visibleStart?: string;  // YYYY-MM-DD, persisted chart-mode zoom/pan range
-  visibleEnd?: string;    // YYYY-MM-DD (takes precedence over visibleRange)
+  visibleEnd?: string;    // YYYY-MM-DD
   logScale?: boolean;
-  // Quote cards only: indicator instances (系列图 cards have no indicators).
-  // undefined = follow the global default; [] = explicitly no indicators.
+  // Quote cards only: user-provided custom indicator instances.
   indicators?: IndicatorInstance[];
-  signal?: SignalRef;   // 信号标注: buy/sell markers from a signals-purpose source (code defaults to symbol)
   priceLines?: PriceLineSpec[]; // 价位线: user-defined horizontal reference lines (成本线/关注价位)
-  widthAuto?: boolean;  // canvas only: card width follows the node (default true; false freezes the first-layout width)
-  heightAuto?: boolean; // canvas only: card height follows the node (default true; false = fixed 高度)
-  bleed?: number;       // canvas only: px gap between card content and node edge (default DEFAULT_CARD_BLEED)
   // Per-card display overrides (undefined = follow the plugin-wide 显示设置).
   // The K-line renderer has no latest-value/point-marker options.
   showLegend?: boolean;
@@ -348,25 +317,6 @@ export interface ParsedCardSpec {
 }
 
 // ==================== Series (overlay / spread cards) ====================
-
-// One trade-signal event from a signals-purpose csv source (script product:
-// date,code,side,text event table). date is YYYYMMDD, matching
-// OhlcvRow.tradeDate so the same floorIndex snapping works for both.
-export interface SignalEvent {
-  date: string;
-  code: string;
-  side: "buy" | "sell";
-  text?: string;
-}
-
-// A card's reference to a signals source. On quote cards (YAML 信号) code
-// defaults to the card's own symbol; on overlay/spread cards (YAML signals
-// list) code is required — overlay matches it against quote series tsCode,
-// spread filters events by it.
-export interface SignalRef {
-  sourceId: string;
-  code?: string;
-}
 
 // A user-defined horizontal reference line on a quote card (YAML 价位线:
 // 成本线/关注价位). Rendered as a dashed price line with an axis label;
@@ -426,42 +376,35 @@ export type OverlayCompareMode = "percent" | "zscore" | "axis" | "none";
 export type SeriesLineType = "simple" | "curved" | "steps";
 
 export interface OverlaySpec extends DisplayOverrides {
+  title?: string; // YAML title: overrides the default 对比（名1+名2） title
   series: SeriesRef[];
   range: string;   // RangePreset
   period?: SeriesPeriod;  // default "D"
   normalize?: OverlayCompareMode;  // default "percent"
   lineType?: SeriesLineType;  // default "simple", applies to every line
-  height?: number;
   theme?: ChartTheme;     // default "auto" (follow Obsidian)
-  widthAuto?: boolean;    // canvas only, default true
-  heightAuto?: boolean;   // canvas only, default true
-  bleed?: number;         // canvas only, default DEFAULT_CARD_BLEED
   viewStart?: string;  // YYYY-MM-DD, persisted wheel-zoom visible range
   viewEnd?: string;    // YYYY-MM-DD
 }
 
-// 数据计算卡: an arithmetic expression over lettered series — series[0] is
+// Spread (calc) card: an arithmetic expression over lettered series — series[0] is
 // A, series[1] is B, … (e.g. "A-B", "(A+B)/2"). Legacy two-leg cards
 // (`a:`/`b:` in YAML) migrate to series + "A-B" at parse time (see
 // series-spec.ts). `id` is the card's stable identity: other cards reference
 // it via SeriesRef.cardId, so the file can be renamed/moved freely. Assigned
 // at creation; older cards get one written back on first render/listing.
 export interface SpreadSpec extends DisplayOverrides {
+  title?: string; // YAML title: overrides the default expression-expanded title
   id?: string;
   series: SeriesRef[];
   expression: string;
   range: string;
-  signals?: SignalRef[];  // 信号标注: all entries' events (filtered by their code) merge onto the single line
   period?: SeriesPeriod;  // default "D"
-  height?: number;
   theme?: ChartTheme;     // default "auto" (follow Obsidian)
   lineWidth?: number;     // px, default 2
   lineColor?: string;     // default: first palette color; unused when style is "baseline"
   lineType?: SeriesLineType;  // default "simple"
-  style?: "baseline" | "area"; // default line; baseline shades above/below the 0 axis in rise/fall colors, area fills a gradient under the line
-  widthAuto?: boolean;    // canvas only, default true
-  heightAuto?: boolean;   // canvas only, default true
-  bleed?: number;         // canvas only, default DEFAULT_CARD_BLEED
+  style?: "baseline" | "area"; // default line; baseline shades above/below the 0 axis in the global rise/fall colors, area fills a gradient under the line
   viewStart?: string;  // YYYY-MM-DD, persisted wheel-zoom visible range
   viewEnd?: string;    // YYYY-MM-DD
 }

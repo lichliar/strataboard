@@ -7,7 +7,7 @@ export interface SourcePickerEntry {
   onPick: () => void;
 }
 
-// 插入资产数据 source picker: one card per configured custom data source,
+// Data-insertion source picker: one card per configured custom data source,
 // each leading to that source's standalone-card insertion flow (symbol picker
 // or manual entry). Mirrors the source-grid visual language of the unified
 // card edit modal (wireframe #screen-unified).
@@ -20,7 +20,7 @@ export class SourcePickerModal extends Modal {
   }
 
   onOpen() {
-    this.setTitle(t("插入资产数据"));
+    this.setTitle(t("插入数据"));
     const { contentEl } = this;
     contentEl.createDiv({ cls: "fc-field-hint", text: t("数据源") });
     const grid = contentEl.createDiv("fc-source-grid");

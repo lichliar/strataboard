@@ -11,8 +11,9 @@ const SEARCH_QUERY_PARAMS = ["q", "query", "keyword", "keywords", "wd", "word", 
 
 // Query-param names commonly carrying an API key/credential (compared
 // lowercased); their values become {apiKey} placeholders in the template and
-// are offered for auto-filling the key field.
-const API_KEY_PARAMS = ["apikey", "api_key", "key", "token", "access_key", "api_token", "apitoken", "appkey", "app_key"];
+// are offered for auto-filling the key field. Also reused by modules/redact.ts
+// to mask such params in arbitrary text.
+export const API_KEY_PARAMS = ["apikey", "api_key", "key", "token", "access_key", "api_token", "apitoken", "appkey", "app_key"];
 
 // Turns a full working URL into a template: the sample code becomes {code},
 // the first/last ISO dates become {startIso}/{endIso}, the first/last

@@ -1,12 +1,15 @@
 import { Notice } from "obsidian";
-import type { CustomSourceDef, OhlcvRow, ParsedCardSpec, SignalEvent, SymbolItem } from "../types";
-import { cacheAssetKey, isWholeTableSearchSource, resolveGroupApiKey } from "../types";
+import type { CustomSourceDef, OhlcvRow, ParsedCardSpec, ResolvedCustomSourceDef, SymbolItem } from "../types";
+import { cacheAssetKey, isWholeTableSearchSource } from "../types";
+import type { ApiKeyResolver } from "./credentials";
 import { resolveDateRange, formatDate, parseDateYmd, nextTradingDate, prevTradingDate } from "../utils/date";
 import { matchSymbolEntry } from "../utils/symbol-list";
 import { SqliteCache } from "./sqlite-cache";
 import { CustomQuoteClient } from "./custom-quote-client";
-import { CsvQuoteClient, parseSignalTable } from "./csv-quote-client";
+import { CsvQuoteClient } from "./csv-quote-client";
 import { canAttempt, isRateLimitError, recordFailure, recordSuccess, sleep, TRIP_COOLDOWN_MS } from "./fetch-guard";
+import { redactError } from "./redact";
+import { reportSourceHealth } from "./source-health";
 import { t } from "../i18n";
 
 // Whole-table remote search (search template without {query}): the endpoint
@@ -27,18 +30,35 @@ interface DataAdapterOptions {
   // Vault file reader for format "csv" custom sources (main.ts wires
   // app.vault.cachedRead with a TFile check).
   readVaultFile: (path: string) => Promise<string>;
+  // Credential seam (modules/credentials.ts): resolves the runtime secret
+  // for a source — SecretStorage in the plugin, env vars in CLI/MCP.
+  resolveApiKey: ApiKeyResolver;
+}
+
+// Result of a loadOhlcv call: the rows plus where they came from.
+// fromCache=true means the source was NOT successfully queried this time
+// (circuit-breaker pause or a failed fetch falling back to cache) and the
+// card should show the shared cache badge; lastDataAt is the latest cached
+// bar date (YYYY-MM-DD) for that badge. A deliberate cache read with
+// auto-refresh off (loadCachedOhlcv) is NOT a fallback and stays false.
+export interface OhlcvLoadResult {
+  rows: OhlcvRow[];
+  fromCache: boolean;
+  lastDataAt?: string;
 }
 
 export class DataAdapter {
   private customSources: CustomSourceDef[];
   private cache: SqliteCache;
   private readVaultFile: (path: string) => Promise<string>;
+  private resolveApiKey: ApiKeyResolver;
   private wholeTableSearchCache = new Map<string, { at: number; items: SymbolItem[] }>();
 
   constructor(options: DataAdapterOptions) {
     this.customSources = options.customSources;
     this.cache = options.cache;
     this.readVaultFile = options.readVaultFile;
+    this.resolveApiKey = options.resolveApiKey;
   }
 
   setCustomSources(sources: CustomSourceDef[]) {
@@ -48,42 +68,23 @@ export class DataAdapter {
 
   // Resolves the enabled CustomSourceDef behind a sourceId, or throws the
   // guidance every custom-source path shares. The returned def carries the
-  // group-fallback apiKey (runtime-only, never persisted). Signal sources
-  // (purpose "signals") are annotation sources and rejected here — they serve
-  // loadSignalEvents only.
-  private resolveCustomSource(sourceId: string | undefined): CustomSourceDef {
+  // resolved runtime secret (never persisted, never logged).
+  private resolveCustomSource(sourceId: string | undefined): ResolvedCustomSourceDef {
     const def = this.customSources.find((s) => s.id === sourceId && s.enabled);
     if (!def) {
       throw new Error(t("自定义数据源「{id}」不存在或已停用，请在设置页检查。", { id: sourceId ?? "" }));
     }
-    if (def.purpose === "signals") {
-      throw new Error(t("「{name}」是信号源，不能作为行情数据源。", { name: def.name }));
+    const { key, missing } = this.resolveApiKey(def);
+    if (missing) {
+      throw new Error(t("数据源「{name}」尚未配置凭据，请在设置页重新选择或创建凭据。", { name: def.name }));
     }
-    return { ...def, apiKey: resolveGroupApiKey(def, this.customSources) };
-  }
-
-  // Loads signal events (date/code/side/text) from a signals-purpose csv
-  // source. No SQLite cache: files are small, re-reads are cheap, and the
-  // script-output watcher already re-renders every chart card on change.
-  async loadSignalEvents(sourceId: string): Promise<SignalEvent[]> {
-    const def = this.customSources.find(
-      (s) => s.id === sourceId && s.enabled && s.purpose === "signals"
-    );
-    if (!def) {
-      throw new Error(t("信号源「{id}」不存在或已停用，请在设置页检查。", { id: sourceId }));
-    }
-    if (def.format !== "csv" || !def.filePath) {
-      throw new Error(t("信号源「{name}」缺少 CSV 文件配置。", { name: def.name }));
-    }
-    const text = await this.readVaultFile(def.filePath);
-    return parseSignalTable(text).events;
+    return { ...def, apiKey: key };
   }
 
   // Server-side quote search for a custom source, used by the unified search
-  // modal and RemoteQuoteSearchModal. Whole-table sources (no {query} in the
-  // search template) are served from the cache above and filtered locally
-  // with the same matcher as static code tables; query-template sources hit
-  // the endpoint directly.
+  // modal. Whole-table sources (no {query} in the search template) are served
+  // from the cache above and filtered locally with the same matcher as static
+  // code tables; query-template sources hit the endpoint directly.
   async searchRemoteQuotes(sourceId: string, text: string): Promise<SymbolItem[]> {
     const def = this.resolveCustomSource(sourceId);
     const client = new CustomQuoteClient(def);
@@ -126,7 +127,14 @@ export class DataAdapter {
     return this.maybeResample(spec, rows);
   }
 
-  async loadOhlcv(spec: ParsedCardSpec): Promise<OhlcvRow[]> {
+  // Whether the cache holds ANY rows for this card's key — drives the
+  // source-empty vs range-empty distinction of the shared empty state (cache
+  // non-empty but nothing in range → the range is the problem, not the source).
+  async hasCachedData(spec: ParsedCardSpec): Promise<boolean> {
+    return (await this.cache.getOhlcvExtent(this.toKey(spec))) != null;
+  }
+
+  async loadOhlcv(spec: ParsedCardSpec): Promise<OhlcvLoadResult> {
     const { start, end } = resolveDateRange(spec.range);
     const key = this.toKey(spec);
 
@@ -138,7 +146,13 @@ export class DataAdapter {
     const breakerKey = this.guardKey(spec);
     if (breakerKey && !canAttempt(breakerKey)) {
       const cachedRows = await this.cache.loadOhlcvRange(key, start, end);
-      if (cachedRows.length > 0) return this.maybeResample(spec, cachedRows);
+      if (cachedRows.length > 0) {
+        return {
+          rows: this.maybeResample(spec, cachedRows),
+          fromCache: true,
+          lastDataAt: (await this.cache.getLastDataDate(key)) ?? undefined,
+        };
+      }
       throw new Error(t("数据源请求连续失败，已暂停自动重试，请稍后再试。"));
     }
 
@@ -153,14 +167,22 @@ export class DataAdapter {
         await this.cache.mergeOhlcvRows(key, fetchedRows);
       }
 
-      return this.maybeResample(spec, await this.cache.loadOhlcvRange(key, start, end));
+      return {
+        rows: this.maybeResample(spec, await this.cache.loadOhlcvRange(key, start, end)),
+        fromCache: false,
+      };
     } catch (e) {
       const cachedRows = await this.cache.loadOhlcvRange(key, start, end);
       if (cachedRows.length > 0) {
         // Silent on purpose: the single trip Notice from fetchGuarding is the
         // only user-facing signal — per-card Notices here flooded the UI
-        // whenever a source got rate-limited.
-        return this.maybeResample(spec, cachedRows);
+        // whenever a source got rate-limited. The card shows the cache badge
+        // instead (fromCache).
+        return {
+          rows: this.maybeResample(spec, cachedRows),
+          fromCache: true,
+          lastDataAt: (await this.cache.getLastDataDate(key)) ?? undefined,
+        };
       }
       throw e;
     }
@@ -196,7 +218,7 @@ export class DataAdapter {
           new Notice(t("数据源「{name}」请求连续失败，已暂停 {min} 分钟，期间展示缓存数据。最近错误：{msg}", {
             name: this.sourceName(spec.sourceId),
             min: String(Math.round(TRIP_COOLDOWN_MS / 60000)),
-            msg: e instanceof Error ? e.message : String(e),
+            msg: redactError(e),
           }));
         }
         if (!isRateLimitError(e) || attempt >= backoffs.length || !canAttempt(breakerKey)) throw e;
@@ -247,7 +269,21 @@ export class DataAdapter {
     // vault-local file instead of an HTTP endpoint.
     const def = this.resolveCustomSource(spec.sourceId);
     if (def.format === "csv") {
-      return new CsvQuoteClient(def, this.readVaultFile).fetchKline(spec.symbol, start, end);
+      if (!def.filePath) {
+        // Remote CSV/TSV: fetched over HTTP, health already recorded by
+        // sendSourceRequest.
+        return new CsvQuoteClient(def, this.readVaultFile).fetchKline(spec.symbol, start, end);
+      }
+      // Vault-local CSV: record the read/parse outcome for the settings-page
+      // connection badge (no HTTP seam to catch it otherwise).
+      try {
+        const rows = await new CsvQuoteClient(def, this.readVaultFile).fetchKline(spec.symbol, start, end);
+        reportSourceHealth(def.id, true);
+        return rows;
+      } catch (e) {
+        reportSourceHealth(def.id, false, redactError(e));
+        throw e;
+      }
     }
     // The classification the search endpoint declared for this code,
     // persisted in the symbol cache when the user picked it — it outranks

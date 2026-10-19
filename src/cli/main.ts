@@ -11,13 +11,16 @@ import * as path from "path";
 import {
   CliError,
   createVaultContext,
+  listIndicatorGroups,
   listSources,
   probeData,
+  renderCardToFile,
+  renderDoc,
   searchSymbols,
   validateCards,
-  validateConfig,
 } from "./commands";
 import { ASSET_TYPES } from "../types";
+import { redactSecrets } from "../modules/redact";
 
 interface ParsedArgs {
   _: string[];
@@ -52,7 +55,9 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function out(data: unknown): void {
-  process.stdout.write(JSON.stringify(data, null, 2) + "\n");
+  // All CLI output passes the central redactor (secrets enter the process via
+  // env vars and could be echoed back inside error payloads or responses).
+  process.stdout.write(redactSecrets(JSON.stringify(data, null, 2)) + "\n");
 }
 
 const USAGE = `StrataBoard CLI — 供外部 AI 在不启动 Obsidian 的情况下查询本 vault 的金融数据配置。
@@ -68,36 +73,27 @@ const USAGE = `StrataBoard CLI — 供外部 AI 在不启动 Obsidian 的情况�
       资产类型: ${ASSET_TYPES.join(" | ")}
   sources
       列出全部自定义数据源（含脚本产物标记）。
+  groups
+      列出全部指标组（命名指标组合，可在卡片编辑弹窗一键应用）。
   validate <文件路径|->
       校验一个 Markdown 文件中所有 StrataBoard 卡片块（"-" 表示从 stdin 读）。
       全部通过退出码 0，任一失败退出码 1。
   probe <代码> [--type <资产类型>=custom] [--source <数据源id>] [--days N=14]
       探测某代码最近 N 天是否真有数据。必须带 --source。
-  validate-config <配置文件路径> [--days N=400] [--api-key <密钥|名称=密钥>]... [--api-key-file <json路径>] [--structural-only]
-      导入前验证一个数据源配置 JSON（数组）：逐源结构校验 + 对 testCode 与
-      全部 symbols 实发请求探测（默认 400 天窗口，--days 覆盖；干净 0 行会自动加宽到
-      约 10 年复核一次以区分退市与配置错误），配了搜索模板的源发一次搜索（模板含
-      {p.*} 时还会加测一个搜索结果代码，覆盖"代码不在符号表"的场景）。
-      密钥解析顺序：文件内（含同组回落）→ 注入 → vault 里同名或同组的已配源。
-      注入：--api-key 可重复，值是 <密钥>（全局兜底）或 <组名或源名>=<密钥>
-      （按组名 > 源名 > 全局兜底指派）；--api-key-file 读 {"组名或源名": "密钥"} JSON
-      （路径绝对或 vault 相对）；再兜底 STRATABOARD_API_KEY 环境变量。
-      --structural-only 只做结构校验、不发任何请求。
-      路径可以是绝对路径或 vault 相对路径。全部通过退出码 0，任一失败退出码 1。
+  render-card <文件路径|-> [--out <png路径>] [--width N=960] [--height N]
+      把输入 Markdown 里的第一个卡片块（quote/overlay/spread）渲染成 PNG 图片
+      （"-" 表示从 stdin 读）。默认输出 ./<标题>-<日期>.png。
+      需要插件目录里有 canvas 原生模块（npm run build 部署时自带）。
+  render-doc <文章.md> [--out-dir <目录>] [--out-md <路径>] [--width N=960] [--height N]
+      把文章里所有卡片块渲染成 PNG（默认输出到 <文章名>.assets/），并生成一份
+      图片链接版 Markdown（默认 <文章名>.images.md），可直接发布到飞书等平台。
+      不支持的卡片类型（financial-widget/calendar）保留原文。路径可以是绝对
+      路径或 vault 相对路径。全部渲染成功退出码 0，任一失败退出码 1。
 `;
 
 function flagString(flags: ParsedArgs["flags"], name: string): string | undefined {
   const v = flags[name];
   return typeof v === "string" && v !== "" ? v : undefined;
-}
-
-// All values of a repeatable flag (single value comes back as a one-element
-// list; boolean-only flags come back empty).
-function flagStrings(flags: ParsedArgs["flags"], name: string): string[] {
-  const v = flags[name];
-  if (typeof v === "string") return [v];
-  if (Array.isArray(v)) return v;
-  return [];
 }
 
 function flagInt(flags: ParsedArgs["flags"], name: string, def: number): number {
@@ -135,6 +131,9 @@ async function main(): Promise<void> {
     case "sources":
       out(listSources(needVault()));
       break;
+    case "groups":
+      out(listIndicatorGroups(needVault()));
+      break;
     case "validate": {
       const target = args._[1];
       if (!target) throw new CliError("validate 需要一个 Markdown 文件路径（或 - 表示 stdin）。");
@@ -158,42 +157,39 @@ async function main(): Promise<void> {
         sourceId: flagString(args.flags, "source"),
         days: flagInt(args.flags, "days", 14),
       });
-      if (result.hint) process.stderr.write(`提示：${result.hint}\n`);
+      if (result.hint) process.stderr.write(`提示：${redactSecrets(result.hint)}\n`);
       out(result);
       break;
     }
-    case "validate-config": {
+    case "render-card": {
       const target = args._[1];
-      if (!target) throw new CliError("validate-config 需要一个配置文件路径（绝对路径或 vault 相对路径）。");
-      const ctx = needVault();
-      // Named key injections: "--api-key <key>" is the global fallback (the
-      // "" entry), "--api-key <组名或源名>=<key>" targets one group/source;
-      // --api-key-file merges a {"name": "key"} JSON object underneath.
-      const apiKeys: Record<string, string> = {};
-      const keyFile = flagString(args.flags, "api-key-file");
-      if (keyFile) {
-        const keyPath = path.isAbsolute(keyFile) ? keyFile : path.join(ctx.vault, keyFile);
-        if (!fs.existsSync(keyPath)) throw new CliError(`密钥文件不存在: ${keyPath}`);
-        try {
-          const parsed = JSON.parse(fs.readFileSync(keyPath, "utf8"));
-          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("必须是对象");
-          for (const [k, v] of Object.entries(parsed)) {
-            if (typeof v === "string" && v.trim()) apiKeys[k.trim()] = v.trim();
-          }
-        } catch (e) {
-          throw new CliError(`密钥文件不是合法 JSON（{"组名或源名": "密钥"}）: ${keyPath} — ${e instanceof Error ? e.message : String(e)}`);
-        }
+      if (!target) throw new CliError("render-card 需要一个 Markdown 文件路径（或 - 表示 stdin）。");
+      let text: string;
+      if (target === "-") {
+        text = fs.readFileSync(0, "utf8");
+      } else {
+        const file = path.resolve(target);
+        if (!fs.existsSync(file)) throw new CliError(`文件不存在: ${file}`);
+        text = fs.readFileSync(file, "utf8");
       }
-      for (const spec of flagStrings(args.flags, "api-key")) {
-        const eq = spec.indexOf("=");
-        if (eq > 0) apiKeys[spec.slice(0, eq).trim()] = spec.slice(eq + 1).trim();
-        else apiKeys[""] = spec.trim();
-      }
-      const result = await validateConfig(ctx, {
+      const result = await renderCardToFile(needVault(), {
+        markdown: text,
+        out: flagString(args.flags, "out"),
+        width: flagInt(args.flags, "width", 960),
+        height: flagInt(args.flags, "height", 0) || undefined,
+      });
+      out(result);
+      break;
+    }
+    case "render-doc": {
+      const target = args._[1];
+      if (!target) throw new CliError("render-doc 需要一个 Markdown 文件路径（绝对路径或 vault 相对路径）。");
+      const result = await renderDoc(needVault(), {
         file: target,
-        days: flagInt(args.flags, "days", 400),
-        apiKeys: Object.keys(apiKeys).length > 0 ? apiKeys : undefined,
-        structuralOnly: Boolean(args.flags["structural-only"]),
+        outDir: flagString(args.flags, "out-dir"),
+        outMd: flagString(args.flags, "out-md"),
+        width: flagInt(args.flags, "width", 960),
+        height: flagInt(args.flags, "height", 0) || undefined,
       });
       out(result);
       if (!result.ok) process.exitCode = 1;
@@ -206,7 +202,12 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
-  const message = e instanceof Error ? e.message : String(e);
-  process.stderr.write(JSON.stringify({ ok: false, error: message }, null, 2) + "\n");
+  // Thrown values are not always Error instances (some parsers throw plain
+  // {message} objects) — dig the message out instead of "[object Object]".
+  const message =
+    e instanceof Error ? e.message
+    : typeof e === "object" && e !== null && "message" in e ? String((e as { message: unknown }).message)
+    : String(e);
+  process.stderr.write(JSON.stringify({ ok: false, error: redactSecrets(message) }, null, 2) + "\n");
   process.exitCode = 1;
 });

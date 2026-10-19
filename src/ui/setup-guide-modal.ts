@@ -5,12 +5,14 @@ import { AI_SOURCE_PROMPT } from "./custom-source-modal";
 
 // First-run guide shown when 插入图表 (or the md-note insert menu) is invoked
 // with no enabled custom source: the plugin ships no data sources, so the
-// modal explains that and offers the two ways forward — configure a source in
-// settings, or copy the guided prompt and let the user's own AI generate the
-// config. Widget/calendar entries are NOT exempted here: they have their own
-// commands/menus.
+// modal explains that and offers the ways forward — configure a source in
+// settings, hand the task to the in-plugin AI panel (when wired), or copy the
+// guided prompt for the user's own AI. Widget/calendar entries are NOT
+// exempted here: they have their own commands/menus.
 export class SetupGuideModal extends Modal {
-  constructor(app: App) {
+  // Opens the AI panel with an add-source task (main.ts wires this; absent in
+  // contexts without the panel).
+  constructor(app: App, private onOpenAiPanel?: () => void) {
     super(app);
     this.setTitle(t("先配置数据源"));
   }
@@ -26,8 +28,15 @@ export class SetupGuideModal extends Modal {
     const settingsBtn = footer.createEl("button", { text: t("打开数据源设置"), cls: "mod-cta" });
     settingsBtn.addEventListener("click", () => {
       this.close();
-      openSettingsTab(this.app, "data-source");
+      openSettingsTab(this.app, "data-sources");
     });
+    if (this.onOpenAiPanel) {
+      const aiBtn = footer.createEl("button", { text: t("让 AI 帮我配置") });
+      aiBtn.addEventListener("click", () => {
+        this.close();
+        this.onOpenAiPanel?.();
+      });
+    }
     const copyBtn = footer.createEl("button", { text: t("复制 AI 引导提示词") });
     copyBtn.addEventListener("click", () => {
       void navigator.clipboard.writeText(t(AI_SOURCE_PROMPT)).then(

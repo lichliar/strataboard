@@ -25,7 +25,7 @@ body {
   --fc-positive: oklch(58% 0.16 145);
   --fc-negative: oklch(50% 0.20 25);
 
-  /* Error recipe (wireframe 数据计算卡): red outline + inline hint text. */
+  /* Error recipe (wireframe calc card): red outline + inline hint text. */
   --fc-error-border: oklch(58% 0.2 25);
   --fc-error-text: oklch(52% 0.19 25);
 
@@ -253,7 +253,7 @@ body.theme-dark {
 
 /* Error state — red outline on the offending input, inline hint with a
    warning icon below it, and the primary button disabled (all three
-   together, per the wireframe 数据计算卡 error demo). */
+   together, per the wireframe calc-card error demo). */
 .fc-input-error,
 .fc-input-error:focus {
   border-color: var(--fc-error-border) !important;
@@ -320,8 +320,9 @@ body.theme-dark {
 }
 
 /* The description tooltip, styled after Obsidian's native .tooltip. It lives
-   on document.body with fixed positioning (see src/ui/info-desc.ts); top/left
-   are set inline from the owner icon's bounding rect. */
+   under <html> with fixed positioning (see src/ui/info-desc.ts), outside any
+   transformed settings/modal body subtree; top/left are set inline from the
+   owner icon's bounding rect. */
 .fc-info-tip {
   position: fixed;
   /* Above modals (same layer as Obsidian's native tooltips); the popover
@@ -354,6 +355,44 @@ body.theme-dark {
 }
 .fc-source-group-member .setting-item-info {
   padding-left: 16px;
+}
+/* 数据源设置: palette-dot avatar with the entry's first character (color
+   comes from the same stable hash the 插入图表 menu dots use). */
+.fc-source-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 8px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  flex: none;
+  vertical-align: middle;
+}
+/* 数据源设置: session connection badge in the row control area. */
+.fc-source-health {
+  align-self: center;
+  margin-right: 8px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.fc-source-health-ok {
+  color: var(--text-success);
+  background-color: color-mix(in srgb, var(--text-success) 12%, transparent);
+}
+.fc-source-health-failed {
+  color: var(--text-error);
+  background-color: color-mix(in srgb, var(--text-error) 12%, transparent);
+}
+.fc-source-health-unknown {
+  color: var(--text-muted);
+  background-color: var(--background-secondary);
 }
 
 /* 脚本处理 manager: subfolder header row grouping the recursive script list. */
@@ -517,7 +556,7 @@ body.theme-dark {
   margin-top: 12px;
 }
 
-/* Disabled primary action (wireframe 数据计算卡 error state). */
+/* Disabled primary action (wireframe calc-card error state). */
 .fc-modal-footer button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -614,7 +653,7 @@ body.theme-dark {
   white-space: pre-wrap;
 }
 
-/* ===== 数据计算卡 modal (wireframe #screen-calc) ===== */
+/* ===== Calc card modal (wireframe #screen-calc) ===== */
 
 /* Expression error hint sits right under the 公式 input. */
 .fc-calc-expr-error {
@@ -623,6 +662,30 @@ body.theme-dark {
 
 .fc-calc-expr-help {
   margin: 4px 0 0 4px;
+}
+
+/* Quick-expression template buttons under the 公式 input. */
+.fc-expr-templates {
+  display: flex;
+  gap: 6px;
+  margin: 2px 0 0 4px;
+}
+
+.fc-expr-template {
+  padding: 2px 10px;
+  font-size: 12px;
+  font-family: var(--font-monospace);
+  color: var(--fc-muted);
+  border: 1px dashed var(--fc-border);
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.fc-expr-template:hover {
+  color: var(--fc-accent);
+  border-color: var(--fc-accent);
 }
 
 .fc-calc-series-rows {
@@ -763,6 +826,29 @@ body.theme-dark {
   padding: 0 16px;
 }
 
+.fc-indicator-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.fc-indicator-group-toggle {
+  padding: 2px 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 /* One indicator instance block (技术指标 tab): a collapsible <details> whose
    summary carries the name + parameter summary + 删除; the auto-generated
    parameter form folds away. The triangle is drawn by hand, same convention
@@ -784,9 +870,30 @@ body.theme-dark {
   cursor: pointer;
 }
 
-/* Fixed-width triangle cell (12px) + the summary gap (6px) put the header
-   text at a deterministic 18px offset; .fc-indicator-instance-body pads to
-   the same edge so parameter labels line up exactly with the header text. */
+/* Drag handle (14px) + gap (6px) + fixed-width triangle cell (12px) + the
+   summary gap (6px) put the header text at a deterministic 38px offset;
+   .fc-indicator-instance-body pads to the same edge so parameter labels line
+   up exactly with the header text. */
+.fc-indicator-drag-handle {
+  flex: none;
+  width: 14px;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  color: var(--fc-muted);
+  cursor: grab;
+  opacity: 0.5;
+}
+
+.fc-indicator-drag-handle:hover {
+  opacity: 1;
+}
+
+.fc-indicator-drag-handle svg {
+  width: 14px;
+  height: 14px;
+}
+
 .fc-indicator-tri {
   flex: none;
   width: 12px;
@@ -839,7 +946,7 @@ body.theme-dark {
 }
 
 .fc-indicator-instance-body {
-  padding-left: 18px;
+  padding-left: 38px;
   padding-bottom: 4px;
 }
 
@@ -864,6 +971,52 @@ body.theme-dark {
 
 .fc-indicator-input .setting-item-control {
   align-items: center;
+}
+
+/* 主图/副图 badge in the instance header, next to the short title. */
+.fc-indicator-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--fc-border);
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 16px;
+  vertical-align: middle;
+  color: var(--fc-muted);
+  background: var(--background-secondary);
+}
+
+/* Inline marker for an instance whose last chart-side calculation failed;
+   the full error message is the hover tooltip. */
+.fc-indicator-error {
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--text-error);
+  cursor: help;
+}
+
+/* Drag-sort affordances: the dragged row fades; the drop target gets an
+   accent line on the edge the row will be inserted at. */
+.fc-indicator-instance.fc-indicator-dragging {
+  opacity: 0.4;
+}
+
+.fc-indicator-instance.fc-indicator-drop-before {
+  box-shadow: 0 -2px 0 0 var(--interactive-accent);
+}
+
+.fc-indicator-instance.fc-indicator-drop-after {
+  box-shadow: 0 2px 0 0 var(--interactive-accent);
+}
+
+/* Category group header inside the indicator picker's suggestion rows (drawn
+   inside the first row of each group so every row stays selectable). */
+.fc-indicator-picker-category {
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fc-muted);
 }
 
 /* Stacked setting rows (数据源设置 token fields, source setup modals):
@@ -996,6 +1149,8 @@ body.theme-dark {
 
 /* Card container */
 .strataboard-card {
+  /* Anchors the absolute chart-mode status strip (.fc-chart-mode-bar). */
+  position: relative;
   padding: 8px;
   border-radius: 6px;
   border: 1px solid var(--background-modifier-border);
@@ -1216,22 +1371,76 @@ body.theme-dark {
   overflow: hidden;
 }
 
-/* Canvas interaction model for chart cards (see TushareCodeBlockRenderer):
+/* Canvas interaction model for chart cards (ChartCardCodeBlockRenderer):
    - inactive (default): Obsidian's .canvas-node-content-blocker (absolute,
      full-size, z-index: --layer-cover) covers the card, so single click/drag
      selects and moves the canvas node;
    - active (double-click adds .fc-chart-active to the node): the blocker is
      hidden, so hover drives the crosshair and dragging pans the K-line;
-   - double-click while active opens the settings modal; chart mode exits on
-     outside click or Escape. */
+     chart mode exits on outside click or Escape. A second double-click does
+     nothing — editing lives on the footer edit button and the canvas node
+     context menu. */
 .canvas-node.fc-chart-active .canvas-node-content-blocker {
   display: none !important;
 }
 
-/* Accent outline marks chart mode so the active state is visible. */
+/* Chart mode is signaled by more than color: the accent outlines on the node
+   and the card are the non-color channel, and the .fc-chart-mode-bar strip
+   adds icon + text. */
+.canvas-node.fc-chart-active {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 .canvas-node.fc-chart-active .strataboard-card {
-  outline: 1px solid var(--color-accent);
-  outline-offset: -1px;
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+/* Chart-mode status strip (icon + text), absolute over the card top so it
+   never shifts the chart layout; translucent accent background stays
+   readable over the chart in both themes. */
+.fc-chart-mode-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-on-accent, #fff);
+  background: color-mix(in srgb, var(--color-accent) 85%, transparent);
+  pointer-events: none;
+}
+
+.fc-chart-mode-bar svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+/* One-shot 双击进入图表交互 hint: a small overlay on the canvas node,
+   dismissed on pointer leave or after a few seconds. */
+.fc-chart-mode-hint {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--layer-popover, 40);
+  padding: 4px 10px;
+  border-radius: var(--fc-radius-sm);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  box-shadow: var(--fc-shadow-md);
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* Remove default paragraph margins inside widget cards. */
@@ -1303,38 +1512,6 @@ body.theme-dark {
   line-height: 1.3;
 }
 
-.strataboard-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.strataboard-header-btn {
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 5px;
-  background: var(--fc-surface);
-  border: 1px solid var(--fc-border);
-  border-radius: 5px;
-  cursor: pointer;
-  color: var(--fc-muted);
-  box-shadow: none;
-}
-
-.strataboard-header-btn svg {
-  width: 14px;
-  height: 14px;
-}
-
-.strataboard-header-btn:hover {
-  background: var(--fc-empty);
-  color: var(--fc-fg);
-}
-
 .strataboard-header-quote {
   display: flex;
   align-items: baseline;
@@ -1358,6 +1535,16 @@ body.theme-dark {
 
 .strataboard-header-script-stale {
   color: var(--text-warning, #e5b567);
+}
+
+/* Per-card indicator failure note (a broken indicator never blocks the card;
+ * this line names the failed ones). */
+.strataboard-indicator-warning {
+  color: var(--text-warning, #e5b567);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.3;
+  margin: 4px 0;
+  cursor: help;
 }
 
 .strataboard-header-price {
@@ -1450,6 +1637,12 @@ body.theme-dark {
   padding: 4px 6px;
 }
 
+/* Canvas content blockers can prevent the card surface from receiving hover;
+   footer actions remain visible and usable in the fixed bottom strip. */
+.strataboard-card-note .strataboard-card-tools {
+  opacity: 1;
+}
+
 /* Series cards (overlay/spread) have no period tabs on the left — pin the
    tool buttons to the right edge. */
 .financial-series-chart .strataboard-card-footer {
@@ -1460,6 +1653,15 @@ body.theme-dark {
   display: flex;
   gap: 6px;
   align-items: center;
+  /* Footer tools stay quiet until the card is hovered or focused; status
+     badges (fc-card-badge) are always visible. */
+  opacity: 0.3;
+  transition: opacity 120ms ease-in-out;
+}
+
+.strataboard-card:hover .strataboard-card-tools,
+.strataboard-card:focus-within .strataboard-card-tools {
+  opacity: 1;
 }
 
 .strataboard-tool-btn {
@@ -1502,6 +1704,12 @@ body.theme-dark {
   position: relative;
 }
 
+/* Keep the manual chart-height control readable in Obsidian's compact
+   Setting rows; the default text-input width is too narrow for the hint. */
+.fc-card-height-input {
+  width: 180px !important;
+}
+
 /* lightweight-charts lays out its panes and the time axis with an internal
    <table>. Obsidian's global table styles (theme/snippet rules putting
    borders and padding on td) leak into it and break the chart's height
@@ -1538,6 +1746,28 @@ body.theme-dark {
   height: 100%;
   position: relative;
   box-sizing: border-box;
+}
+
+.fc-chart-pane-label {
+  position: absolute;
+  left: 8px;
+  z-index: 4;
+  max-width: 42%;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fc-bg, var(--background-primary)) 82%, transparent);
+  color: var(--fc-muted, var(--text-muted));
+  font-size: 11px;
+  line-height: 1.25;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fc-chart-pane-label-clickable {
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 /* Signal hover readout: full-text chip near the crosshair for bars carrying
@@ -1768,6 +1998,109 @@ body.theme-dark {
   background: var(--fc-empty);
 }
 
+/* ===== Shared card status UI (modules/card-status.ts) ===== */
+
+/* Loading skeleton: fixed-height shimmer placeholder (pure CSS animation). */
+.fc-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+
+.fc-skeleton-header,
+.fc-skeleton-chart {
+  border-radius: var(--fc-radius-sm);
+  background: linear-gradient(90deg, var(--fc-empty) 25%, var(--fc-surface) 50%, var(--fc-empty) 75%);
+  background-size: 200% 100%;
+  animation: fc-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.fc-skeleton-header {
+  height: 44px;
+  flex-shrink: 0;
+}
+
+.fc-skeleton-chart {
+  flex: 1;
+}
+
+@keyframes fc-skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Non-blocking status badges at the very top of a card (always visible,
+   unlike the footer tools). */
+.fc-card-badge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--fc-border);
+}
+
+.fc-card-badge-cache {
+  color: var(--fc-muted);
+  background: var(--fc-empty);
+}
+
+.fc-card-badge-stale {
+  color: var(--text-warning);
+  background: var(--fc-empty);
+}
+
+.fc-card-badge-btn {
+  padding: 2px 10px;
+  border-radius: var(--fc-radius-sm);
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface);
+  color: var(--fc-fg);
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: none;
+  flex-shrink: 0;
+}
+
+.fc-card-badge-btn:hover {
+  background: var(--fc-empty);
+}
+
+/* Load-error block: action button row + collapsed technical details. */
+.fc-card-status-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.fc-card-status-details {
+  max-width: 90%;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.fc-card-status-details-body {
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow: auto;
+  background: var(--fc-empty);
+  padding: 6px 8px;
+  border-radius: var(--fc-radius-sm);
+  text-align: left;
+}
+
 /* Asset-type badge in the symbol search modal */
 .fc-symbol-meta {
   float: right;
@@ -1779,10 +2112,8 @@ body.theme-dark {
 /* Canvas toolbar (wireframe #screen-toolbar): compact vertical icon bar
    anchored to a canvas corner (default bottom-left, so it never covers the
    canvas back button), strata-layers logo mark on top (click to collapse),
-   drag handle (moves the bar in 2D, offset persists), width-resize strip on
-   the canvas-facing edge, reorderable entry buttons, then refresh + settings.
-   Width and icon size come from the --fc-tb-w / --fc-tb-icon vars set by
-   applyPosition(). */
+   drag handle (moves the bar in 2D, offset persists), entry buttons, then
+   refresh + settings. */
 .strataboard-toolbar {
   position: absolute;
   display: flex;
@@ -1790,7 +2121,7 @@ body.theme-dark {
   align-items: center;
   gap: 3px;
   z-index: 100;
-  width: var(--fc-tb-w, 44px);
+  width: 44px;
   padding: 5px;
   background: var(--fc-surface);
   border: 1px solid var(--fc-border);
@@ -1798,38 +2129,34 @@ body.theme-dark {
   box-shadow: var(--fc-shadow-md);
 }
 
-.fc-tb-logo {
+/* The logo is a real <button> (keyboard-reachable collapse toggle); reset
+   the button chrome and keep its larger 32×32 footprint over the generic
+   34×34 icon-button rules below. */
+.strataboard-toolbar button.fc-tb-logo {
   width: 32px;
   height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 0;
+  border: none;
   border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
   cursor: pointer;
   flex-shrink: 0;
   margin-bottom: 4px;
   color: var(--fc-accent);
 }
 
-.fc-tb-logo svg {
+.strataboard-toolbar button.fc-tb-logo svg {
   width: 24px;
   height: 24px;
 }
 
-.fc-tb-logo:hover {
+.strataboard-toolbar button.fc-tb-logo:hover {
   background: var(--fc-empty);
-}
-
-/* Text display effect: the logo mark becomes a horizontal StrataBoard word
-   mark (toolbar.ts renders it when toolbarStyle === "text"). */
-.fc-tb-logo.fc-tb-logo-text {
-  width: auto;
-  height: auto;
-  padding: 6px 10px;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
+  color: var(--fc-accent);
 }
 
 .fc-tb-drag {
@@ -1846,29 +2173,14 @@ body.theme-dark {
   cursor: grabbing;
 }
 
-/* Width-resize strip: hugs the canvas-facing edge (right edge by default;
-   .fc-tb-anchor-right flips it to the left edge). */
-.fc-tb-resize {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  right: -5px;
-  width: 8px;
-  cursor: ew-resize;
-  z-index: 1;
-}
-
-.strataboard-toolbar.fc-tb-anchor-right .fc-tb-resize {
-  right: auto;
-  left: -5px;
-}
-
-.strataboard-toolbar button {
+/* Icon buttons are direct children (≥32×32 click target); scoped with `>` so
+   the first-run hint's close button keeps its own smaller styling. */
+.strataboard-toolbar > button {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: calc(var(--fc-tb-icon, 16px) + 18px);
-  height: calc(var(--fc-tb-icon, 16px) + 18px);
+  width: 34px;
+  height: 34px;
   padding: 0;
   background: transparent;
   border: 1px solid transparent;
@@ -1879,33 +2191,20 @@ body.theme-dark {
   flex-shrink: 0;
 }
 
-.strataboard-toolbar button svg {
-  width: var(--fc-tb-icon, 16px);
-  height: var(--fc-tb-icon, 16px);
+.strataboard-toolbar > button svg {
+  width: 16px;
+  height: 16px;
 }
 
-.strataboard-toolbar button:hover {
+.strataboard-toolbar > button:hover {
   background: var(--fc-empty);
   color: var(--fc-fg);
 }
 
-/* Text mode (显示效果=文字): labels instead of icons, left-aligned; the
-   dragged width acts as the minimum, content may widen the bar. */
-.strataboard-toolbar:has(.fc-tb-text-btn) {
-  width: auto;
-  min-width: var(--fc-tb-w, 44px);
-  align-items: stretch;
-}
-
-.strataboard-toolbar button.fc-tb-text-btn {
-  width: auto;
-  height: auto;
-  padding: 5px 10px;
-  font-size: 12px;
-  line-height: 1.4;
-  white-space: nowrap;
-  text-align: left;
-  justify-content: flex-start;
+/* Keyboard focus ring on every toolbar button (logo included). */
+.strataboard-toolbar button:focus-visible {
+  outline: 2px solid var(--fc-accent);
+  outline-offset: 2px;
 }
 
 /* Collapsed: shrink to the logo + drag handle (wireframe 折叠状态). */
@@ -1915,12 +2214,59 @@ body.theme-dark {
   padding: 6px 5px;
 }
 
-.strataboard-toolbar.is-collapsed button {
+.strataboard-toolbar.is-collapsed > button:not(.fc-tb-logo) {
   display: none;
 }
 
 .strataboard-toolbar.is-collapsed .fc-tb-logo {
   margin-bottom: 0;
+}
+
+/* One-shot first-run hint bubble beside the bar (toolbar.ts
+   maybeShowFirstHint); flips to the bar's inner side when the bar hugs the
+   right edge. */
+.fc-tb-first-hint {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 8px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-md);
+  background: var(--fc-surface);
+  box-shadow: var(--fc-shadow-md);
+  color: var(--fc-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.fc-tb-first-hint.fc-tb-hint-left {
+  left: auto;
+  right: calc(100% + 8px);
+}
+
+.fc-tb-first-hint button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fc-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fc-tb-first-hint button:hover {
+  background: var(--fc-empty);
+  color: var(--fc-fg);
 }
 
 /* Legacy overlay - kept minimal in case other code references it */
@@ -2335,6 +2681,34 @@ body.theme-dark {
   gap: 8px;
 }
 
+/* 清理维护 legacy card-ref upgrade banner (settings.ts renderCleanupSettings).
+   Theme variables only, so it reads clearly in both light and dark themes. */
+.fc-migration-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--text-accent);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.fc-migration-banner-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.fc-migration-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.fc-migration-banner-title {
+  font-weight: 600;
+}
+
 /* 升级卡片引用 report modal (settings.ts CardRefMigrationReportModal). */
 .fc-migration-report {
   max-height: 300px;
@@ -2348,15 +2722,6 @@ body.theme-dark {
 
 .fc-migration-report-row + .fc-migration-report-row {
   border-top: 1px solid var(--background-modifier-border);
-}
-
-/* Review-compliance helpers: dynamic canvas bleed via CSS var + classes. */
-.fc-canvas-bleed {
-  padding: var(--fc-bleed) !important;
-}
-
-.fc-canvas-height-auto {
-  height: auto !important;
 }
 
 /* Hides embedded-preview chrome (frontmatter, inline title, …) inside cards. */
@@ -2416,13 +2781,28 @@ body.theme-dark {
   overflow: auto;
 }
 
+/* 指标组编辑弹窗: 设计说明的 Markdown 预览（indicator-group-modal.ts）。 */
+.fc-group-note-preview {
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-md);
+  margin: 8px 0;
+  padding: 4px 12px;
+  font-size: 13px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.fc-group-note-preview:empty {
+  display: none;
+}
+
 /* ==========================================================================
    Print (Obsidian 导出为 PDF). The live lightweight-charts DOM is swapped
    for the static snapshot <img> rendered after the initial load (see
    forcePaint in the chart renderers): a monolithic bitmap the paginator can
    never slice mid-chart, immune to the canvas sizing races of the hidden
    print render pass. Cards also lose their screen-only chrome (period tabs,
-   tool/run/retry buttons) and revert to plain auto-height blocks — the
+   tool/retry buttons, status badges) and revert to plain auto-height blocks — the
    screen styles (display: flex + overflow: hidden) would make the card an
    unsplittable box that Chromium clips at the page boundary.
    ========================================================================== */
@@ -2432,8 +2812,9 @@ body.theme-dark {
 
 @media print {
   .strataboard-card .strataboard-card-footer,
-  .strataboard-card .strataboard-header-actions,
-  .strataboard-card .strataboard-retry-btn {
+  .strataboard-card .strataboard-retry-btn,
+  .strataboard-card .fc-card-badge,
+  .strataboard-card .fc-skeleton {
     display: none;
   }
   .strataboard-card {
@@ -2462,4 +2843,370 @@ body.theme-dark {
     width: 100%;
     height: auto;
   }
+}
+
+/* Unified search modal (fc-usearch-*): three layers — search row (icon +
+   input + 数据源 scope button + clear), scope row (current-scope chip +
+   searchable scope panel), result area (local results, per-source online
+   buckets, status footer). Theme-agnostic: Obsidian variables only. */
+.fc-usearch-modal .modal-content {
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+}
+.fc-usearch {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.fc-usearch-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fc-usearch-search-icon {
+  display: flex;
+  color: var(--text-muted);
+  flex: none;
+}
+.fc-usearch-input {
+  flex: 1;
+  min-width: 0;
+}
+.fc-usearch-clear {
+  display: flex;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex: none;
+  padding: 4px;
+  border-radius: var(--fc-radius-sm, 4px);
+}
+.fc-usearch-clear:hover {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
+}
+.fc-usearch-scope-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.fc-usearch-chip {
+  padding: 2px 10px;
+  border-radius: 12px;
+  background-color: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  user-select: none;
+}
+.fc-usearch-chip:hover {
+  background-color: var(--background-modifier-hover);
+}
+.fc-usearch-scope-panel {
+  position: absolute;
+  top: 64px;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background-color: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--fc-radius-sm, 6px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  max-height: 40vh;
+  overflow: hidden;
+}
+.fc-usearch-scope-filter {
+  width: 100%;
+  flex: none;
+}
+.fc-usearch-scope-list {
+  overflow-y: auto;
+  min-height: 0;
+}
+.fc-usearch-scope-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: var(--fc-radius-sm, 4px);
+  cursor: pointer;
+}
+.fc-usearch-scope-item:hover {
+  background-color: var(--background-modifier-hover);
+}
+.fc-usearch-scope-item.is-active {
+  background-color: var(--background-modifier-active-hover);
+}
+.fc-usearch-scope-item.is-disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.fc-usearch-scope-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fc-usearch-scope-item-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+.fc-usearch-tag {
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: var(--font-ui-smallest);
+  color: var(--text-muted);
+  background-color: var(--background-secondary);
+  white-space: nowrap;
+}
+.fc-usearch-cred-missing {
+  color: var(--text-accent);
+}
+.fc-usearch-prefilled {
+  padding: 4px 8px;
+  border-radius: var(--fc-radius-sm, 4px);
+  background-color: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.fc-usearch-results {
+  flex: 1;
+  min-height: 120px;
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--fc-radius-sm, 6px);
+  padding: 4px;
+}
+.fc-usearch-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.fc-usearch-clear-history {
+  font-size: var(--font-ui-smallest);
+}
+.fc-usearch-row {
+  padding: 6px 8px;
+  border-radius: var(--fc-radius-sm, 4px);
+  cursor: pointer;
+}
+.fc-usearch-row.is-active {
+  background-color: var(--background-modifier-hover);
+}
+.fc-usearch-row-main {
+  min-width: 0;
+}
+.fc-usearch-empty {
+  padding: 10px 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.fc-usearch-hint {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.fc-usearch-online-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+}
+.fc-usearch-online-btn {
+  width: 100%;
+}
+.fc-usearch-bucket {
+  margin-top: 6px;
+}
+.fc-usearch-bucket-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px;
+  font-size: var(--font-ui-smaller);
+}
+.fc-usearch-bucket-name {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.fc-usearch-bucket-state {
+  color: var(--text-muted);
+}
+.fc-usearch-bucket-failed {
+  color: var(--text-error);
+}
+.fc-usearch-bucket-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 8px;
+}
+.fc-usearch-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+/* ===== AI 任务面板 (ui/ai-panel-view.ts — right sidebar ItemView) ===== */
+/* Follows the Obsidian theme via the body-scope --fc-* tokens (both light
+   and dark); the hermes palette is NOT applied here — this is sidebar UI,
+   not a card surface. */
+.fc-ai-panel {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: var(--font-ui-small);
+  color: var(--fc-fg);
+}
+.fc-ai-title {
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+}
+.fc-ai-context {
+  font-size: 11px;
+  color: var(--fc-muted);
+  line-height: 1.5;
+}
+.fc-ai-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.fc-ai-task-group {
+  flex-basis: 100%;
+  color: var(--fc-fg);
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.fc-ai-quick-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--fc-border);
+  background: transparent;
+  color: var(--fc-muted);
+  cursor: pointer;
+  box-shadow: none;
+}
+.fc-ai-quick-btn:hover {
+  color: var(--fc-fg);
+  background: var(--fc-empty);
+}
+.fc-ai-quick-btn.is-active {
+  border-color: var(--fc-accent);
+  color: var(--fc-accent);
+}
+.fc-ai-input textarea {
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+}
+.fc-ai-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.fc-ai-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fc-muted);
+}
+.fc-ai-status button {
+  margin-left: auto;
+}
+.fc-ai-spinner {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 2px solid var(--fc-border);
+  border-top-color: var(--fc-accent);
+  border-radius: 50%;
+  animation: fc-ai-spin 0.8s linear infinite;
+}
+@keyframes fc-ai-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.fc-ai-proposal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-md);
+  background: var(--fc-surface);
+}
+.fc-ai-proposal-summary {
+  line-height: 1.5;
+}
+.fc-ai-details {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  background: var(--fc-empty);
+  border-radius: var(--fc-radius-sm);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.fc-ai-error {
+  padding: 10px;
+  border: 1px solid var(--fc-error-border);
+  border-radius: var(--fc-radius-md);
+  color: var(--fc-error-text);
+  line-height: 1.5;
+}
+/* Source-proposal field diff (add-source: whole draft; fix-source: patch
+   fields only) and the read-only probe outcome on the proposal card. */
+.fc-ai-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  background: var(--fc-empty);
+  border-radius: var(--fc-radius-sm);
+  font-size: 11px;
+  word-break: break-all;
+}
+.fc-ai-diff-title {
+  color: var(--fc-muted);
+  margin-bottom: 2px;
+}
+.fc-ai-diff-row {
+  display: flex;
+  gap: 6px;
+  line-height: 1.5;
+}
+.fc-ai-diff-key {
+  color: var(--fc-muted);
+  flex: none;
+}
+.fc-ai-probe-result {
+  font-size: 11px;
+  color: var(--fc-muted);
+}
+.fc-ai-probe-result.is-error {
+  color: var(--fc-error-text);
 }

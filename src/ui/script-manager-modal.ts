@@ -2,11 +2,12 @@ import { App, Modal, Notice, Setting, TFile } from "obsidian";
 import type StrataBoardPlugin from "../main";
 import { ensureFolder } from "../modules/daily-notes";
 import { syncScriptSources } from "../modules/script-sources";
+import { MAX_OUTPUT_CHARS, SCRIPT_TIMEOUT_MS } from "../modules/script-runner";
 import { openSettingsTab } from "../settings";
 import { normalizePath } from "../utils/slug";
 import { t } from "../i18n";
 
-// 本地脚本 manager (toolbar 数据处理 menu / command 打开本地脚本管理): lists the
+// 本地脚本 manager (toolbar 更多 menu / command 打开本地脚本管理): lists the
 // Python scripts in the script folder RECURSIVELY, grouped by subfolder so
 // users can organize large script collections with folders. Each row has an
 // enable toggle (writes settings.disabledScripts, keyed by folder-relative
@@ -15,7 +16,7 @@ import { t } from "../i18n";
 // 部署为数据源 button (force-registers it via syncScriptSources). Scripts are
 // created outside the plugin (by the user or their AI) — there is no 新建
 // 脚本 button. The log area shows stdout/stderr of manual runs verbatim. The
-//「AI 辅助」entry is just a jump button to the settings tab holding the
+//「AI 助手」entry is just a jump button to the settings tab holding the
 // copyable script-writing prompt (single source of truth).
 
 export class ScriptManagerModal extends Modal {
@@ -62,14 +63,14 @@ export class ScriptManagerModal extends Modal {
 
     new Setting(contentEl)
       .setName(t("脚本文件夹"))
-      .setDesc(t("{folder}（在设置页「路径设置」中修改）", { folder: this.folder() }))
+      .setDesc(t("{folder}（在设置页「高级」中修改）", { folder: this.folder() }))
       .addButton((btn) => btn.setButtonText(t("打开文件夹")).onClick(() => void this.openFolder()));
 
     const scripts = this.listScripts();
     if (scripts.length === 0) {
       contentEl.createDiv({
         cls: "fc-field-hint",
-        text: t("脚本文件夹中还没有 Python 脚本：自行编写或用 AI 编写（提示词在设置页「AI 辅助」）后放入该文件夹即可，支持用子文件夹归类；脚本把结果 CSV 写入 output/ 子目录即可在卡片中使用。"),
+        text: t("脚本文件夹中还没有 Python 脚本：可在右栏 AI 助手中生成脚本草稿，确认保存后放入该文件夹即可，支持用子文件夹归类；脚本把结果 CSV 写入 output/ 子目录即可在卡片中使用。"),
       });
     }
     // Group by subfolder: root scripts first, then one section per subfolder.
@@ -150,14 +151,14 @@ export class ScriptManagerModal extends Modal {
     this.render();
   }
 
-  // ===== AI 辅助 (jump button; the copyable prompt lives in settings) =====
+  // ===== AI 助手 (jump button; the copyable prompt lives in settings) =====
 
   private renderAiSection(containerEl: HTMLElement) {
     new Setting(containerEl)
-      .setName(t("AI 辅助"))
-      .setDesc(t("编写/修改脚本的提示词（含产物契约与合规规则）在设置页「AI 辅助」tab。"))
+      .setName(t("AI 助手"))
+      .setDesc(t("在右栏 AI 助手中描述脚本需求；生成的代码仍需你确认后保存和运行。"))
       .addButton((btn) =>
-        btn.setButtonText(t("前往 AI 辅助")).onClick(() => {
+        btn.setButtonText(t("前往 AI 助手")).onClick(() => {
           this.close();
           openSettingsTab(this.app, "external-ai");
         })
@@ -171,13 +172,22 @@ export class ScriptManagerModal extends Modal {
   }
 
   private async runNow(file: TFile) {
-    this.appendLog(`$ python3 ${this.relPath(file)}`);
+    const interpreter = this.plugin.pluginSettings.pythonInterpreterPath.trim() || "python3";
+    this.appendLog(`$ ${interpreter} ${this.relPath(file)}`);
     const result = await this.plugin.runScriptFile(file);
+    if (result.cancelled) {
+      this.appendLog(t("已取消运行。"));
+      this.render();
+      return;
+    }
     if (result.stdout.trim()) this.appendLog(result.stdout.trimEnd());
     if (result.stderr.trim()) this.appendLog(result.stderr.trimEnd());
+    if (result.truncated) {
+      this.appendLog(t("（输出过长，仅保留末尾 {n} 字符）", { n: MAX_OUTPUT_CHARS }));
+    }
     this.appendLog(
       result.timedOut
-        ? t("运行超时（{s} 秒），进程已终止", { s: 180 })
+        ? t("运行超时（{s} 秒），进程已终止", { s: SCRIPT_TIMEOUT_MS / 1000 })
         : result.code === 0
           ? t("运行完成（退出码 0）")
           : t("运行失败（退出码 {code}）", { code: result.code })

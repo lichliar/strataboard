@@ -4,10 +4,11 @@
   "description": "Insert financial data cards into Obsidian Canvas",
   "main": "main.js",
   "scripts": {
-    "dev": "node scripts/copy-assets.mjs && node esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production && node scripts/copy-assets.mjs && node scripts/build-cli.mjs && node scripts/build-mcp.mjs",
-    "build:cli": "node scripts/build-cli.mjs",
-    "build:mcp": "node scripts/build-mcp.mjs",
+    "dev": "npm run check:licenses && node scripts/copy-assets.mjs && node esbuild.config.mjs",
+    "build": "npm run check:licenses && tsc -noEmit -skipLibCheck && node esbuild.config.mjs production && node scripts/copy-assets.mjs && node scripts/build-cli.mjs && node scripts/build-mcp.mjs",
+    "build:cli": "npm run check:licenses && node scripts/build-cli.mjs",
+    "build:mcp": "npm run check:licenses && node scripts/build-mcp.mjs",
+    "check:licenses": "node scripts/check-third-party-licenses.mjs",
     "version": "node version-bump.mjs && git add manifest.json versions.json",
     "release": "npm run build && node scripts/release.mjs"
   },
@@ -21,6 +22,7 @@
   "author": "izzy",
   "license": "MIT",
   "devDependencies": {
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.0.0",
     "@types/papaparse": "^5.5.2",
     "@types/sql.js": "^1.4.11",
@@ -31,7 +33,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",
+    "canvas": "^3.2.3",
     "fancy-canvas": "^2.1.0",
+    "jsdom": "^30.1.2",
     "lightweight-charts": "^5.2.1",
     "oakscriptjs": "^0.10.1",
     "papaparse": "^5.7.0",

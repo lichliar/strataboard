@@ -1,5 +1,5 @@
 import { Setting, type DropdownComponent } from "obsidian";
-import { type CustomSourceDef, type ReferenceableCard, type ReferenceableCardKind, type SeriesRef, type SignalRef, type SymbolItem } from "../types";
+import { type CustomSourceDef, type ReferenceableCard, type ReferenceableCardKind, type SeriesRef, type SymbolItem } from "../types";
 import { t } from "../i18n";
 
 // Opens the symbol picker for a custom source (remote search or manual
@@ -222,7 +222,7 @@ export class SeriesRefEditor {
       return;
     }
     const groups: { kind: ReferenceableCardKind; label: string }[] = [
-      { kind: "quote", label: "资产卡" },
+      { kind: "quote", label: "数据卡" },
       { kind: "spread", label: "计算卡" },
     ];
     for (const group of groups) {
@@ -299,95 +299,4 @@ export class SeriesRefEditor {
 // by their stable id, quote cards by path (they have no id of their own).
 function cardKeyOf(card: ReferenceableCard): string {
   return card.kind === "spread" ? `sp:${card.cardId ?? card.path}` : `q:${card.path}`;
-}
-
-/**
- * One signal row in the overlay/spread edit modals (and the quote card's
- * 信号标注 row, with codeOptional=true): a signals-source dropdown + a code
- * input + a 删除 button. Signals come from script-produced signal tables
- * (purpose: "signals" csv sources); the code filters events to one symbol.
- */
-export class SignalRefEditor {
-  readonly el: HTMLElement;
-  private sourceId: string;
-  private code: string;
-  private signalSources: CustomSourceDef[];
-  // Quote cards: code defaults to the card's own symbol, so the input is
-  // optional (placeholder carries the default). Overlay/spread: required.
-  private codeOptional: boolean;
-  private codePlaceholder: string;
-  private onRemove?: () => void;
-
-  constructor(
-    containerEl: HTMLElement,
-    initial: SignalRef | undefined,
-    signalSources: CustomSourceDef[],
-    onRemove?: () => void,
-    codeOptional = false,
-    codePlaceholder = ""
-  ) {
-    this.signalSources = signalSources;
-    this.onRemove = onRemove;
-    this.codeOptional = codeOptional;
-    this.codePlaceholder = codePlaceholder;
-    this.sourceId = initial?.sourceId ?? this.signalSources[0]?.id ?? "";
-    this.code = initial?.code ?? "";
-
-    this.el = containerEl.createDiv({ cls: "fc-series-ref-editor" });
-    this.renderControls();
-  }
-
-  private renderControls() {
-    this.el.empty();
-    const setting = new Setting(this.el).setClass("fc-series-ref-row");
-
-    setting.addDropdown((dropdown) => {
-      for (const def of this.signalSources) {
-        dropdown.addOption(def.id, def.name);
-      }
-      // Referenced source no longer configured: keep it visible so the value
-      // is never silently dropped (same discipline as SeriesRefEditor).
-      if (this.sourceId && !this.signalSources.some((def) => def.id === this.sourceId)) {
-        dropdown.addOption(this.sourceId, `${this.sourceId}${t("（不可用）")}`);
-      }
-      dropdown.setValue(this.sourceId).onChange((value) => {
-        this.sourceId = value;
-      });
-    });
-
-    setting.addText((text) =>
-      text
-        .setPlaceholder(this.codeOptional ? this.codePlaceholder : t("代码（如 600519.SH）"))
-        .setValue(this.code)
-        .onChange((value) => {
-          this.code = value;
-        })
-    );
-
-    if (this.onRemove) {
-      setting.addButton((btn) =>
-        btn.setButtonText(t("删除")).onClick(() => this.onRemove?.())
-      );
-    }
-  }
-
-  // Builds the SignalRef from the row state; code omitted when blank (quote
-  // cards default it to the card's symbol at load time).
-  toRef(): SignalRef {
-    const ref: SignalRef = { sourceId: this.sourceId };
-    const code = this.code.trim();
-    if (code) ref.code = code;
-    return ref;
-  }
-
-  // Returns a translated error message, or null when the row is valid.
-  validate(): string | null {
-    if (!this.sourceId) {
-      return t("请选择信号源（脚本产物信号表会在脚本管理器中注册）。");
-    }
-    if (!this.codeOptional && !this.code.trim()) {
-      return t("请填写代码。");
-    }
-    return null;
-  }
 }

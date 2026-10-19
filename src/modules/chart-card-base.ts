@@ -1,5 +1,6 @@
-import { MarkdownRenderChild, type App } from "obsidian";
+import { MarkdownRenderChild, setIcon, type App } from "obsidian";
 import { nextFrameBounded, onAttached } from "../utils/dom";
+import { t } from "../i18n";
 
 // Minimal slice of the plugin the base class needs; keeps this module free
 // of the main.ts import cycle. The full plugin satisfies it structurally.
@@ -8,6 +9,11 @@ export interface ChartCardPluginHost {
   // Live chart card renderers; the script-output invalidation re-renders all
   // of them (registered/unregistered in onload/onunload below).
   chartRenderers: Set<ChartCardRefreshHandle>;
+  // One-shot 双击进入图表交互 hint state (persisted in plugin settings): the
+  // hint shows on the first hover over an inactive canvas chart card, then
+  // never again.
+  isChartModeHintShown(): boolean;
+  markChartModeHintShown(): void;
 }
 
 // Public re-render surface of a chart card renderer (the plugin-level
@@ -16,54 +22,20 @@ export interface ChartCardRefreshHandle {
   refreshCard(): void;
 }
 
-/** The card spec's Canvas 设置 fields, resolved against defaults. */
-export interface CanvasDisplayOptions {
-  widthAuto: boolean;
-  heightAuto: boolean;
-  bleed: number;
-}
-
 /**
- * Applies the Canvas 设置 spec fields (统合编辑弹窗) to a rendered card.
- * Canvas-only: outside a canvas node the card keeps its regular note styling.
- * Both rules are CSS-level — the bleed goes through a --fc-bleed custom
- * property and the .fc-canvas-bleed / .fc-canvas-height-auto classes carry
- * the !important rules in styles.css (the plugin review forbids inline
- * !important styles), so they keep holding across node resizes without a
- * listener. widthAuto === false needs no CSS here — the chart renderer
- * freezes its stack width after the first layout instead.
- */
-export function applyCanvasDisplayOptions(cardEl: HTMLElement, opts: CanvasDisplayOptions): void {
-  let el: HTMLElement | null = cardEl;
-  let inCanvas = false;
-  while (el) {
-    if (el.classList.contains("canvas-node")) {
-      inCanvas = true;
-      break;
-    }
-    el = el.parentElement;
-  }
-  if (!inCanvas) return;
-  cardEl.setCssProps({ "--fc-bleed": `${opts.bleed}px` });
-  cardEl.addClass("fc-canvas-bleed");
-  if (!opts.heightAuto) {
-    // Let the fixed 高度 drive the card height instead of the node height.
-    cardEl.addClass("fc-canvas-height-auto");
-  }
-}
-
-/**
- * Base class for chart-style code-block cards, extracting the canvas
- * interaction model from QuoteCodeBlockRenderer so every chart card shares
- * it. Three tiers:
+ * Base class for chart-style code-block cards; every chart card shares the
+ * canvas interaction model implemented here. Two tiers:
  *  - single click/drag on the card: selects and moves the canvas node
  *    (the node's content blocker keeps pointer events at canvas level);
- *  - double-click: activates chart mode — the fc-chart-active class on
- *    the node hides the blocker (styles.css), so hover drives the
- *    crosshair and dragging pans the chart;
- *  - double-click while active: opens the settings modal.
- * Outside a canvas (regular md pages) there is no blocker and the chart
- * is always live, so double-click opens the modal directly.
+ *  - double-click: enters chart mode — the fc-chart-active class on the
+ *    node hides the blocker (styles.css), so hover drives the crosshair and
+ *    dragging pans the chart. The mode is marked by an accent outline plus
+ *    the fc-chart-mode-bar status strip (icon + text, not color alone) and
+ *    exits on an outside click or Escape.
+ * A second double-click does nothing: editing lives on the card footer edit
+ * button and the canvas node context menu. Outside a canvas (regular md
+ * pages) there is no blocker and the chart is always live, so double-click
+ * is left to Obsidian there.
  *
  * Subclasses implement renderBody() (chart / error+retry) and
  * openEditModal().
@@ -78,6 +50,11 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
   // The initial render's promise (renderBody handles its own errors, so it
   // never rejects). whenReady() exposes it to the code-block processor.
   private initialRender: Promise<void> = Promise.resolve();
+  // Chart-mode status strip (icon + text). Kept as a detached element while
+  // inactive; syncChartModeBar() prepends it to containerEl when active, and
+  // runRender() re-syncs after every renderBody — renderBody empties
+  // containerEl, which would otherwise wipe the bar.
+  private chartModeBar: HTMLElement | null = null;
 
   constructor(plugin: ChartCardPluginHost, containerEl: HTMLElement, source: string, sourcePath: string) {
     super(containerEl);
@@ -97,7 +74,7 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
     this.containerEl.addClass("interactive-child");
     onAttached(this.containerEl, () => this.tagParentPreviewAsCard());
 
-    this.initialRender = Promise.resolve(this.renderBody());
+    this.initialRender = this.runRender();
 
     // The dblclick listener sits on DOCUMENT (capture), not on the card:
     // while inactive the card is covered by Obsidian's content blocker,
@@ -105,8 +82,8 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
     // card, so double-clicks on the covered card never bubble through the
     // card's container — a card-level listener would never see them and
     // Obsidian's own handler would open the node's source edit mode instead.
-    // preventDefault here also suppresses that native edit mode; source is
-    // edited only in the underlying md file.
+    // Inside a canvas, preventDefault here suppresses that native edit mode;
+    // source is edited only in the underlying md file.
     this.registerDomEvent(
       document,
       "dblclick",
@@ -122,13 +99,31 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
         if (!inCard && !onOwnBlocker) return;
         // Let header buttons keep their own behavior.
         if (inCard && target.closest("button")) return;
+        // Outside a canvas node there is nothing to activate: leave the
+        // double-click to Obsidian (editing lives on the footer edit button).
+        if (!nodeEl) return;
         event.preventDefault();
         event.stopPropagation();
-        if (this.chartActive || !nodeEl) {
-          this.openEditModal();
-        } else {
-          this.setChartActive(true);
-        }
+        // Chart mode is entered only from the inactive state; a second
+        // double-click does nothing.
+        if (!this.chartActive) this.setChartActive(true);
+      },
+      { capture: true }
+    );
+
+    // First-hover 双击进入图表交互 hint. It also listens on DOCUMENT
+    // (capture) for the same reason as dblclick: while inactive the card is
+    // covered by the node's content blocker, so no pointer event ever
+    // reaches containerEl — the blocker (a sibling) is the hover target.
+    this.registerDomEvent(
+      document,
+      "pointerover",
+      (event) => {
+        if (this.chartActive || this.plugin.isChartModeHintShown()) return;
+        const target = event.target as Node | null;
+        const nodeEl = this.findCanvasNodeEl();
+        if (!target || !nodeEl || !nodeEl.contains(target)) return;
+        this.showChartModeHint(nodeEl);
       },
       { capture: true }
     );
@@ -146,6 +141,25 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
       "pointerdown",
       (event) => {
         if (this.chartActive) event.stopPropagation();
+      },
+      { capture: true }
+    );
+
+    // lightweight-charts' pane resize handle is a thin row-resize target.
+    // Canvas also watches pointerdown to begin node dragging, so let the
+    // chart own this gesture before it reaches Canvas. The chart's native
+    // mousedown handler still receives the follow-up event and performs the
+    // pane resize.
+    this.registerDomEvent(
+      window,
+      "pointerdown",
+      (event) => {
+        const target = event.target as HTMLElement | null;
+        if (!target || !this.containerEl.contains(target)) return;
+        const cursor = target.style.cursor || window.getComputedStyle(target).cursor;
+        if (cursor === "row-resize") {
+          event.stopPropagation();
+        }
       },
       { capture: true }
     );
@@ -209,6 +223,25 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
   // Subclass renders the chart (or the error + retry state) into containerEl.
   protected abstract renderBody(): void | Promise<void>;
 
+  // Re-entrancy guard: a refresh arriving while a render is still loading is
+  // dropped — the in-flight render already reflects the latest spec, and
+  // overlapping renders would race on containerEl. While a render runs the
+  // card shows the loading skeleton (its refresh entry points are gone),
+  // which doubles as the in-progress indication.
+  private renderInFlight = false;
+
+  protected runRender(): Promise<void> {
+    if (this.renderInFlight) return Promise.resolve();
+    this.renderInFlight = true;
+    return Promise.resolve()
+      .then(() => this.renderBody())
+      .finally(() => {
+        this.renderInFlight = false;
+        // renderBody empties containerEl; re-attach the mode bar when active.
+        this.syncChartModeBar();
+      });
+  }
+
   // Resolves when the INITIAL render settled and the chart canvas holds a
   // painted frame. The code-block processor returns this promise so Obsidian
   // awaits the chart before capturing the page (导出为 PDF renders the note
@@ -217,8 +250,16 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
   // frame wait is bounded in case rAF never fires in the hidden pass.
   whenReady(): Promise<void> {
     return this.initialRender
+      .then(() => this.whenChartReady())
       .then(() => this.forcePaint())
       .then(() => nextFrameBounded());
+  }
+
+  // Extra readiness wait between the initial render and forcePaint: quote
+  // cards forward to their chart renderer's own ready promise. Default
+  // resolves immediately.
+  protected whenChartReady(): Promise<void> {
+    return Promise.resolve();
   }
 
   // Subclasses whose chart lives in a child renderer forward to its
@@ -227,13 +268,13 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
   protected forcePaint(): void {}
 
   // Public re-render entry for the plugin-level registry (script-output
-  // invalidation refreshes every chart card): same render path as the header
-  // refresh button.
+  // invalidation and the toolbar 刷新全部卡片 refresh every chart card): same
+  // render path as the footer refresh button.
   refreshCard(): void {
-    void this.renderBody();
+    void this.runRender();
   }
 
-  // Subclass opens its spec edit modal.
+  // Subclass opens its spec edit modal (footer edit button / canvas menu).
   protected abstract openEditModal(): void;
 
   // Called on chart-mode ENTRY (first transition to active). Default no-op.
@@ -253,6 +294,7 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
     this.chartActive = active;
     this.containerEl.toggleClass("fc-chart-active", active);
     this.findCanvasNodeEl()?.toggleClass("fc-chart-active", active);
+    this.syncChartModeBar();
     if (active && !wasActive) {
       this.onChartModeEnter();
     } else if (!active && wasActive && userInitiated) {
@@ -260,12 +302,43 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
     }
   }
 
-  private findCanvasNodeEl(): HTMLElement | null {
+  protected findCanvasNodeEl(): HTMLElement | null {
     let el: HTMLElement | null = this.containerEl;
     while (el && !el.classList.contains("canvas-node")) {
       el = el.parentElement;
     }
     return el;
+  }
+
+  // Inserts/removes the chart-mode status strip (icon + text — the active
+  // state is never signaled by color alone). Absolute-positioned over the
+  // card top, so it never shifts the chart layout.
+  private syncChartModeBar() {
+    if (!this.chartActive) {
+      this.chartModeBar?.remove();
+      return;
+    }
+    if (!this.chartModeBar) {
+      this.chartModeBar = createDiv({ cls: "fc-chart-mode-bar" });
+      const iconEl = this.chartModeBar.createSpan("fc-chart-mode-bar-icon");
+      setIcon(iconEl, "mouse-pointer-click");
+      this.chartModeBar.createSpan({ text: t("图表交互中 · Esc 退出") });
+    }
+    this.containerEl.prepend(this.chartModeBar);
+  }
+
+  // One-shot hint overlay on the canvas node (shown on the first hover over
+  // an inactive card). Marked as shown immediately so it never reappears;
+  // dismisses on pointer leave or after a few seconds.
+  private showChartModeHint(nodeEl: HTMLElement) {
+    this.plugin.markChartModeHintShown();
+    const hint = nodeEl.createDiv({
+      cls: "fc-chart-mode-hint",
+      text: t("双击进入图表交互，Esc 退出"),
+    });
+    const dismiss = () => hint.remove();
+    window.setTimeout(dismiss, 4000);
+    nodeEl.addEventListener("pointerleave", dismiss, { once: true });
   }
 
   private tagParentPreviewAsCard() {

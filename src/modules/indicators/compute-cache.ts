@@ -1,8 +1,9 @@
 /**
  * Memoizes indicator calculations. The cache stores the RAW result (unix
- * second times, before adaptResultTimes): the key already pins the bars
- * (length + last bar time), and bar identity implies the rows, so the caller
- * re-runs the cheap time adaptation on every hit.
+ * second times, before adaptResultTimes): the key pins the bars (length +
+ * first/last bar time + first/last close, enough to tell two symbols apart),
+ * and bar identity implies the rows, so the caller re-runs the cheap time
+ * adaptation on every hit.
  */
 
 import type { Bar } from "oakscriptjs";
@@ -14,7 +15,12 @@ export class IndicatorComputeCache {
   private cache = new Map<string, IndicatorResultLike>();
 
   private key(id: string, inputs: Record<string, unknown> | undefined, bars: Bar[]): string {
-    return `${id}|${JSON.stringify(inputs ?? {})}|${bars.length}|${bars[bars.length - 1]?.time ?? 0}`;
+    const first = bars[0];
+    const last = bars[bars.length - 1];
+    return `${id}|${JSON.stringify(inputs ?? {})}`
+      + `|${bars.length}`
+      + `|${first?.time ?? 0}|${last?.time ?? 0}`
+      + `|${first?.close ?? 0}|${last?.close ?? 0}`;
   }
 
   get(id: string, inputs: Record<string, unknown> | undefined, bars: Bar[]): IndicatorResultLike | undefined {

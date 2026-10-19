@@ -1,22 +1,34 @@
 import { requestUrl, type RequestUrlParam, type RequestUrlResponse } from "obsidian";
 import { request as httpsRequest } from "https";
+import { assertUrlAllowed } from "../utils/url-policy";
 
 // Global serial throttle for every outbound data request (设置页 → 数据源
 // 设置 → 请求最小间隔). All API clients must acquire a slot before
-// firing, so bursts (e.g. 全部刷新 across many cards) get spaced out instead
+// firing, so bursts (e.g. 刷新全部卡片 across many cards) get spaced out instead
 // of hammering the data platform and risking a rate-limit ban.
 
-// Conservative safe floor (≈300 req/min, under typical data-platform rate
-// tiers): the user-facing slider cannot go below this, and any stale stored
-// value is clamped here so high-frequency bursts cannot get an IP banned.
+// Technical floor for the user-facing slider; stale stored values are
+// clamped here too. This is client-side serial throttling only — it lowers
+// the chance of tripping a platform's rate limiter but does NOT guarantee
+// compliance with any data platform's quota or terms; users must pick an
+// interval appropriate to their own service agreements.
 export const MIN_REQUEST_INTERVAL_MS = 200;
 
-let minIntervalMs = 500;
+let minIntervalMs = 1000;
 let chain: Promise<void> = Promise.resolve();
 let lastRequestAt = 0;
 
 export function setRequestInterval(ms: number): void {
   minIntervalMs = Math.max(MIN_REQUEST_INTERVAL_MS, ms);
+}
+
+// Origins the user explicitly allowed for plaintext loopback http
+// (设置页保存数据源时确认). Both transports enforce the same URL policy
+// (utils/url-policy.ts) before any request leaves.
+let allowedLoopbackHttpOrigins: string[] = [];
+
+export function setAllowedLoopbackHttpOrigins(origins: string[]): void {
+  allowedLoopbackHttpOrigins = origins;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -83,6 +95,7 @@ export function looksLikeHtmlInterstitial(text?: string): boolean {
 
 export async function httpRequest(params: HttpRequestOptions): Promise<RequestUrlResponse> {
   const options = withDefaultHeaders(params);
+  assertUrlAllowed(options.url, allowedLoopbackHttpOrigins);
   const attempts = 1 + Math.max(0, options.retry ?? 1);
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -142,7 +155,7 @@ function withDefaultHeaders(params: HttpRequestOptions): HttpRequestOptions {
 function nodeHttpsRequest(params: HttpRequestOptions, timeoutMs: number): Promise<RequestUrlResponse> {
   if (params.url.startsWith("http:")) {
     return Promise.reject(
-      new Error(`transport "node" 只支持 https URL；明文 http 的自建/内网服务请改用默认传输（去掉 transport: "node"）。`),
+      new Error(`transport "node" 只支持 https URL；明文 http 仅允许已确认的本机回环地址（见 URL 策略），请改用 https。`),
     );
   }
   return new Promise((resolve, reject) => {

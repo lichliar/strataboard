@@ -1,6 +1,14 @@
 import { App, Modal, Notice, Setting, TextComponent } from "obsidian";
-import type { CustomSourceDef, JsonSourceMap, OhlcvRow } from "../types";
-import { KNOWN_JSON_MAP_KEYS, KNOWN_SOURCE_DEF_KEYS, resolveGroupApiKey } from "../types";
+import type { CustomSourceDef, JsonSourceMap, OhlcvRow, ResolvedCustomSourceDef } from "../types";
+import { sourceNeedsApiKey } from "../types";
+import { newCredentialId, type CredentialStore } from "../modules/credentials";
+import { CREDENTIAL_NEW, renderCredentialField, type CredentialFieldHandle } from "./credential-field";
+import { redactSecretsWith } from "../modules/redact";
+import type { AiTaskContext, AiTaskRequest } from "../modules/ai/tasks";
+import { outlineSample } from "../utils/sample-outline";
+import { evaluateUrl } from "../utils/url-policy";
+import { ConfirmModal } from "./confirm-modal";
+import { AiCopyPreviewModal } from "./ai-copy-preview-modal";
 import {
   detectBuiltinKlineFormat,
   detectJsonMapping,
@@ -20,29 +28,37 @@ import { autoTemplateSearchUrl, autoTemplateUrl, extractApiKey } from "../utils/
 import { parseSymbolList, resolveSymbolParams, stringifySymbolList } from "../utils/symbol-list";
 import { applyInfoDescs } from "./info-desc";
 import { t } from "../i18n";
+import { findEmbeddedCredentialFields } from "../utils/source-credentials";
+import { reportSourceHealth } from "../modules/source-health";
 
-// Setup dialog for one user-defined custom data source (设置页 → 自定义数据源).
+// AI_SOURCE_PROMPT lives in modules/source-prompt.ts (shared with the
+// in-plugin AI assistant's tasks); re-exported here for existing UI
+// importers (setup-guide-modal.ts, settings.ts).
+export { AI_SOURCE_PROMPT } from "../modules/source-prompt";
+
+// Setup dialog for one user-defined custom data source (设置页 → 数据源 →
+// 添加数据源 → 远程接口).
 // The plugin ships no endpoint URLs — the user pastes a working URL and the
 // dialog templates it (autoTemplateUrl), probes it inline as they type, and
 // auto-detects the response format (腾讯/东方财富 presets or a guessed
 // generic-JSON mapping). While ADDING a source the layout is two sections
 // on one page; editing an existing source shows only the first one:
 //   1. 配置 — 名称 first, then K线接口地址 (pasting one auto-fills name /
-//      sample code / API key) and API Key, then the probe status with its
-//      检测连接 button; rarely-touched inputs (请求方式 / 请求体 / 示例代码 / 鉴权
-//      Header / 兼容模式 / 搜索 URL / 代码表) live under 高级选项, the manual
-//      field mapping under 字段映射（可选）(auto-opens when a generic-JSON
-//      source parses nothing). A failed probe offers 复制报错 — a copyable
+//      sample code / credential), 示例代码 and 凭据, then the probe status
+//      with its 测试并预览 button; rarely-touched inputs (请求方式 / 请求体 /
+//      鉴权 Header / 兼容模式 / 搜索 URL / 代码表) live under 高级选项, the
+//      manual field mapping under 字段映射（可选）(auto-opens when a
+//      generic-JSON source parses nothing). A failed probe offers 复制报错 — a copyable
 //      error report for the user's AI — in edit mode too. Field descriptions
 //      render as hover-only info icons (applyInfoDescs), not text under the
 //      field name.
-//   2. AI 辅助设置 — a single jump button to the settings tab's AI 辅助
-//      page, which now hosts both the MCP/CLI one-click setup and the
-//      AI_SOURCE_PROMPT guided prompt (the plugin has no built-in
-//      assistant). A separate debug prompt fixes failed probes (its
-//      mapping JSON reply can be pasted back and applied).
+//   2. AI 助手设置 — a jump into the plugin's task assistant when available;
+//      MCP/CLI remains available from the settings tab for advanced users.
 // Placeholders: klineUrl / bodyTemplate {code} {start} {end} {startIso}
 // {endIso} {apiKey}, searchUrl / searchBodyTemplate {query}.
+
+// Credential picker (sentinel values, dropdown, password input) lives in
+// ui/credential-field.ts, shared with the AI 助手 BYOK settings block.
 
 export const CUSTOM_FORMAT_LABELS: Record<CustomSourceDef["format"], string> = {
   tencent: "腾讯格式",
@@ -51,45 +67,8 @@ export const CUSTOM_FORMAT_LABELS: Record<CustomSourceDef["format"], string> = {
   csv: "CSV 文件",
 };
 
-// Guided prompt for adding a data source with AI help — shown in
-// 设置 → AI 辅助 (settings.ts) and reused by the no-source setup guide
-// modal (setup-guide-modal.ts). It assumes the user's AI is already wired
-// to the plugin through the MCP server or CLI (list_sources / probe_data /
-// ...), so instead of just "find me an endpoint" it walks the user through
-// the whole setup — including telling them plainly when the plugin has no
-// matching adapter and pointing them at the 本地脚本 CSV route instead. It
-// deliberately names no concrete endpoints — the user's own AI picks one,
-// keeping the plugin a pure data-access framework. The EN translation
-// lives in i18n.ts under this exact string as key; keep the two in sync.
-export const AI_SOURCE_PROMPT = `你将帮我为 Obsidian 插件 StrataBoard 配置一个「自定义数据源」。插件不内置任何数据源，所有数据都来自用户自行配置的 REST/JSON 接口或 vault 内 CSV 文件。你已通过 MCP server 或 CLI 接入该插件（可用工具：list_sources / search_symbols / probe_data / validate_cards / validate_config）。请按以下流程一步步引导我，每步先跟我确认再往下走：
-
-1. 先问清楚需求：哪个平台/来源的数据、具体标的/指标、频率、需要的字段（开高低收还是单值序列）；确认是否需要 API key——需要就先告诉我申请方式，等我把可用的 key 发给你之后再继续（key 由我保管，不要写进任何会分享出去的配置）。
-2. 用 list_sources 查我已配置的源、search_symbols 查本地代码库。已有源能覆盖需求就直接告诉我用哪个源建卡，不要新建。
-3. 确需新源时，找一个无需登录、可直接访问的 JSON REST 接口，用我提供的 key（如有）实际请求验证能返回数据。优先官方或有公开文档的 API，不使用未公开文档的抓取端点。
-4. 核对该接口是否在插件适配范围内。插件只支持：
-   - GET（参数在 URL query）或 POST（默认 JSON 请求体、自动带 Content-Type: application/json；bodyEncoding: "form" 时按表单编码，占位符值 URL 编码）；可选 apiKeyHeader 鉴权头（值用 {apiKey} 占位）与 headers 静态请求头（值同样可用 {apiKey} 占位，同名时 apiKeyHeader 优先）。默认 30 秒超时，网络错误/超时自动重试一次；
-   - JSON 响应。常见行情格式自动识别；其它 JSON 需能指出「数据行数组的路径 + 每行的日期列与数值列」（日期支持 ISO 日期时间、YYYYMMDD、时间戳、YYYYMM 月频、YYYYQn 季频——后两者落到周期末最后一天）。行容器 rowKind 五种：object（每行对象，cols 填字段名，支持点号嵌套如 "quote.close"）/ array（每行数组，cols 填从 0 开始的列序号）/ fields（列名数组 + 数据行数组两段式，列名数组路径填 fieldsPath，cols 填列名）/ map（以日期为键的对象，cols.date 填 "$key"、标量值列填 "$value"）/ columns（列式平行数组，cols 填各列数组相对路径，标量列视为单行序列）；
-   - 数值列自动清洗千分位、货币符（$€£¥）与首尾空白，尾部 % 按 jsonMap.percentScale 缩放（默认 1，100 使 "1.5%" → 0.015）；close 为 null/空串的行跳过，不当作 0；
-   - 业务错误放在 200 响应里时用 errorPath / errorMessagePath 透传（默认该字段 0/空/null 为成功；用 200、"ok" 等表示成功时加 okValues 白名单，如 "okValues": [200]）；
-   - 占位符（URL、请求体模板、cols 值通用）：{code} 代码、{start}/{end} YYYYMMDD 起止、{startIso}/{endIso} YYYY-MM-DD 起止、{startTs}/{endTs} 秒级 Unix 时间戳起止、{apiKey} 密钥、{p.<变量名>} 符号级参数、{offset} 翻页偏移（仅配 paginate/searchPaginate 的端点用）。{p.*} 取值顺序：symbols 代码表中该代码的 params → 该代码 profile 指向的源级档位 →（代码不在代码表时）其搜索来源端点声明的 profile 档位 →（无声明时）codeRules 第一条 match 正则命中的档位 → 源级默认 params → 都没有则本地报错（字面量绝不发给服务器）。请求体里的占位符不 URL 编码；JSON 请求体中取值为空串的 {p.*} 会把该键整个删掉（某接口要省略可选/范围参数就靠它）；
-   - 搜索接口（可选，但有就强烈建议配）：GET 配 searchUrl（{query} 占位，{apiKey} 等也可用）；POST 配 searchBodyTemplate（{query}/{apiKey} 占位，URL 取 searchUrl、未配复用 klineUrl）；模板不含 {query} 表示整表返回、插件拉回本地过滤（结果有缓存）。整表接口被服务端限制单页行数时给该端点配 paginate（{"pageSize": 单页行数, "maxPages": 可选默认 20, "totalPath": 可选，响应里声明总数的点号路径, "allowTruncated": 可选}）并在模板里放 {offset}，自动翻页到某页不足 pageSize 行；主搜索端点（searchUrl/searchBodyTemplate）翻页配源级 searchPaginate（形状相同）；触顶 maxPages 或实取数少于声明总数视为截断，validate-config 判不通过——确认可接受时给对应配置加 "allowTruncated": true 降级为警告。端点返回的代码同属一个类别时声明其 profile（主端点配源级 searchProfile、searches 端点配各自 profile 字段）——声明优先于 codeRules，选中结果时记入本地代码库，之后取数稳定走对应接口。搜索响应格式与 K 线接口一致（同一 format）；json 格式时在 jsonMap 里配 searchRowsPath（结果数组点号路径）与 searchCols（{"code","name","market" 可选}——object 填字段名、array 填列序号、fields 填列名或序号）；
-   - 固定报表宽表（一个 URL 返回整表、每列一个序列）：列名当代码，cols 里用 {code} 选列；URL 参数需与列名分离时用复合代码 urlCode@mapCode（@ 前半进模板的 {code}，@ 后半只替换 cols 里的 {code}，如 "LPR_1Y@1y"；仅当 cols 含 {code} 时生效），普通代码同时填两处；
-   - K 线接口单次返回有硬上限时配源级 paginate（形状同上）+ 模板 {offset}，截断判定与豁免同上；
-   - format "csv"：filePath（vault 内文件）或 klineUrl（远程 CSV/TSV）二选一；
-   - 个别站点在 Obsidian 默认网络栈（Electron HTTP/2）下连接失败时开 transport: "node"（改用 Node https；报 HTTP/2、PROTOCOL_ERROR 类错误时优先怀疑这种情况）。只支持 https，明文 http 服务用默认传输；
-5. 接口不符合以上任一形态（需要登录 Cookie、返回 HTML/XML、需要多页拼装、请求体非 JSON 等）就是插件不支持——直接告诉我，并建议改用「本地脚本」：Python 脚本把数据输出为 CSV，插件自动注册为数据源（脚本编写提示词在 设置 → AI 辅助 →「提示词：编写数据处理脚本」）。K 线数据量大致使单页返回不全时：优先在模板里直接指定足够大的 pageSize 参数，其次按第 4 点配 paginate 翻页，都不行才走脚本。
-6. 适配可行时产出最终配置。原则：
-   - 平台能取的数据很多时（一个密钥覆盖大量指标），不要只配我点名的那一项：插件适配形态能覆盖的常用数据尽量一次配齐；
-   - 同一来源尽量合并为一个源：只是请求参数（接口名/指标名）或列名不同的接口不要拆源，把差异做成符号级参数——模板里写 {p.<变量名>}，symbols 每条代码带 "params": {"变量名": "值"}（cols 的值也支持 {p.*}，如 cols.date 写 "{p.date}"）；多个符号共用同一份参数组合时，在源级 profiles 定义档位（{"档位名": {"变量名":"值"}}），symbols 条目带 "profile": "档位名" 引用（取值顺序：符号 params → 档位 → 源级 params，逐键覆盖）；
-   - 搜索发现、不在代码表里的代码无法逐条配 params：代码形态能用正则区分就配 codeRules（[{"match": "正则", "profile": "档位名"}]，只对不在代码表的代码生效，按序匹配，命中即把该档位并入源级 params 之上），否则这类代码会拿源级默认接口取数、返回「成功但 0 行」；形态不可正则区分时仍用 symbols 逐条 params；
-   - 两个兜底必须遵守：① 配了远程搜索就必须配源级默认 params（搜索挑出的代码不在代码表里，只能靠它取值）；② 平台有多个查代码接口时用 searches 数组全挂上（[{"url","bodyTemplate","profile","searchRowsPath","searchCols","paginate","enabled"}]，url 缺省复用 klineUrl、有 bodyTemplate 即 POST，未覆盖字段与主搜索共享，结果合并去重），合并源不能以牺牲搜索覆盖面为代价；
-   - 平台上已知取不到行情的代码（已退市、接口明确不覆盖的族）配 deadCodes 正则列表（如 ["^395"]）：validate-config 跳过探测不判红，搜索结果标注「已知无行情」不剔除——不要为了过校验把它们塞进 symbols；
-   - 名称直接用平台名；symbols 代码表把可用代码/指标尽量列全（代码 + 中文名称），让我按名称挑选；平台提供查代码/指标的接口就务必配 searchUrl 或 searchBodyTemplate——没有远程搜索，插卡搜索框只能查本地代码表；接口只能整表返回时配不含 {query} 的模板让插件本地过滤，不要用 symbols 塞全量码表代替搜索；
-   - 只有端点 URL、请求方式或响应结构确实不同时才拆成多个条目；同平台拆出的条目填相同 group（平台名）：插入菜单和搜索框折叠为一个分组入口、组内联合搜索，且同组只需任意一个条目填 apiKey；
-   - 交付方式二选一：a. 简单情况（单个 GET 接口、格式可自动识别）：给一个完整、可直接访问的 URL（含真实代码和起止日期）+ URL 中实际使用的代码，我粘贴到「添加数据源」弹窗，插件自动生成模板并检测格式；b. 其它情况：把完整配置 JSON（一个数组）写入 vault 内的一个 .json 文件（如 vault 根目录下的 数据源配置.json）并告诉我文件路径，我在 设置 → 数据源设置 → 导入 里选择该文件导入——不要把 JSON 贴在对话里让我复制。配置字段：name（名称）、group（可选，分组名）、icon（可选，插入菜单里的自定义 SVG 图标源码，留空用颜色圆点）、format（"tencent"|"eastmoney"|"json"|"csv"）、klineUrl（URL 模板）、method（"GET"|"POST"，默认 GET）、bodyTemplate（POST 请求体模板）、bodyEncoding（可选 "form"）、headers（可选，{"头名":"值"}）、transport（可选 "node"）、paginate（可选，K 线翻页 {"pageSize": 正整数, "maxPages": 可选默认 20, "totalPath": 可选, "allowTruncated": 可选}，模板需含 {offset}）、testCode（示例代码）、searchUrl（可选，GET 搜索模板，{query} 占位）、searchBodyTemplate（可选，POST 搜索请求体模板，URL 取 searchUrl、未配复用 klineUrl；不含 {query} 表示整表返回本地过滤）、jsonMap（{"rowsPath":"数据行数组点号路径，顶层即数组则空串","rowKind":"object|array|fields|map|columns","fieldsPath":"rowKind 为 fields 时的列名数组路径","cols":{"date":"必填","close":"必填","open/high/low/vol":"没有则空串"},"errorPath":"可选","errorMessagePath":"可选","okValues":"可选，如 [200]","percentScale":"可选，默认 1","searchRowsPath":"可选","searchCols":"可选，{"code","name"，market 可选}"}）、symbols（可选，代码表 [{"code","name","profile","params"}]）、params（可选，源级默认模板变量；模板含 {p.*} 且配了远程搜索时必填）、profiles（可选，符号级参数共享档位）、codeRules（可选，[{"match":"正则","profile":"档位名"}]）、searchPaginate（可选，主搜索端点翻页）、searchProfile（可选，主搜索端点返回代码的类别档位）、deadCodes（可选，已知无行情代码正则列表）、searches（可选，额外搜索端点数组）。注意 @ 只用于宽表选列，「同码不同参数」用符号级 params/profile 表达，不要拿 @ 当去重后缀。文件里不要包含 apiKey 字段，密钥我在插件里单独填。导入按名称去重：同名条目覆盖更新（保留原 id 和已填密钥），修正配置时把整个数组重导一遍即可。
-7. 配置写好、让我导入前，先调用 validate_config（file 传配置文件路径）做导入前验证：逐源结构校验（字段放错层级会警告）+ 对每个源的 testCode 与全部 symbols 实测取数（默认 400 天窗口，days 参数覆盖；干净 0 行自动加宽到约 10 年复核——加宽后有数据说明标的可能已退市/停更而非配置错误，note 注明、不算失败；missingClose 即使探测成功也升为 warning；truncated 默认判失败，对应 paginate 配了 allowTruncated: true 才降级为 warning；deadCodes 命中的代码跳过探测不判红）+ 搜索模板试发（查询词取自源自己的 testCode/symbols；skippedRows 很大通常说明 searchCols 列名与实际不符；模板含 {p.*} 的源加测一个搜索结果代码，via="search"）+ 接线审计（配了 codeRules/searchProfile/searches 端点 profile 的源，结果在 search.audit：unmatchedTop 未命中形态 / overlaps 规则重叠 / conflicts 声明冲突，并按档位抽样实测——审计警告逐条处理，不要无视）。密钥按 文件内（含同组回落）→ 参数注入 → vault 同名/同组已配源 的顺序解析，apiKeySource 标明来源（self/group/injected/vault/none）；多把密钥用 apiKeys 参数按名注入（{"组名或源名": "密钥"}，组名 > 源名 > apiKey 全局兜底；CLI 侧是 --api-key 名=密钥，可重复，或 --api-key-file 传 JSON 文件）。失败条目按 reason（列名拼错会直接点名并列出响应实际字段；0 行且代码不在代码表、未命中 codeRules、也没有端点声明的 profile 时，reason 会指明「可能不在默认接口的覆盖范围内」——此时该补 codeRules、端点 profile 声明或符号级 params/profile，而不是改字段映射）与 sample（原始响应片段）分析原因、修正后重新验证，全部通过再让我导入。导入后用 list_sources 找到新源 id，再用 probe_data（assetType="custom", sourceId=<id>, code=<示例代码>）端到端复核（0 行时读 hint / dropped 字段），把结果告诉我。
-
-用我使用的语言与我交流，发现插件能力边界时直接说清楚，不要绕弯子。`;
+// Guided prompt for adding a data source with AI help: moved to
+// modules/source-prompt.ts and re-exported above (see that file's comment).
 
 // Debug prompt for the「让 AI 帮你修」block: head carries the URL
 // template and sample code via t() vars, then the truncated raw response is
@@ -203,27 +182,55 @@ export class CustomSourceModal extends Modal {
   // 字段映射（可选）details state; auto-opens when a json source parses nothing.
   private mappingOpen = false;
   private scrollToMapping = false;
+  // Credential UI state: undefined = 不配置凭据, CREDENTIAL_NEW = 新建凭据…
+  // (ui/credential-field.ts), otherwise a stored credential id. pendingSecret
+  // is the (unsaved) secret typed for a new credential or a rotation of the
+  // selected one — it never touches the def.
+  private credentialChoice: string | undefined;
+  private pendingSecret = "";
+  private credentialField: CredentialFieldHandle | null = null;
 
   constructor(
     app: App,
-    def: CustomSourceDef | undefined,
+    // Full def = edit; a Partial without id = AI-drafted prefill (new-source
+    // semantics, defaults fill the gaps). No arg = blank new source.
+    def: Partial<CustomSourceDef> | undefined,
     onSubmit: (def: CustomSourceDef) => void,
-    // Opens the settings window on the AI 辅助 tab (AI section step 1).
+    // Opens the settings window on the AI 助手 tab (AI section step 1).
     private onOpenAiSettings: () => void,
-    // Existing sources, for the group apiKey fallback during probes.
-    private allSources: CustomSourceDef[] = []
+    // Existing sources, for labeling shared credentials in the picker.
+    private allSources: CustomSourceDef[] = [],
+    // Central credential seam (modules/credentials.ts).
+    private credentials: CredentialStore,
+    // URL policy plumbing: confirmed loopback-http origins + the callback
+    // that persists a freshly confirmed one (settings.ts wires both).
+    private allowedLoopbackHttpOrigins: string[],
+    private onAllowLoopbackHttp: (origin: string) => Promise<void>,
+    // In-plugin AI assistant (W08): hands a failed probe over to the AI
+    // panel as an add-source / fix-source task. Absent = no「让 AI 诊断」button.
+    private onOpenAiPanel?: (task: AiTaskRequest) => void
   ) {
     super(app);
-    this.isNew = !def;
-    this.def = def
-      ? { ...def, jsonMap: def.jsonMap ? { ...def.jsonMap, cols: { ...def.jsonMap.cols }, searchCols: def.jsonMap.searchCols ? { ...def.jsonMap.searchCols } : undefined } : undefined }
-      : {
-          id: `src-${Date.now().toString(36)}`,
-          name: "",
-          enabled: true,
-          format: "tencent",
-          klineUrl: "",
-        };
+    this.isNew = !def?.id;
+    if (def?.id) {
+      this.def = {
+        ...(def as CustomSourceDef),
+        jsonMap: def.jsonMap ? { ...def.jsonMap, cols: { ...def.jsonMap.cols }, searchCols: def.jsonMap.searchCols ? { ...def.jsonMap.searchCols } : undefined } : undefined,
+      };
+    } else {
+      // AI drafts never carry id (whitelist), but drop it defensively so a
+      // stray empty id can't blank the generated one.
+      const prefill = { ...(def ?? {}) };
+      delete prefill.id;
+      this.def = {
+        id: `src-${Date.now().toString(36)}`,
+        name: "",
+        enabled: true,
+        format: "tencent",
+        klineUrl: "",
+        ...prefill,
+      } as CustomSourceDef;
+    }
     this.rawKlineUrl = this.def.klineUrl ?? "";
     this.rawSearchUrl = this.def.searchUrl ?? "";
     // New sources default the sample code to the SSE Composite Index — the
@@ -231,6 +238,7 @@ export class CustomSourceModal extends Modal {
     this.sampleCode = this.def.testCode ?? (this.isNew ? "sh000001" : "");
     if (this.isNew && !this.def.testCode) this.def.testCode = this.sampleCode;
     this.mappingOpen = this.def.format === "json";
+    this.credentialChoice = this.def.credentialId;
     // Editing a json source: the open-time probe must reuse the stored
     // mapping instead of re-guessing it.
     this.keepJsonMapOnNextProbe = !this.isNew && this.def.format === "json" && !!this.def.jsonMap;
@@ -259,12 +267,12 @@ export class CustomSourceModal extends Modal {
     configSection.createEl("summary", { text: this.isNew ? `1. ${t("配置")}` : t("配置") });
     this.renderConfigSection(configSection);
 
-    // AI 辅助设置 is an add-flow feature only — editing an existing source
+    // AI 助手设置 is an add-flow feature only — editing an existing source
     // never shows it.
     if (this.isNew) {
       const aiSection = contentEl.createEl("details", { cls: "fc-settings-sub" });
       aiSection.setAttr("open", "");
-      aiSection.createEl("summary", { text: `2. ${t("AI 辅助设置")}` });
+      aiSection.createEl("summary", { text: `2. ${t("AI 助手设置")}` });
       this.renderAiSection(aiSection);
     }
 
@@ -332,7 +340,6 @@ export class CustomSourceModal extends Modal {
 
     let nameText: TextComponent | null = null;
     let sampleCodeText: TextComponent | null = null;
-    let apiKeyText: TextComponent | null = null;
 
     const nameSetting = new Setting(container).setName(t("名称")).setDesc(t("显示在选择器、工具栏和卡片文件名中；粘贴 URL 时自动取域名，可改。")).addText((text) => {
       nameText = text;
@@ -368,15 +375,13 @@ export class CustomSourceModal extends Modal {
               sampleCodeText?.setValue(guessed);
             }
           }
-          if (!def.apiKey) {
-            // A pasted URL carrying its credential inline seeds the key
-            // field; the template keeps only the {apiKey} placeholder.
-            const extracted = extractApiKey(this.rawKlineUrl);
-            if (extracted) {
-              def.apiKey = extracted;
-              apiKeyText?.setValue(extracted);
-            }
-          }
+          // A pasted URL carrying its credential inline seeds the
+          // new-credential input; the template keeps only the {apiKey}
+          // placeholder and the secret goes to SecretStorage on save. The
+          // field itself decides whether the current selection allows this
+          // (an explicitly chosen existing credential is never hijacked).
+          const extracted = extractApiKey(this.rawKlineUrl);
+          if (extracted) this.credentialField?.seedNewSecret(extracted);
           def.klineUrl = autoTemplateUrl(this.rawKlineUrl, splitCompositeCode(this.sampleCode).urlCode);
           updateKlinePreview();
           this.scheduleDetection();
@@ -391,46 +396,39 @@ export class CustomSourceModal extends Modal {
     };
     updateKlinePreview();
 
-    const apiKeySetting = new Setting(container)
-      .setName(t("API Key（可选）"))
-      .setDesc(
-        t("接口要求密钥时填写，URL 模板中用 {apiKey} 占位引用。密钥只存在本地设置里，导出配置时不会包含。") +
-          (def.group ? t("该源属组「{group}」：密钥留空时自动使用组内第一个已填写的密钥。", { group: def.group }) : ""),
-      )
+    // 示例代码 stays on the first screen next to the URL (the paste
+    // auto-guess fills it): it locates {code} and doubles as the probe code.
+    const sampleSetting = new Setting(container)
+      .setName(t("示例代码"))
+      .setDesc(t("URL 中实际使用的代码，用于识别 {code} 位置并作为接口检测代码；URL 不含代码的固定报表类接口可留空。支持复合代码「URL部分@映射列名」（如 REPORT_NAME@COL_NAME）：URL 中的 {code} 用前半部分填充，字段映射中的 {code} 用后半部分选列。"))
       .addText((text) => {
-        apiKeyText = text;
-        text.setPlaceholder(t("粘贴 URL 时自动抽取，也可手动填写")).setValue(def.apiKey ?? "").onChange((value) => {
-          def.apiKey = value.trim() || undefined;
+        sampleCodeText = text;
+        text.setPlaceholder("sh000001").setValue(this.sampleCode).onChange((value) => {
+          this.sampleCodeTouched = true;
+          this.sampleCode = value.trim();
+          def.testCode = this.sampleCode || undefined;
+          def.klineUrl = autoTemplateUrl(this.rawKlineUrl, splitCompositeCode(this.sampleCode).urlCode);
+          updateKlinePreview();
+          this.scheduleDetection();
         });
-        text.inputEl.type = "password";
         text.inputEl.addClass("fc-mono");
       });
-    apiKeySetting.settingEl.addClass("fc-setting-stacked");
+    sampleSetting.settingEl.addClass("fc-setting-stacked");
 
-    const iconSetting = new Setting(container)
-      .setName(t("自定义图标（可选）"))
-      .setDesc(t("粘贴 SVG 代码；留空则在「插入图表」菜单中用颜色圆点区分。"));
-    iconSetting.settingEl.addClass("fc-setting-stacked");
-    iconSetting.addTextArea((text) => {
-      text.setValue(def.icon ?? "").onChange((value) => {
-        def.icon = value.trim() || undefined;
-      });
-      text.inputEl.addClass("fc-mono");
-    });
+    this.renderCredentialSection(container);
 
     // Inline probe status: detecting / error / parsed-row preview, plus the
-    // explicit 检测连接 button.
+    // explicit 测试并预览 button.
     this.renderDetectStatus(container.createDiv("fc-hint-mt"));
 
     // Rarely-touched knobs live under 高级选项: the request method/body (most
-    // sources are plain GET), the sample code (normally auto-guessed from the
-    // pasted URL), the auth header, the Node transport, the search endpoint
-    // and the static code table.
+    // sources are plain GET), the auth header, the Node transport, the
+    // search endpoint and the static code table.
     const advanced = container.createEl("details", { cls: "fc-settings-sub" });
     advanced.createEl("summary", { text: t("高级选项") });
     advanced.createDiv({
       cls: "fc-field-hint",
-      text: t("一般无需改动：接口多为 GET 请求；示例代码会自动从 URL 猜测；鉴权 Header、搜索接口与静态代码表按需配置。"),
+      text: t("一般无需改动：接口多为 GET 请求；鉴权 Header、搜索接口与静态代码表按需配置。"),
     });
 
     // POST sources (e.g. a JSON-RPC-style endpoint) send the body template
@@ -465,23 +463,6 @@ export class CustomSourceModal extends Modal {
       });
     bodySetting.settingEl.addClass("fc-setting-stacked");
     bodySetting.settingEl.toggleClass("fc-hidden", (def.method ?? "GET") !== "POST");
-
-    const sampleSetting = new Setting(advanced)
-      .setName(t("示例代码"))
-      .setDesc(t("URL 中实际使用的代码，用于识别 {code} 位置并作为接口检测代码；URL 不含代码的固定报表类接口可留空。支持复合代码「URL部分@映射列名」（如 REPORT_NAME@COL_NAME）：URL 中的 {code} 用前半部分填充，字段映射中的 {code} 用后半部分选列。"))
-      .addText((text) => {
-        sampleCodeText = text;
-        text.setPlaceholder("sh000001").setValue(this.sampleCode).onChange((value) => {
-          this.sampleCodeTouched = true;
-          this.sampleCode = value.trim();
-          def.testCode = this.sampleCode || undefined;
-          def.klineUrl = autoTemplateUrl(this.rawKlineUrl, splitCompositeCode(this.sampleCode).urlCode);
-          updateKlinePreview();
-          this.scheduleDetection();
-        });
-        text.inputEl.addClass("fc-mono");
-      });
-    sampleSetting.settingEl.addClass("fc-setting-stacked");
 
     const headerSetting = new Setting(advanced)
       .setName(t("鉴权 Header（可选）"))
@@ -571,9 +552,8 @@ export class CustomSourceModal extends Modal {
     symbolArea.value = stringifySymbolList(def.symbols ?? []);
     symbolArea.addEventListener("input", () => {
       // Symbol-level params / profile ({p.*} template variables and named
-      // tiers) are maintained through JSON import only; editing the table
-      // here carries them over by code so a name fix doesn't silently drop
-      // them.
+      // tiers) are not editable anywhere in the UI; editing the table here
+      // carries them over by code so a name fix doesn't silently drop them.
       const previous = new Map((def.symbols ?? []).map((s) => [s.code, s]));
       const entries = parseSymbolList(symbolArea.value);
       for (const entry of entries) {
@@ -585,43 +565,98 @@ export class CustomSourceModal extends Modal {
     });
     symbolHelp.createDiv({
       cls: "fc-field-hint",
-      text: t("符号级参数（params/profile，如各接口的接口名/列名参数）请通过 JSON 配置导入维护；此处编辑会按代码保留已有参数与档位。"),
+      text: t("当前设置页不编辑符号级 params/profile；此处编辑会按代码保留已有值。接口依赖这类复杂参数时，请改用本地脚本。"),
     });
 
     if (def.format === "json") this.renderMappingSection(container);
   }
 
-  // ===== 2. AI 辅助设置 =====
-  // Just a jump button: the MCP/CLI one-click setup and the guided prompt
-  // (AI_SOURCE_PROMPT) both live in 设置 → AI 辅助 now.
+  // ===== 凭据 =====
+  // The secret lives in Obsidian SecretStorage behind def.credentialId; the
+  // dialog never stores it on the def. Selecting an existing credential id
+  // shares it (e.g. across a source group); filling the password box while an
+  // existing id is selected ROTATES the stored secret on save. Picker UI is
+  // the shared component (ui/credential-field.ts); this dialog persists on
+  // 保存, so onChange only mirrors the selection into dialog state.
+  private renderCredentialSection(container: HTMLElement) {
+    const def = this.def;
+    const needs = sourceNeedsApiKey(def);
+
+    this.credentialField = renderCredentialField(container, {
+      credentials: this.credentials,
+      selectedId: this.credentialChoice,
+      pendingSecret: this.pendingSecret,
+      describeId: (id) => {
+        const users = this.allSources.filter((s) => s.credentialId === id).map((s) => s.name);
+        return users.length > 0
+          ? t("已有凭据（使用者：{names}）", { names: users.join("、") })
+          : t("已有凭据（未被引用）");
+      },
+      desc: (sel) => {
+        const desc: string[] = [
+          t("密钥保存在 Obsidian SecretStorage，不写入 data.json；请求时仅按 {apiKey} 占位符发送到你配置的接口。多个数据源可引用同一凭据。"),
+        ];
+        if (needs && !sel.id) {
+          desc.unshift(t("该源的模板包含 {apiKey} 占位符：不配置凭据将无法取数。"));
+        }
+        // {apiKey} in the URL query or the body travels through proxies and
+        // logs — nudge towards the header without breaking a deliberate setup.
+        const keyInQuery = /[?&][\w.-]*=\{apiKey\}/.test(def.klineUrl ?? "") || /[?&][\w.-]*=\{apiKey\}/.test(def.searchUrl ?? "");
+        const keyInBody = (def.bodyTemplate ?? "").includes("{apiKey}") || (def.searchBodyTemplate ?? "").includes("{apiKey}");
+        if (keyInQuery || keyInBody) {
+          desc.push(t("注意：当前密钥会出现在{where}中，可能被代理或日志记录；接口支持时建议改用「鉴权 Header」。", {
+            where: keyInQuery && keyInBody ? t(" URL 查询串和请求体") : keyInQuery ? t(" URL 查询串") : t(" 请求体"),
+          }));
+        }
+        return desc.join(" ");
+      },
+      onChange: (sel) => {
+        this.credentialChoice = sel.id;
+        this.pendingSecret = sel.pendingSecret ?? "";
+      },
+    });
+  }
+
+  // The secret a probe should send right now: the pending new entry, the
+  // selected stored credential, or none.
+  private probeApiKey(): string | undefined {
+    if (this.credentialChoice === CREDENTIAL_NEW) return this.pendingSecret.trim() || undefined;
+    if (!this.credentialChoice) return undefined;
+    return this.credentials.get(this.credentialChoice) ?? undefined;
+  }
+
+  // Secrets the central redactor does not know yet (unsaved input).
+  private extraSecrets(): string[] {
+    const pending = this.pendingSecret.trim();
+    return pending ? [pending] : [];
+  }
+
+  // ===== 2. AI 助手设置 =====
+  // Open the in-plugin task assistant when this modal has a host callback;
+  // otherwise keep the settings shortcut for configuring BYOK.
   private renderAiSection(container: HTMLElement) {
     container.createDiv({
       cls: "fc-field-hint",
-      text: t("不想手动配置？让 AI 代劳：在「AI 辅助」设置里完成一键接入（MCP / CLI），再把「添加数据源」引导提示词发给它——AI 会一步步引导你完成配置、自己验证接口，插件不支持时会明确告知。"),
+      text: t("不想手动配置？让插件内 AI 助手根据当前任务生成数据源草稿，并在确认后打开表单完成保存。"),
     });
-    const openBtn = container.createEl("button", { text: t("打开「AI 辅助」设置") });
-    openBtn.addEventListener("click", () => this.onOpenAiSettings());
+    const openBtn = container.createEl("button", { text: t(this.onOpenAiPanel ? "让 AI 帮我配置" : "打开 AI 设置") });
+    openBtn.addEventListener("click", () => {
+      if (this.onOpenAiPanel) this.openAiDiagnosis();
+      else this.onOpenAiSettings();
+    });
 
     // The debug loop only makes sense once a probe produced a real response.
     if (this.sampleText) this.renderAiFixBlock(container);
   }
 
-  // The API key must never leave the dialog: replace every occurrence (raw
-  // or URL-encoded) in text the user might paste to an external AI.
-  private maskApiKey(text: string): string {
-    const key = this.def.apiKey;
-    if (!key) return text;
-    return text.split(key).join("***").split(encodeURIComponent(key)).join("***");
-  }
-
   // Probe status block inside「1. 配置」: detecting / error / preview. The
-  // 检测连接 button re-probes immediately, bypassing the edit debounce (the
+  // 测试并预览 button re-probes immediately, bypassing the edit debounce (the
   // paste-triggered auto probe still runs on its own). A failed probe also
   // offers 复制报错 — a ready-to-send AI error report — in edit mode too,
   // which has no AI section.
   private renderDetectStatus(statusEl: HTMLElement) {
     const testBtn = () => {
-      const btn = statusEl.createEl("button", { text: t("检测连接") });
+      const btn = statusEl.createEl("button", { text: t("测试并预览") });
       btn.addEventListener("click", () => void this.runDetection());
     };
     if (!this.def.klineUrl) {
@@ -639,11 +674,12 @@ export class CustomSourceModal extends Modal {
       testBtn();
       const copyBtn = statusEl.createEl("button", { text: t("复制报错（发给 AI）") });
       copyBtn.addEventListener("click", () => {
-        void navigator.clipboard.writeText(this.buildErrorPrompt()).then(
-          () => new Notice(t("报错与调试信息已复制，去发给你的 AI 吧。")),
-          () => new Notice(t("复制失败，请手动选中提示词复制。")),
-        );
+        new AiCopyPreviewModal(this.app, this.buildErrorPrompt()).open();
       });
+      if (this.onOpenAiPanel) {
+        const aiBtn = statusEl.createEl("button", { text: t("让 AI 诊断") });
+        aiBtn.addEventListener("click", () => this.openAiDiagnosis());
+      }
       return;
     }
     if (this.detectedRows.length === 0) {
@@ -701,9 +737,9 @@ export class CustomSourceModal extends Modal {
     this.detecting = true;
     this.detectError = "";
     this.render();
-    // Probes run with the group apiKey fallback applied, matching how the
-    // saved source will fetch at runtime.
-    const probeDef: CustomSourceDef = { ...this.def, apiKey: resolveGroupApiKey(this.def, this.allSources) };
+    // Probes run with the dialog's pending/selected credential applied,
+    // matching how the saved source will fetch at runtime.
+    const probeDef: ResolvedCustomSourceDef = { ...this.def, apiKey: this.probeApiKey() };
     try {
       const sample = await fetchKlineSample(probeDef, this.sampleCode);
       if (key !== this.probeKey()) {
@@ -714,6 +750,9 @@ export class CustomSourceModal extends Modal {
       }
       this.sampleJson = sample.json;
       this.sampleText = sample.text;
+      // Session health record: the settings-page badge shows the wizard
+      // probe outcome for this source id (which survives the save).
+      reportSourceHealth(this.def.id, true);
       const builtin = detectBuiltinKlineFormat(sample.json, this.sampleCode);
       if (builtin) {
         this.keepJsonMapOnNextProbe = false;
@@ -747,7 +786,8 @@ export class CustomSourceModal extends Modal {
         }
       }
     } catch (err) {
-      this.detectError = err instanceof Error ? err.message : String(err);
+      this.detectError = redactSecretsWith(err instanceof Error ? err.message : String(err), this.extraSecrets());
+      reportSourceHealth(this.def.id, false, this.detectError);
       // A failed probe invalidates any earlier sample — dropping it keeps the
       // mapping section and the error report from showing stale data.
       this.sampleJson = undefined;
@@ -772,6 +812,31 @@ export class CustomSourceModal extends Modal {
     }
     if (!this.def.klineUrl) {
       new Notice(t("请填写 K线 URL。"));
+      return;
+    }
+    for (const template of [this.def.klineUrl, this.def.searchUrl, ...(this.def.searches ?? []).map((s) => s.url)]) {
+      if (!template) continue;
+      const verdict = evaluateUrl(template, this.allowedLoopbackHttpOrigins);
+      if (verdict.kind === "reject") {
+        new Notice(verdict.reason, 10000);
+        return;
+      }
+      if (verdict.kind === "warn-private") {
+        new Notice(t("高风险：目标地址 {host} 指向私网/链路本地地址，请确认这是你有权访问的自有服务。", { host: verdict.host }), 8000);
+      }
+      if (verdict.kind === "loopback-http") {
+        const origin = verdict.origin;
+        new ConfirmModal(this.app, t("数据源将用明文 http 访问本机地址 {origin}。仅在确认这是你自己的服务时允许；允许后该地址会加入本机明文允许清单。", { origin }), () => {
+          void this.onAllowLoopbackHttp(origin).then(() => void this.saveWithProbe());
+        }).open();
+        return;
+      }
+    }
+    const credentialFields = findEmbeddedCredentialFields(this.def);
+    if (credentialFields.length > 0) {
+      new Notice(t("检测到疑似明文凭据：{fields}。请把密钥只填入「凭据」字段，并在这些位置改用 {apiKey} 占位符。", {
+        fields: credentialFields.join("、"),
+      }), 10000);
       return;
     }
     // A probe for the latest edits may still be in flight (or only
@@ -800,20 +865,48 @@ export class CustomSourceModal extends Modal {
   private buildDebugPrompt(): string {
     return (
       t(AI_DEBUG_PROMPT_HEAD, { url: this.def.klineUrl ?? "", sample: this.sampleCode || t("（无代码）") }) +
-      this.maskApiKey(this.sampleText.slice(0, 1500)) +
+      outlineSample(redactSecretsWith(this.sampleText, this.extraSecrets())) +
       t(AI_DEBUG_PROMPT_TAIL)
     );
   }
 
   // Error report behind「复制报错（发给 AI）」: URL template, method and the
-  // thrown error (key-masked). The API key never leaves the dialog.
+  // (already redacted) thrown error. The credential never leaves the dialog.
   private buildErrorPrompt(): string {
     return t(AI_ERROR_PROMPT, {
       url: this.def.klineUrl ?? "",
       method: this.def.method ?? "GET",
       sample: this.sampleCode || t("（无代码）"),
-      error: this.maskApiKey(this.detectError),
+      error: redactSecretsWith(this.detectError, this.extraSecrets()),
     });
+  }
+
+  // Current config as AI-task context: the credential reference and the
+  // enabled flag never leave the dialog; id stays so a fix-source proposal
+  // can align its sourceId with this source.
+  private aiContextDraft(): Partial<CustomSourceDef> {
+    const draft: Partial<CustomSourceDef> & { apiKey?: string } = { ...this.def };
+    delete draft.credentialId;
+    delete draft.apiKey;
+    delete draft.enabled;
+    return draft;
+  }
+
+  // Hands a failed probe to the in-plugin AI panel: add-source while adding,
+  // fix-source while editing. The panel runs the task and proposes a draft /
+  // patch, which comes back here as a prefilled form (never a direct write).
+  private openAiDiagnosis() {
+    if (!this.onOpenAiPanel) return;
+    const context: AiTaskContext = {
+      existingSources: this.allSources.map((s) => ({ id: s.id, name: s.name, format: s.format })),
+      sourceDraft: this.aiContextDraft(),
+      errorText: redactSecretsWith(this.detectError, this.extraSecrets()),
+    };
+    if (this.sampleText) {
+      context.sampleText = redactSecretsWith(this.sampleText, this.extraSecrets());
+    }
+    this.close();
+    this.onOpenAiPanel({ kind: this.isNew ? "add-source" : "fix-source", goal: "", context });
   }
 
   private renderAiFixBlock(containerEl: HTMLElement) {
@@ -825,10 +918,7 @@ export class CustomSourceModal extends Modal {
     });
     const copyBtn = fix.createEl("button", { text: t("复制调试提示词") });
     copyBtn.addEventListener("click", () => {
-      void navigator.clipboard.writeText(this.buildDebugPrompt()).then(
-        () => new Notice(t("提示词已复制到剪贴板，去发给你的 AI 吧。")),
-        () => new Notice(t("复制失败，请手动选中提示词复制。")),
-      );
+      new AiCopyPreviewModal(this.app, this.buildDebugPrompt()).open();
     });
     const area = fix.createEl("textarea", { cls: "fc-mono", attr: { rows: "4" } });
     area.placeholder = t("粘贴 AI 返回的映射 JSON…");
@@ -938,7 +1028,7 @@ export class CustomSourceModal extends Modal {
       });
       if (this.sampleText) {
         const pre = details.createEl("pre", { cls: "fc-sample-dump" });
-        pre.setText(this.sampleText.slice(0, 400));
+        pre.setText(redactSecretsWith(this.sampleText.slice(0, 400), this.extraSecrets()));
       }
     } else {
       details.createDiv({
@@ -1193,6 +1283,13 @@ export class CustomSourceModal extends Modal {
 
   private save() {
     const def = this.def;
+    const credentialFields = findEmbeddedCredentialFields(def);
+    if (credentialFields.length > 0) {
+      new Notice(t("检测到疑似明文凭据：{fields}。请把密钥只填入「凭据」字段，并在这些位置改用 {apiKey} 占位符。", {
+        fields: credentialFields.join("、"),
+      }), 10000);
+      return;
+    }
     if (!def.name) {
       new Notice(t("请填写数据源名称。"));
       return;
@@ -1211,257 +1308,28 @@ export class CustomSourceModal extends Modal {
         return;
       }
     }
-    this.close();
-    this.onSubmit(def);
-  }
-}
-
-// ===== Import / export (settings tab) =====
-// Configs move as user-to-user JSON files; the plugin itself ships no
-// endpoint URLs, keeping the "data-access framework only" stance.
-
-// Validates an imported config payload and returns fresh defs (new ids, so an
-// imported copy never collides with an existing source) plus warnings for
-// keys outside the known CustomSourceDef/JsonSourceMap shape (almost always
-// a field pasted at the wrong level; the lists are shared with the CLI
-// validator so the two never drift). Throws on malformed input.
-export function parseImportedSources(text: string): { defs: CustomSourceDef[]; warnings: string[] } {
-  const parsed: unknown = JSON.parse(text);
-  if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("not a source list");
-  const defs: CustomSourceDef[] = [];
-  const warnings: string[] = [];
-  for (const entry of parsed) {
-    if (!entry || typeof entry !== "object") throw new Error("invalid entry");
-    const e = entry as Partial<CustomSourceDef>;
-    const label = typeof e.name === "string" && e.name.trim() ? `「${e.name.trim()}」` : `#${defs.length + 1}`;
-    for (const key of Object.keys(entry)) {
-      if (!KNOWN_SOURCE_DEF_KEYS.has(key)) warnings.push(`${label}: 未知字段 "${key}"（已忽略，检查是否放错了层级）`);
-    }
-    if (e.jsonMap && typeof e.jsonMap === "object" && !Array.isArray(e.jsonMap)) {
-      for (const key of Object.keys(e.jsonMap)) {
-        if (!KNOWN_JSON_MAP_KEYS.has(key)) warnings.push(`${label}: jsonMap 里的未知字段 "${key}"（searchUrl/searchBodyTemplate 等是源级字段，不属于 jsonMap）`);
-      }
-    }
-    if (typeof e.name !== "string" || !e.name.trim()) throw new Error("missing name");
-    if (e.format !== "tencent" && e.format !== "eastmoney" && e.format !== "json" && e.format !== "csv") throw new Error("invalid format");
-    if (e.format === "csv") {
-      const hasFile = typeof e.filePath === "string" && !!e.filePath.trim();
-      const hasUrl = typeof e.klineUrl === "string" && !!e.klineUrl.trim();
-      if (!hasFile && !hasUrl) throw new Error("csv needs filePath or klineUrl");
-    } else if (typeof e.klineUrl !== "string" || !e.klineUrl.trim()) {
-      throw new Error("missing klineUrl");
-    }
-    if (e.method !== undefined && e.method !== "GET" && e.method !== "POST") throw new Error("invalid method");
-    if (e.transport !== undefined && e.transport !== "node") throw new Error("invalid transport");
-    const headers =
-      e.headers && typeof e.headers === "object" && !Array.isArray(e.headers)
-        ? Object.fromEntries(
-            Object.entries(e.headers).filter(([k, v]) => k.trim() && typeof v === "string"),
-          )
-        : undefined;
-    defs.push({
-      id: `src-${Date.now().toString(36)}-${defs.length}`,
-      name: e.name.trim(),
-      enabled: e.enabled !== false,
-      format: e.format,
-      klineUrl: typeof e.klineUrl === "string" && e.klineUrl.trim() ? e.klineUrl.trim() : undefined,
-      filePath: e.format === "csv" && typeof e.filePath === "string" && e.filePath.trim() ? e.filePath.trim() : undefined,
-      searchUrl: typeof e.searchUrl === "string" && e.searchUrl.trim() ? e.searchUrl.trim() : undefined,
-      searchBodyTemplate:
-        typeof e.searchBodyTemplate === "string" && e.searchBodyTemplate.trim() ? e.searchBodyTemplate : undefined,
-      testCode: typeof e.testCode === "string" && e.testCode.trim() ? e.testCode.trim() : undefined,
-      apiKey: typeof e.apiKey === "string" && e.apiKey.trim() ? e.apiKey.trim() : undefined,
-      apiKeyHeader: typeof e.apiKeyHeader === "string" && e.apiKeyHeader.trim() ? e.apiKeyHeader.trim() : undefined,
-      headers: headers && Object.keys(headers).length > 0 ? headers : undefined,
-      method: e.method === "POST" ? "POST" : undefined,
-      bodyTemplate:
-        e.method === "POST" && typeof e.bodyTemplate === "string" && e.bodyTemplate.trim() ? e.bodyTemplate : undefined,
-      bodyEncoding: e.bodyEncoding === "form" ? "form" : undefined,
-      paginate: (() => {
-        const p = e.paginate;
-        if (!p || typeof p !== "object" || Array.isArray(p)) return undefined;
-        const pageSize = Number((p as any).pageSize);
-        if (!Number.isInteger(pageSize) || pageSize <= 0) return undefined;
-        const maxPages = Number((p as any).maxPages);
-        const totalPath = (p as any).totalPath;
-        return {
-          pageSize,
-          ...(Number.isInteger(maxPages) && maxPages > 0 ? { maxPages } : {}),
-          ...(typeof totalPath === "string" && totalPath.trim() ? { totalPath: totalPath.trim() } : {}),
-          ...((p as any).allowTruncated === true ? { allowTruncated: true } : {}),
-        };
-      })(),
-      transport: e.transport === "node" ? "node" : undefined,
-      group: typeof e.group === "string" && e.group.trim() ? e.group.trim() : undefined,
-      icon: typeof e.icon === "string" && e.icon.trim() ? e.icon.trim() : undefined,
-      params: (() => {
-        if (!e.params || typeof e.params !== "object" || Array.isArray(e.params)) return undefined;
-        const entries = Object.entries(e.params).filter(([k, v]) => k.trim() && typeof v === "string");
-        return entries.length > 0 ? Object.fromEntries(entries) : undefined;
-      })(),
-      profiles: (() => {
-        if (!e.profiles || typeof e.profiles !== "object" || Array.isArray(e.profiles)) return undefined;
-        const profiles: Record<string, Record<string, string>> = {};
-        for (const [name, tier] of Object.entries(e.profiles)) {
-          if (!name.trim() || !tier || typeof tier !== "object" || Array.isArray(tier)) continue;
-          const entries = Object.entries(tier).filter(([k, v]) => k.trim() && typeof v === "string");
-          if (entries.length > 0) profiles[name.trim()] = Object.fromEntries(entries);
-        }
-        return Object.keys(profiles).length > 0 ? profiles : undefined;
-      })(),
-      codeRules: (() => {
-        if (!Array.isArray(e.codeRules)) return undefined;
-        const rules = e.codeRules
-          .filter((r: any) => r && typeof r === "object" && !Array.isArray(r)
-            && typeof r.match === "string" && r.match.trim()
-            && typeof r.profile === "string" && r.profile.trim())
-          .map((r: any) => ({ match: (r.match as string).trim(), profile: (r.profile as string).trim() }));
-        return rules.length > 0 ? rules : undefined;
-      })(),
-      searchPaginate: (() => {
-        const p = e.searchPaginate;
-        if (!p || typeof p !== "object" || Array.isArray(p)) return undefined;
-        const pageSize = Number((p as any).pageSize);
-        if (!Number.isInteger(pageSize) || pageSize <= 0) return undefined;
-        const maxPages = Number((p as any).maxPages);
-        const totalPath = (p as any).totalPath;
-        return {
-          pageSize,
-          ...(Number.isInteger(maxPages) && maxPages > 0 ? { maxPages } : {}),
-          ...(typeof totalPath === "string" && totalPath.trim() ? { totalPath: totalPath.trim() } : {}),
-          ...((p as any).allowTruncated === true ? { allowTruncated: true } : {}),
-        };
-      })(),
-      searchProfile:
-        typeof e.searchProfile === "string" && e.searchProfile.trim() ? e.searchProfile.trim() : undefined,
-      deadCodes: (() => {
-        if (!Array.isArray(e.deadCodes)) return undefined;
-        const patterns = e.deadCodes.filter((d): d is string => typeof d === "string" && !!d.trim());
-        return patterns.length > 0 ? patterns : undefined;
-      })(),
-      searches: (() => {
-        if (!Array.isArray(e.searches)) return undefined;
-        const endpoints = e.searches
-          .filter((s: any) => s && typeof s === "object" && !Array.isArray(s))
-          .map((s: any) => ({
-            ...(typeof s.url === "string" && s.url.trim() ? { url: s.url.trim() } : {}),
-            ...(typeof s.bodyTemplate === "string" && s.bodyTemplate.trim() ? { bodyTemplate: s.bodyTemplate } : {}),
-            ...(typeof s.searchRowsPath === "string" ? { searchRowsPath: s.searchRowsPath } : {}),
-            ...(s.searchCols && typeof s.searchCols === "object" && !Array.isArray(s.searchCols)
-              && typeof s.searchCols.code === "string" && typeof s.searchCols.name === "string"
-              ? {
-                  searchCols: {
-                    code: s.searchCols.code,
-                    name: s.searchCols.name,
-                    ...(typeof s.searchCols.market === "string" ? { market: s.searchCols.market } : {}),
-                  },
-                }
-              : {}),
-            ...(s.paginate && typeof s.paginate === "object" && Number.isInteger(Number(s.paginate.pageSize)) && Number(s.paginate.pageSize) > 0
-              ? {
-                  paginate: {
-                    pageSize: Math.floor(Number(s.paginate.pageSize)),
-                    ...(Number.isInteger(Number(s.paginate.maxPages)) && Number(s.paginate.maxPages) > 0
-                      ? { maxPages: Math.floor(Number(s.paginate.maxPages)) }
-                      : {}),
-                    ...(typeof s.paginate.totalPath === "string" && s.paginate.totalPath.trim()
-                      ? { totalPath: s.paginate.totalPath.trim() }
-                      : {}),
-                    ...(s.paginate.allowTruncated === true ? { allowTruncated: true } : {}),
-                  },
-                }
-              : {}),
-            ...(typeof s.profile === "string" && s.profile.trim() ? { profile: s.profile.trim() } : {}),
-            ...(s.enabled === false ? { enabled: false } : {}),
-          }))
-          .filter((s: { url?: string; bodyTemplate?: string }) => s.url || s.bodyTemplate);
-        return endpoints.length > 0 ? endpoints : undefined;
-      })(),
-      jsonMap: (e.format === "json" || e.format === "csv") && e.jsonMap ? e.jsonMap : undefined,
-      // Wide-table CSV and fixed-report JSON sources (tushare, FRED, …) are
-      // useless without their pasted code table.
-      symbols: (e.format === "csv" || e.format === "json") && Array.isArray(e.symbols) ? e.symbols : undefined,
-    });
-  }
-  return { defs, warnings };
-}
-
-// Merges freshly imported defs into the existing source list BY NAME: an
-// entry whose name matches an existing source overwrites it (keeping the
-// existing id, and the old apiKey when the import carries none — exported
-// configs strip keys), anything else appends. Re-importing a corrected
-// config therefore updates in place instead of duplicating every source.
-export function mergeImportedSources(existing: CustomSourceDef[], defs: CustomSourceDef[]): { updated: number; added: number } {
-  let updated = 0;
-  let added = 0;
-  for (const def of defs) {
-    const index = existing.findIndex((s) => s.name.trim() === def.name.trim());
-    if (index >= 0) {
-      const old = existing[index];
-      existing[index] = { ...def, id: old.id, apiKey: def.apiKey ?? old.apiKey };
-      updated++;
-    } else {
-      existing.push(def);
-      added++;
-    }
-  }
-  return { updated, added };
-}
-
-// File-picker modal behind the settings-tab 导入 button. Configs arrive as
-// complete .json files (written by the user's AI or exported earlier) rather
-// than pasted text — pasting through a chat window can lose formatting.
-export class CustomSourceImportModal extends Modal {
-  private fileInput: HTMLInputElement | null = null;
-
-  constructor(app: App, onSubmit: (defs: CustomSourceDef[], warnings: string[]) => void) {
-    super(app);
-    this.onSubmit = onSubmit;
-    this.setTitle(t("导入自定义数据源"));
-  }
-
-  private onSubmit: (defs: CustomSourceDef[], warnings: string[]) => void;
-
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.createDiv({
-      cls: "fc-field-hint",
-      text: t("选择 AI 写入 vault 或之前导出的数据源 JSON 配置文件（.json）。请自行确认接口来源合规。"),
-    });
-    this.fileInput = contentEl.createEl("input", {
-      cls: "fc-hidden",
-      attr: { type: "file", accept: ".json,application/json" },
-    });
-    const row = contentEl.createDiv("fc-import-file");
-    const pickBtn = row.createEl("button", { text: t("选择文件…") });
-    const nameEl = row.createSpan({ cls: "fc-field-hint", text: t("未选择文件") });
-    pickBtn.addEventListener("click", () => this.fileInput?.click());
-    this.fileInput.addEventListener("change", () => {
-      nameEl.setText(this.fileInput?.files?.[0]?.name ?? t("未选择文件"));
-    });
-    const footer = contentEl.createDiv("fc-modal-footer");
-    const cancelBtn = footer.createEl("button", { text: t("取消") });
-    cancelBtn.addEventListener("click", () => this.close());
-    const importBtn = footer.createEl("button", { text: t("导入"), cls: "mod-cta" });
-    importBtn.addEventListener("click", () => {
-      void (async () => {
-        const file = this.fileInput?.files?.[0];
-        if (!file) {
-          new Notice(t("请先选择要导入的 JSON 配置文件。"));
+    // Persist the credential through the credential seam — never on the def.
+    if (this.credentialChoice === CREDENTIAL_NEW) {
+      const secret = this.pendingSecret.trim();
+      if (!secret) {
+        if (sourceNeedsApiKey(def)) {
+          new Notice(t("该源的模板包含 {apiKey} 占位符：请输入新密钥，或选择「不配置凭据」。"));
           return;
         }
-        try {
-          const { defs, warnings } = parseImportedSources(await file.text());
-          this.close();
-          this.onSubmit(defs, warnings);
-        } catch {
-          new Notice(t("导入失败：内容不是有效的数据源配置。"));
-        }
-      })();
-    });
-  }
-
-  onClose() {
-    this.contentEl.empty();
+        def.credentialId = undefined;
+      } else {
+        const id = newCredentialId();
+        this.credentials.set(id, secret);
+        def.credentialId = id;
+      }
+    } else if (!this.credentialChoice) {
+      def.credentialId = undefined;
+    } else {
+      def.credentialId = this.credentialChoice;
+      const rotated = this.pendingSecret.trim();
+      if (rotated) this.credentials.set(this.credentialChoice, rotated);
+    }
+    this.close();
+    this.onSubmit(def);
   }
 }

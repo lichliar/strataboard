@@ -23,11 +23,11 @@ const HIDE_DELAY_MS = 150;
 // data-source rows, indicator-instance headers) opt out via the
 // .fc-keep-desc class; source-group headers (.fc-source-group-header) are
 // skipped as well. Called after render by the settings tab, the source setup
-// modals, the card edit modal's 技术指标 page, and the builtin-indicator edit
-// modal. Descriptions here are plain text everywhere, so a textContent
+// modals and the card edit modal's 图层 page. Descriptions here are plain
+// text everywhere, so a textContent
 // tooltip loses nothing.
 export function applyInfoDescs(root: HTMLElement): void {
-  for (const orphan of Array.from(document.body.querySelectorAll<HTMLElement>(".fc-info-tip"))) {
+  for (const orphan of Array.from(document.querySelectorAll<HTMLElement>(".fc-info-tip"))) {
     const owner = (orphan as unknown as { fcOwner?: HTMLElement }).fcOwner;
     if (!owner || !owner.isConnected) orphan.remove();
   }
@@ -73,11 +73,28 @@ export function applyInfoDescs(root: HTMLElement): void {
       clearTimers();
       // One tooltip at a time: any other tip (pinned elsewhere, or orphaned
       // by a re-render) goes away when a new one shows.
-      for (const other of Array.from(document.body.querySelectorAll<HTMLElement>(".fc-info-tip"))) {
+      for (const other of Array.from(document.querySelectorAll<HTMLElement>(".fc-info-tip"))) {
         if (other !== tipEl) other.remove();
       }
       if (!tipEl) {
-        tipEl = document.body.createDiv({ cls: "fc-info-tip", text });
+        // Obsidian can transform the body while a settings window/modal is
+        // open. A fixed descendant of that transformed tree no longer uses
+        // viewport coordinates, so keep the tip under <html>, outside the
+        // transformed body subtree.
+        tipEl = document.createElement("div");
+        tipEl.className = "fc-info-tip";
+        tipEl.textContent = text;
+        // Theme variables are commonly scoped to `body.theme-*`; copy the
+        // computed custom properties onto the portal so moving it outside
+        // body does not lose Obsidian's colors, fonts, or layer tokens.
+        const bodyStyle = getComputedStyle(document.body);
+        for (let i = 0; i < bodyStyle.length; i += 1) {
+          const property = bodyStyle.item(i);
+          if (property.startsWith("--")) {
+            tipEl.style.setProperty(property, bodyStyle.getPropertyValue(property));
+          }
+        }
+        document.documentElement.appendChild(tipEl);
         (tipEl as unknown as { fcOwner: HTMLElement }).fcOwner = icon;
         // Moving onto the tooltip keeps it open (text selection, reading).
         tipEl.addEventListener("mouseenter", clearTimers);

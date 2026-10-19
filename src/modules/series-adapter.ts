@@ -1,17 +1,37 @@
-import { App, TFile } from "obsidian";
 import type { ParsedCardSpec, SeriesPeriod, SeriesPoint, SeriesRef, SpreadSpec } from "../types";
-import { SqliteCache } from "./sqlite-cache";
-import { DataAdapter } from "./data-adapter";
-import { CardIndex } from "./card-index";
+import { DataAdapter, type OhlcvLoadResult } from "./data-adapter";
 import { parseSpreadSpec } from "./series-spec";
 import { evalExpression, parseExpression, type ExprNode } from "./expression";
 import { t } from "../i18n";
 
+// Host capabilities the adapter needs from the embedding app (card-id → path
+// resolution + vault file reads). Obsidian-free so the CLI can back these
+// with plain fs reads.
+export interface SeriesCardHost {
+  // cardId → vault-relative path; null when the id doesn't resolve.
+  resolveCardId(cardId: string): Promise<string | null>;
+  // In-memory snapshot of resolveCardId for contexts that cannot await (edit
+  // modals); may return null on a cold cache.
+  resolveCardIdSync?(cardId: string): string | null;
+  // Reads the md file at a vault-relative path; null when missing/not a file.
+  readCardFile(path: string): Promise<string | null>;
+}
+
+// Cache-serve signals collected across the quote legs of one load, so the
+// card can show the shared cache badge when ANY leg fell back to cached data.
+// lastDataAt keeps the OLDEST leg date (the most conservative freshness).
+export interface SeriesLoadMeta {
+  fromCache: boolean;
+  lastDataAt?: string;
+}
+
 interface SeriesAdapterOptions {
-  app: App;
-  cache: SqliteCache;
   dataAdapter: DataAdapter;
-  cardIndex: CardIndex;
+  host: SeriesCardHost;
+  // 打开自动刷新 setting (plugin only): when OFF, quote legs read the cache
+  // first and fetch only on a cold cache — same semantics as the quote card.
+  // Defaults to always-fetch (CLI/headless behavior).
+  autoRefreshOnOpen?: () => boolean;
 }
 
 // Unified loader for the generic "series" used by overlay and spread cards.
@@ -21,14 +41,14 @@ interface SeriesAdapterOptions {
 // hand-written YAML cycles (A refs B refs A) fail fast instead of recursing
 // forever.
 export class SeriesAdapter {
-  private app: App;
   private dataAdapter: DataAdapter;
-  private cardIndex: CardIndex;
+  private host: SeriesCardHost;
+  private autoRefreshOnOpen: () => boolean;
 
   constructor(options: SeriesAdapterOptions) {
-    this.app = options.app;
     this.dataAdapter = options.dataAdapter;
-    this.cardIndex = options.cardIndex;
+    this.host = options.host;
+    this.autoRefreshOnOpen = options.autoRefreshOnOpen ?? (() => true);
   }
 
   async loadSeries(
@@ -36,13 +56,14 @@ export class SeriesAdapter {
     range: string,
     period: SeriesPeriod = "D",
     force = false,
-    visited: Set<string> = new Set()
+    visited: Set<string> = new Set(),
+    meta?: SeriesLoadMeta
   ): Promise<SeriesPoint[]> {
     switch (ref.source) {
       case "quote":
-        return resamplePoints(await this.loadQuoteSeries(ref, range), period);
+        return resamplePoints(await this.loadQuoteSeries(ref, range, meta), period);
       case "card":
-        return this.loadCardSeries(ref, range, period, visited);
+        return this.loadCardSeries(ref, range, period, visited, meta);
     }
   }
 
@@ -54,22 +75,22 @@ export class SeriesAdapter {
     ref: SeriesRef,
     range: string,
     period: SeriesPeriod,
-    visited: Set<string>
+    visited: Set<string>,
+    meta?: SeriesLoadMeta
   ): Promise<SeriesPoint[]> {
     const cardId = ref.cardId!;
     if (visited.has(cardId)) {
       throw new Error(t("检测到循环引用：{path}。", { path: cardId }));
     }
     visited.add(cardId);
-    const cardPath = await this.cardIndex.resolve(cardId);
+    const cardPath = await this.host.resolveCardId(cardId);
     if (!cardPath) {
       throw new Error(t("无法读取卡片：引用的计算卡不存在（id: {id}）。", { id: cardId }));
     }
-    const file = this.app.vault.getAbstractFileByPath(cardPath);
-    if (!(file instanceof TFile)) {
+    const content = await this.host.readCardFile(cardPath);
+    if (content == null) {
       throw new Error(t("无法读取卡片：{path}（文件不存在）。", { path: cardPath }));
     }
-    const content = await this.app.vault.cachedRead(file);
     const match = content.match(/```spread\n([\s\S]*?)\n```/);
     if (!match) {
       throw new Error(t("无法读取卡片：{path}（引用的卡片不是计算卡）。", { path: cardPath }));
@@ -81,10 +102,10 @@ export class SeriesAdapter {
     if (!result.spec) {
       throw invalid(result.error ?? t("配置无效"));
     }
-    return this.loadSpread(result.spec, range, period, visited);
+    return this.loadSpread(result.spec, range, period, visited, meta);
   }
 
-  private async loadQuoteSeries(ref: SeriesRef, range: string): Promise<SeriesPoint[]> {
+  private async loadQuoteSeries(ref: SeriesRef, range: string, meta?: SeriesLoadMeta): Promise<SeriesPoint[]> {
     const spec: ParsedCardSpec = {
       symbol: ref.tsCode!,
       assetType: ref.assetType!,
@@ -93,8 +114,27 @@ export class SeriesAdapter {
       range,
       version: 1,
     };
-    const rows = await this.dataAdapter.loadOhlcv(spec);
-    return rows.map((row) => ({ date: ymdToIso(row.tradeDate), value: row.close }));
+    let result: OhlcvLoadResult;
+    if (!this.autoRefreshOnOpen()) {
+      const cached = await this.dataAdapter.loadCachedOhlcv(spec);
+      if (cached.length > 0) {
+        // A deliberate cache read (auto-refresh off) is not a fallback.
+        result = { rows: cached, fromCache: false };
+      } else {
+        // First use (or cache miss): fetch once even when auto-refresh is
+        // off, otherwise a series with an empty cache stays empty forever.
+        result = await this.dataAdapter.loadOhlcv(spec);
+      }
+    } else {
+      result = await this.dataAdapter.loadOhlcv(spec);
+    }
+    if (meta && result.fromCache) {
+      meta.fromCache = true;
+      if (result.lastDataAt && (!meta.lastDataAt || result.lastDataAt < meta.lastDataAt)) {
+        meta.lastDataAt = result.lastDataAt;
+      }
+    }
+    return result.rows.map((row) => ({ date: ymdToIso(row.tradeDate), value: row.close }));
   }
 
   // Loads every series (each resampled to the requested period FIRST), then
@@ -102,14 +142,14 @@ export class SeriesAdapter {
   // series and the migrated "A-B" expression this reproduces the legacy
   // two-leg spread exactly. Invalid expressions throw a Chinese error for the
   // card-level error+retry UI (same discipline as loadCardSeries).
-  async loadSpread(spec: SpreadSpec, range: string, period: SeriesPeriod = "D", visited: Set<string> = new Set()): Promise<SeriesPoint[]> {
+  async loadSpread(spec: SpreadSpec, range: string, period: SeriesPeriod = "D", visited: Set<string> = new Set(), meta?: SeriesLoadMeta): Promise<SeriesPoint[]> {
     const parsed = parseExpression(spec.expression, spec.series.length);
     if (!parsed.ok) {
       throw new Error(t("公式错误：{msg}", { msg: parsed.error }));
     }
     const ast = parsed.ast;
 
-    const allPoints = await Promise.all(spec.series.map((ref) => this.loadSeries(ref, range, period, false, visited)));
+    const allPoints = await Promise.all(spec.series.map((ref) => this.loadSeries(ref, range, period, false, visited, meta)));
 
     if (allPoints.some(isMonthlyish)) {
       return evalMonthly(allPoints, ast);
@@ -128,18 +168,18 @@ export class SeriesAdapter {
   async resolveLabel(ref: SeriesRef): Promise<string> {
     if (ref.label) return ref.label;
     if (ref.source === "card") {
-      const path = ref.cardId ? await this.cardIndex.resolve(ref.cardId) : null;
+      const path = ref.cardId ? await this.host.resolveCardId(ref.cardId) : null;
       return basename(path) ?? t("计算卡");
     }
     return ref.tsCode ?? "";
   }
 
   // Sync variant for contexts that cannot await (edit modals): uses only the
-  // card index's warm in-memory map, same 计算卡 fallback.
+  // host's warm in-memory map, same 计算卡 fallback.
   resolveLabelSync(ref: SeriesRef): string {
     if (ref.label) return ref.label;
     if (ref.source === "card") {
-      const path = ref.cardId ? this.cardIndex.resolveSync(ref.cardId) : null;
+      const path = ref.cardId ? this.host.resolveCardIdSync?.(ref.cardId) ?? null : null;
       return basename(path) ?? t("计算卡");
     }
     return ref.tsCode ?? "";

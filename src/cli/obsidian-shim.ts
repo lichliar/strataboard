@@ -5,6 +5,8 @@
 // these definitions instead of the real Electron-side API. Only add exports
 // here when the CLI's module chain genuinely imports them.
 
+import { redactSecrets } from "../modules/redact";
+
 export interface RequestUrlParam {
   url: string;
   method?: string;
@@ -54,15 +56,23 @@ export async function requestUrl(param: RequestUrlParam): Promise<RequestUrlResp
     text,
   };
   if (param.throwOnHttpError !== false && res.status >= 400) {
-    throw new Error(`Request to ${param.url} failed with status ${res.status}: ${text.slice(0, 300)}`);
+    // Never embed the URL (it may carry a resolved credential in the query);
+    // callers re-check status themselves, so this branch is a last resort.
+    throw new Error(`Request failed with status ${res.status}: ${text.slice(0, 300)}`);
   }
   return out;
 }
 
 // Notices are UI toasts in Obsidian; in the CLI they log to stderr so stdout
-// stays pure JSON.
+// stays pure JSON. Redacted: upstream messages can carry request content.
 export class Notice {
   constructor(message?: string) {
-    if (message) console.error(`[notice] ${message}`);
+    if (message) console.error(`[notice] ${redactSecrets(message)}`);
   }
 }
+
+// Value-import stubs for modules whose obsidian usage the CLI never executes
+// (e.g. card-index.ts's CardIndex class is tree-shaken; only the pure
+// extractSpreadId/newSpreadId helpers run). Instantiating these is a bug.
+export class TFile {}
+export class App {}

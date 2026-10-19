@@ -5,21 +5,61 @@ export interface TradingViewWidgetParseResult {
   title?: string;
 }
 
+const TRADINGVIEW_ROOT_HOST = "tradingview.com";
+const TRADINGVIEW_LEGACY_SCRIPT = "https://s3.tradingview.com/tv.js";
+
+export function isTradingViewUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return (
+      url.protocol === "https:" &&
+      url.username === "" &&
+      url.password === "" &&
+      (url.port === "" || url.port === "443") &&
+      (hostname === TRADINGVIEW_ROOT_HOST || hostname.endsWith(`.${TRADINGVIEW_ROOT_HOST}`))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function scriptTags(html: string): { src: string; body: string }[] {
+  const tags: { src: string; body: string }[] = [];
+  const pattern = /<script\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/script>/gi;
+  for (const match of html.matchAll(pattern)) {
+    tags.push({ src: match[2], body: match[3] });
+  }
+  return tags;
+}
+
 export function parseTradingViewHtml(html: string): TradingViewWidgetParseResult | null {
   const trimmed = html.trim();
 
-  // Match the TradingView external-embedding script tag and its JSON body.
-  const scriptMatch = trimmed.match(
-    /<script[^>]*src="([^"]*tradingview\.com\/external-embedding\/[^"]*)"[^>]*>([\s\S]*?)<\/script>/i
-  );
-  if (!scriptMatch) return null;
+  // Only accept the official HTTPS external-embedding script. Rebuilding the
+  // document below intentionally discards every other pasted tag/script.
+  const script = scriptTags(trimmed).find(({ src }) => {
+    if (!isTradingViewUrl(src)) return false;
+    try {
+      return new URL(src).pathname.startsWith("/external-embedding/");
+    } catch {
+      return false;
+    }
+  });
+  if (!script) return null;
 
-  const scriptUrl = scriptMatch[1];
-  const configText = scriptMatch[2].trim();
+  const scriptUrl = new URL(script.src).toString();
+  const configText = script.body.trim();
 
   let config: Record<string, unknown>;
   try {
-    config = JSON.parse(configText);
+    const parsed = JSON.parse(configText) as unknown;
+    if (!isRecord(parsed)) return null;
+    config = parsed;
   } catch {
     return null;
   }
@@ -49,8 +89,12 @@ export function buildTradingViewWidgetHtml(
   scriptUrl: string,
   config: Record<string, unknown>
 ): string {
-  const bg = typeof config.backgroundColor === "string" ? config.backgroundColor : "#ffffff";
-  const configJson = JSON.stringify(config, null, 2);
+  if (!isTradingViewUrl(scriptUrl)) {
+    throw new Error("TradingView widget script URL is not allowed.");
+  }
+  const requestedBg = typeof config.backgroundColor === "string" ? config.backgroundColor : "";
+  const bg = /^#[0-9a-f]{3,8}$/i.test(requestedBg) ? requestedBg : "#ffffff";
+  const configJson = safeInlineJson(config);
 
   return `<!DOCTYPE html>
 <html>
@@ -78,6 +122,39 @@ ${configJson}
 </html>`;
 }
 
+function buildLegacyTradingViewWidgetHtml(config: Record<string, unknown>): string {
+  const normalized = { ...config, container_id: "tradingview_widget" };
+  const configJson = safeInlineJson(normalized);
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+    body { display: flex; flex-direction: column; }
+    #tradingview_widget { flex: 1 1 auto; min-height: 0; width: 100%; }
+    .tradingview-widget-copyright { flex: 0 0 auto; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div id="tradingview_widget"></div>
+  <div class="tradingview-widget-copyright">
+    <a href="https://www.tradingview.com/" rel="noopener nofollow" target="_blank">Charts by TradingView</a>
+  </div>
+  <script src="${TRADINGVIEW_LEGACY_SCRIPT}"></script>
+  <script>new TradingView.widget(${configJson});</script>
+</body>
+</html>`;
+}
+
+function safeInlineJson(value: Record<string, unknown>): string {
+  return JSON.stringify(value, null, 2)
+    .replaceAll("<", "\\u003c")
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
+}
+
 export interface WidgetInputParseResult {
   widgetType: "iframe" | "html";
   iframeUrl?: string;
@@ -91,18 +168,18 @@ export interface WidgetInputParseResult {
 //  - "tvjs":       tv.js + new TradingView.widget({...}) — a JS object literal
 //  - "embed":      external-embedding embed-widget-*.js script with inline JSON
 //  - "iframe-url": a bare tradingview.com URL — params live in the query
-//  - "raw":        anything else (any HTML / non-TradingView URL) — manual only
-export type WidgetCodeKind = "tvjs" | "embed" | "iframe-url" | "raw";
+//  - "invalid":    anything outside the TradingView allowlist
+export type WidgetCodeKind = "tvjs" | "embed" | "iframe-url" | "invalid";
 
 export interface WidgetCodeParse {
   kind: WidgetCodeKind;
-  /** Extracted config; null for raw input (nothing machine-editable). */
+  /** Extracted config; null for invalid input. */
   config: Record<string, unknown> | null;
   /** Display name for the detected pill, e.g. "高级图表组件". */
   widgetName?: string;
   /** Auto title from the config's symbol field. */
   title?: string;
-  /** Rewrites the ORIGINAL input with a modified config (two-way sync). */
+  /** Rebuilds allowlisted widget content with a modified config. */
   withConfig(next: Record<string, unknown>): string;
 }
 
@@ -132,12 +209,11 @@ export function parseWidgetCode(input: string): WidgetCodeParse | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
 
-  // Bare URL: TradingView widgetembed → params from the query string;
-  // any other URL stays "raw" (the insert path iframes it as-is).
+  // Bare URL: only official TradingView HTTPS URLs are accepted.
   if (/^https?:\/\/\S+$/i.test(trimmed)) {
     try {
       const url = new URL(trimmed);
-      if (url.hostname.includes("tradingview.com")) {
+      if (isTradingViewUrl(trimmed)) {
         const config: Record<string, unknown> = {};
         url.searchParams.forEach((value, key) => {
           config[key] = value === "true" ? true : value === "false" ? false : value;
@@ -159,41 +235,38 @@ export function parseWidgetCode(input: string): WidgetCodeParse | null {
         };
       }
     } catch {
-      // fall through to raw
+      // fall through to invalid
     }
-    return { kind: "raw", config: null, withConfig: () => input };
+    return { kind: "invalid", config: null, withConfig: () => input };
   }
 
-  // embed-widget-*.js script with an inline JSON body.
-  const scriptMatch = trimmed.match(
-    /<script[^>]*src="([^"]*tradingview\.com\/external-embedding\/[^"]*)"[^>]*>([\s\S]*?)<\/script>/i
-  );
-  if (scriptMatch && scriptMatch.index !== undefined) {
-    const scriptUrl = scriptMatch[1];
-    const full = scriptMatch[0];
-    const bodyStartInFull = full.indexOf(">") + 1;
-    const bodyEndInFull = full.length - "</script>".length;
+  // Official external-embedding snippet. Always rewrite to the canonical,
+  // stripped document so unrelated pasted HTML never survives insertion.
+  const embedded = parseTradingViewHtml(trimmed);
+  if (embedded) {
+    return {
+      kind: "embed",
+      config: embedded.config,
+      widgetName: embedWidgetName(embedded.scriptUrl),
+      title: extractTitle(embedded.config),
+      withConfig(next) {
+        return buildTradingViewWidgetHtml(embedded.scriptUrl, next);
+      },
+    };
+  }
+
+  // Legacy tv.js + new TradingView.widget({...}). Require the official script
+  // and rebuild a minimal document instead of retaining arbitrary markup.
+  const hasOfficialLegacyScript = scriptTags(trimmed).some(({ src }) => {
+    if (!isTradingViewUrl(src)) return false;
     try {
-      const config = JSON.parse(scriptMatch[2].trim()) as Record<string, unknown>;
-      const start = scriptMatch.index + bodyStartInFull;
-      const end = scriptMatch.index + bodyEndInFull;
-      return {
-        kind: "embed",
-        config,
-        widgetName: embedWidgetName(scriptUrl),
-        title: extractTitle(config),
-        withConfig(next) {
-          return `${trimmed.slice(0, start)}\n${JSON.stringify(next, null, 2)}\n  ${trimmed.slice(end)}`;
-        },
-      };
+      return new URL(src).pathname === "/tv.js";
     } catch {
-      return { kind: "raw", config: null, withConfig: () => input };
+      return false;
     }
-  }
-
-  // tv.js + new TradingView.widget({...}) with a JS object literal.
+  });
   const widgetCall = trimmed.search(/new\s+TradingView\.widget\s*\(/);
-  if (widgetCall >= 0) {
+  if (hasOfficialLegacyScript && widgetCall >= 0) {
     const objStart = trimmed.indexOf("{", widgetCall);
     if (objStart >= 0) {
       const objEnd = findMatchingBrace(trimmed, objStart);
@@ -206,7 +279,7 @@ export function parseWidgetCode(input: string): WidgetCodeParse | null {
             widgetName: "高级图表组件",
             title: extractTitle(config),
             withConfig(next) {
-              return trimmed.slice(0, objStart) + JSON.stringify(next, null, 2) + trimmed.slice(objEnd + 1);
+              return buildLegacyTradingViewWidgetHtml(next);
             },
           };
         }
@@ -214,7 +287,7 @@ export function parseWidgetCode(input: string): WidgetCodeParse | null {
     }
   }
 
-  return { kind: "raw", config: null, withConfig: () => input };
+  return { kind: "invalid", config: null, withConfig: () => input };
 }
 
 // Index of the "}" matching the "{" at start, skipping over string literals.
@@ -247,7 +320,8 @@ function findMatchingBrace(text: string, start: number): number {
 // single quotes / strip trailing commas.
 function parseJsObjectLiteral(text: string): Record<string, unknown> | null {
   try {
-    return JSON.parse(text) as Record<string, unknown>;
+    const parsed = JSON.parse(text) as unknown;
+    return isRecord(parsed) ? parsed : null;
   } catch {
     // continue
   }
@@ -256,7 +330,8 @@ function parseJsObjectLiteral(text: string): Record<string, unknown> | null {
       .replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, '$1"$2"$3')
       .replace(/'([^'\\]*(\\.[^'\\]*)*)'/g, '"$1"')
       .replace(/,\s*([}\]])/g, "$1");
-    return JSON.parse(sanitized) as Record<string, unknown>;
+    const parsed = JSON.parse(sanitized) as unknown;
+    return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -266,8 +341,8 @@ export function parseWidgetInput(input: string, fallbackTitle?: string): WidgetI
   const trimmed = input.trim();
   if (!trimmed) return null;
 
-  // Plain URL.
-  if (/^https?:\/\//i.test(trimmed)) {
+  // Plain official TradingView URL.
+  if (isTradingViewUrl(trimmed)) {
     return {
       widgetType: "iframe",
       iframeUrl: trimmed,
@@ -285,12 +360,16 @@ export function parseWidgetInput(input: string, fallbackTitle?: string): WidgetI
     };
   }
 
-  // Fallback: treat the whole input as raw HTML and wrap it minimally.
-  return {
-    widgetType: "html",
-    widgetHtml: wrapRawHtml(trimmed),
-    title: fallbackTitle,
-  };
+  const parsed = parseWidgetCode(trimmed);
+  if (parsed?.kind === "tvjs" && parsed.config) {
+    return {
+      widgetType: "html",
+      widgetHtml: buildLegacyTradingViewWidgetHtml(parsed.config),
+      title: parsed.title ?? fallbackTitle,
+    };
+  }
+
+  return null;
 }
 
 function extractUrlTitle(url: string): string {
@@ -300,20 +379,4 @@ function extractUrlTitle(url: string): string {
   } catch {
     return "Widget";
   }
-}
-
-function wrapRawHtml(html: string): string {
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
-  </style>
-</head>
-<body>
-${html}
-</body>
-</html>`;
 }

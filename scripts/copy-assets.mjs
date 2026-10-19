@@ -6,32 +6,49 @@ import { pluginDir } from "./deploy-target.mjs";
 const __filename = fileURLToPath(import.meta.url);
 const projectDir = path.resolve(path.dirname(__filename), "..");
 
-const files = ["manifest.json", "styles.css", "versions.json"];
+const files = [
+  { src: "manifest.json", dest: "manifest.json" },
+  { src: "styles.css", dest: "styles.css" },
+  { src: "versions.json", dest: "versions.json" },
+  { src: "LICENSE", dest: "LICENSE" },
+  { src: "docs/THIRD-PARTY-LICENSES.md", dest: "THIRD-PARTY-LICENSES.md" },
+];
 
 fs.mkdirSync(pluginDir, { recursive: true });
 
 for (const file of files) {
-  const src = path.join(projectDir, file);
-  const dest = path.join(pluginDir, file);
+  const src = path.join(projectDir, file.src);
+  const dest = path.join(pluginDir, file.dest);
   if (fs.existsSync(src)) {
     fs.copyFileSync(src, dest);
-    console.log(`Copied ${file} -> ${dest}`);
+    console.log(`Copied ${file.src} -> ${dest}`);
   } else {
     console.warn(`Missing ${src}, skipping`);
   }
 }
 
-const wasmSrc = path.join(projectDir, "node_modules/sql.js/dist/sql-wasm.wasm");
-const wasmDest = path.join(pluginDir, "sql-wasm.wasm");
-if (fs.existsSync(wasmSrc)) {
-  fs.copyFileSync(wasmSrc, wasmDest);
-  console.log(`Copied sql-wasm.wasm -> ${wasmDest}`);
+// The headless PNG renderer (cli.js/mcp-server.js render commands) needs the
+// canvas native module at runtime; it is esbuild-external, so deploy it next
+// to the bundles. The package is self-contained (prebuilt binary under
+// build/Release) for the current platform — a cross-platform install must
+// rebuild/deploy on the target machine.
+const canvasSrc = path.join(projectDir, "node_modules/canvas");
+const canvasDest = path.join(pluginDir, "node_modules", "canvas");
+if (fs.existsSync(canvasSrc)) {
+  fs.cpSync(canvasSrc, canvasDest, { recursive: true });
+  console.log(`Copied canvas -> ${canvasDest}`);
 } else {
-  console.warn(`Missing ${wasmSrc}, skipping`);
+  console.warn(`Missing ${canvasSrc}, render commands will be unavailable`);
 }
 
-// Marker consumed by ensureBundledAssets (src/modules/bundled-assets.ts):
-// records which version the extras in this plugin dir belong to, so runtime
-// re-download only triggers on store installs/updates, never over dev builds.
-const { version } = JSON.parse(fs.readFileSync(path.join(projectDir, "manifest.json"), "utf8"));
-fs.writeFileSync(path.join(pluginDir, ".bundled-assets-version"), version);
+// jsdom's default stylesheet, read at load time from jsdom-assets/ (the path
+// rewritten by scripts/jsdom-bundle-fix.mjs in the CLI/MCP bundles).
+const jsdomCssSrc = path.join(projectDir, "node_modules/jsdom/lib/jsdom/browser/default-stylesheet.css");
+const jsdomCssDest = path.join(pluginDir, "jsdom-assets", "default-stylesheet.css");
+if (fs.existsSync(jsdomCssSrc)) {
+  fs.mkdirSync(path.dirname(jsdomCssDest), { recursive: true });
+  fs.copyFileSync(jsdomCssSrc, jsdomCssDest);
+  console.log(`Copied jsdom default-stylesheet.css -> ${jsdomCssDest}`);
+} else {
+  console.warn(`Missing ${jsdomCssSrc}, render commands will be unavailable`);
+}

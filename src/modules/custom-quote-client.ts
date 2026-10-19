@@ -1,5 +1,5 @@
 import { httpRequest, looksLikeHtmlInterstitial, type HttpRequestOptions } from "./http";
-import type { CustomSourceDef, JsonSourceMap, OhlcvRow, SearchEndpoint, SymbolItem } from "../types";
+import type { CustomSourceDef, JsonSourceMap, OhlcvRow, ResolvedCustomSourceDef, SearchEndpoint, SymbolItem } from "../types";
 import { searchProbeQuery } from "../types";
 import { compileDeadCodes, resolveSymbolParams } from "../utils/symbol-list";
 import {
@@ -17,6 +17,9 @@ import {
 } from "./quote-format-parsers";
 import { formatDate } from "../utils/date";
 import { t } from "../i18n";
+import { findEmbeddedCredentialFields } from "../utils/source-credentials";
+import { redactError } from "./redact";
+import { reportSourceHealth } from "./source-health";
 
 // HTTP client for one user-configured custom data source (设置页 → 自定义数据
 // 源). The plugin ships no endpoint URLs; both URLs come from the user's
@@ -45,7 +48,7 @@ export interface SearchFetchStats {
 }
 
 export class CustomQuoteClient {
-  constructor(private def: CustomSourceDef) {}
+  constructor(private def: ResolvedCustomSourceDef) {}
 
   // Server-side symbol search. A source configures a primary GET searchUrl
   // ({query} placeholder) / POST searchBodyTemplate (same placeholders as
@@ -345,7 +348,7 @@ export class CustomQuoteClient {
     }
     // Truncation detection: hitting maxPages, or a declared total
     // (totalPath) exceeding what came back — the window is likely
-    // incomplete, and the caller (validate-config / console) must hear
+    // incomplete, and diagnostic callers must hear
     // about it instead of seeing a green probe.
     if (canPaginate && stats) {
       const total = paginate!.totalPath ? Number(digPathValue(lastJson, paginate!.totalPath)) : NaN;
@@ -381,7 +384,7 @@ export class CustomQuoteClient {
 // readings), so verification doesn't false-fail on an empty recent window.
 // Goes through authedRequest, so POST sources can be probed too.
 // Throws the request error on failure.
-export async function fetchKlineSample(def: CustomSourceDef, code: string): Promise<{ json: any; text: string }> {
+export async function fetchKlineSample(def: ResolvedCustomSourceDef, code: string): Promise<{ json: any; text: string }> {
   const end = formatDate(new Date());
   const start = formatDate(new Date(Date.now() - 400 * 86400000));
   const params = resolveSymbolParams(def, code);
@@ -405,7 +408,7 @@ export async function fetchKlineSample(def: CustomSourceDef, code: string): Prom
 // klineUrl instead of a vault filePath): the same template fill, symbol
 // params, missing-param guard and auth as fetchJsonKline, but the response
 // body comes back unparsed for the CSV parser.
-export async function fetchSourceText(def: CustomSourceDef, code: string, start: string, end: string): Promise<string> {
+export async function fetchSourceText(def: ResolvedCustomSourceDef, code: string, start: string, end: string): Promise<string> {
   const urlCode = splitCompositeCode(code).urlCode;
   const params = resolveSymbolParams(def, code);
   const missing = missingSymbolParams(def, params);
@@ -428,7 +431,7 @@ export async function fetchSourceText(def: CustomSourceDef, code: string, start:
 // search URL; "json" sources keep their manual mapping. The probe query
 // derives from the source's own testCode/symbols (a hardcoded A-share code
 // would false-fail English/global sources).
-export async function autoDetectSearchFormat(def: CustomSourceDef): Promise<CustomSourceDef["format"]> {
+export async function autoDetectSearchFormat(def: ResolvedCustomSourceDef): Promise<CustomSourceDef["format"]> {
   if (!def.searchUrl) return def.format;
   const values = { query: encodeURIComponent(searchProbeQuery(def).query) };
   const url = fillTemplate(def.searchUrl, templateValues(def, values));
@@ -493,7 +496,7 @@ function missingSymbolParams(def: CustomSourceDef, params: Record<string, string
 // Template values shared by every request of a source: the {apiKey}
 // placeholder (query-param auth) is filled URL-encoded; header-mode auth
 // never goes into the URL.
-function templateValues(def: CustomSourceDef, extra: Record<string, string>): Record<string, string> {
+function templateValues(def: ResolvedCustomSourceDef, extra: Record<string, string>): Record<string, string> {
   return { apiKey: encodeURIComponent(def.apiKey ?? ""), ...extra };
 }
 
@@ -502,7 +505,7 @@ function templateValues(def: CustomSourceDef, extra: Record<string, string>): Re
 // "Name: value-template" (split on the first colon; the template may contain
 // {apiKey}, e.g. "Authorization: Bearer {apiKey}"). Header values are not
 // URL-encoded.
-export function buildAuthHeaders(def: Pick<CustomSourceDef, "apiKey" | "apiKeyHeader">): Record<string, string> | undefined {
+export function buildAuthHeaders(def: Pick<ResolvedCustomSourceDef, "apiKey" | "apiKeyHeader">): Record<string, string> | undefined {
   const key = def.apiKey?.trim();
   const spec = def.apiKeyHeader?.trim();
   if (!key || !spec) return undefined;
@@ -517,7 +520,7 @@ export function buildAuthHeaders(def: Pick<CustomSourceDef, "apiKey" | "apiKeyHe
 // (values may contain {apiKey}, filled raw like every header value), then
 // the auth header from buildAuthHeaders overrides on a name conflict.
 // Undefined when neither is configured.
-function buildRequestHeaders(def: CustomSourceDef): Record<string, string> | undefined {
+function buildRequestHeaders(def: ResolvedCustomSourceDef): Record<string, string> | undefined {
   const statics = Object.fromEntries(
     Object.entries(def.headers ?? {}).map(([name, value]) => [name, fillTemplate(value, { apiKey: def.apiKey ?? "" })]),
   );
@@ -533,16 +536,30 @@ function buildRequestHeaders(def: CustomSourceDef): Record<string, string> | und
 // rows"; and a PROTOCOL_ERROR-class network failure points at the transport
 // escape hatch (hosts resetting Electron's HTTP/2 stack) when the source has
 // not taken it yet. Hints ride the error message, so the probe UI, card error
-// bodies, search Notices and the CLI all surface them.
-async function sendSourceRequest(def: CustomSourceDef, params: HttpRequestOptions) {
-  let response;
+// bodies, search Notices and the CLI all surface them. Every outcome (success
+// or failure) is recorded in the session source-health map
+// (modules/source-health.ts) for the settings-page badge.
+async function sendSourceRequest(def: ResolvedCustomSourceDef, params: HttpRequestOptions) {
   try {
-    response = await httpRequest(params);
+    const credentialFields = findEmbeddedCredentialFields(def);
+    if (credentialFields.length > 0) {
+      throw new Error(t("检测到疑似明文凭据：{fields}。请把密钥只填入「凭据」字段，并在这些位置改用 {apiKey} 占位符。", {
+        fields: credentialFields.join("、"),
+      }));
+    }
+    let response;
+    try {
+      response = await httpRequest(params);
+    } catch (e) {
+      throw enrichRequestError(def, e);
+    }
+    throwOnHtmlInterstitial(response);
+    reportSourceHealth(def.id, true);
+    return response;
   } catch (e) {
-    throw enrichRequestError(def, e);
+    reportSourceHealth(def.id, false, redactError(e));
+    throw e;
   }
-  throwOnHtmlInterstitial(response);
-  return response;
 }
 
 function throwOnHtmlInterstitial(response: { json: unknown; text: string }): void {
@@ -568,7 +585,7 @@ function enrichRequestError(def: CustomSourceDef, e: unknown): Error {
 // a JSON body); "form" percent-encodes every value and sends
 // Content-Type: application/x-www-form-urlencoded (legacy form-only APIs).
 function authedRequest(
-  def: CustomSourceDef,
+  def: ResolvedCustomSourceDef,
   url: string,
   extraValues?: Record<string, string>,
   rawValues?: Record<string, string>

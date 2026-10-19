@@ -11,17 +11,20 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   createVaultContext,
+  listIndicatorGroups,
   listSources,
   probeData,
+  renderCardPngBase64,
+  renderDoc,
   searchSymbols,
   validateCards,
-  validateConfig,
   type VaultContext,
 } from "../cli/commands";
 import { renderAiGuide } from "../modules/ai-guide";
 import { AI_SCRIPT_PROMPT } from "../modules/script-prompt";
 import { AI_INDICATOR_PROMPT } from "../modules/indicator-prompt";
 import { ASSET_TYPES, type AssetType } from "../types";
+import { redactSecrets } from "../modules/redact";
 
 // --vault flag > STRATABOARD_VAULT env > walk up from cwd (createVaultContext).
 function vaultOverrideFromArgv(): string | undefined {
@@ -37,12 +40,17 @@ const assetTypeSchema = z
 type JsonContent = { content: { type: "text"; text: string }[]; isError?: boolean };
 
 function jsonResult(data: unknown): JsonContent {
-  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  // All MCP output passes the central redactor (env-var secrets could be
+  // echoed back inside error payloads or responses).
+  return { content: [{ type: "text", text: redactSecrets(JSON.stringify(data, null, 2)) }] };
 }
 
 function errorResult(e: unknown): JsonContent {
+  // Errors are not always Error instances (some libs throw plain objects) —
+  // stringify those instead of emitting "[object Object]".
+  const message = e instanceof Error ? e.message : typeof e === "object" && e !== null ? JSON.stringify(e) : String(e);
   return {
-    content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
+    content: [{ type: "text", text: redactSecrets(message) }],
     isError: true,
   };
 }
@@ -98,6 +106,15 @@ async function main(): Promise<void> {
   );
 
   server.registerTool(
+    "list_indicator_groups",
+    {
+      description:
+        "列出用户在设置页定义的全部指标组（命名指标组合，含各组的指标实例列表）。写卡时可把某个指标组展开为 indicators 列表。设置为 server 启动时读取，插件运行期间新建/修改的组需重启 MCP server 后可见。",
+    },
+    wrap(() => listIndicatorGroups(ctx))
+  );
+
+  server.registerTool(
     "validate_cards",
     {
       description:
@@ -125,22 +142,6 @@ async function main(): Promise<void> {
   );
 
   server.registerTool(
-    "validate_config",
-    {
-      description:
-        "导入前验证一个数据源配置 JSON 文件（数组）：逐源结构校验（含字段放错层级的警告），再对 testCode 与全部 symbols 实发请求探测（默认 400 天窗口，月频/季频序列也能验证；干净 0 行会自动加宽到约 10 年复核一次以区分退市与配置错误），配了搜索模板的源发一次搜索（查询词取自该源自己的 testCode/symbols；模板含 {p.*} 时还会加测一个搜索结果代码，覆盖「代码不在符号表」的场景）。密钥解析顺序：文件内（含同组回落）→ apiKeys/apiKey 参数注入（按组名 > 源名 > 全局兜底）→ vault 里同名或同组的已配源。失败条目带 reason 与原始响应片段（sample）。生成或修改数据源配置后、让用户导入前先调用它。",
-      inputSchema: {
-        file: z.string().describe("配置文件路径：绝对路径或 vault 相对路径（如 数据源配置.json）"),
-        days: z.number().int().positive().optional().describe("探测窗口天数，默认 400"),
-        apiKey: z.string().optional().describe("注入的 API 密钥（全局兜底；文件里不含密钥时使用）"),
-        apiKeys: z.record(z.string(), z.string()).optional().describe("按名注入的多把密钥：{\"组名或源名\": \"密钥\"}，组名 > 源名 > apiKey 全局兜底"),
-        structuralOnly: z.boolean().optional().describe("只做结构校验，不发任何网络请求"),
-      },
-    },
-    wrap(({ file, days, apiKey, apiKeys, structuralOnly }) => validateConfig(ctx, { file, days, apiKey, apiKeys, structuralOnly }))
-  );
-
-  server.registerTool(
     "get_card_guide",
     {
       description: "返回《StrataBoard 卡片编写指南》全文（各卡片块的完整 YAML schema 与示例）。第一次要写卡片时先读它。",
@@ -159,7 +160,7 @@ async function main(): Promise<void> {
     "get_script_guide",
     {
       description:
-        "返回 StrataBoard「本地脚本」功能的编写指南：CSV 产物契约（宽表 / 单序列 OHLCV / 信号表 date,code,side,text）与合规规则。用户要写数据处理脚本（含产生买卖信号）时先读它；脚本放进 scriptFolderPath，产物写到其 output/ 子目录、文件名与脚本同名，插件会自动注册为数据源（信号表注册为信号源，供卡片 YAML 的 信号/signals 字段引用）。",
+        "返回 StrataBoard「本地脚本」功能的编写指南：CSV 产物契约（宽表 / 单序列 OHLCV）、系统权限提示与合规规则。用户要写数据处理脚本时先读它；脚本放进 scriptFolderPath，产物写到其 output/ 子目录、文件名与脚本同名，插件会自动注册为数据源。",
     },
     async () =>
       jsonResult({
@@ -173,7 +174,7 @@ async function main(): Promise<void> {
     "get_indicator_guide",
     {
       description:
-        "返回 StrataBoard「自定义指标」功能的编写指南：指标文件的 module.exports 契约（metadata/inputConfig/defaultInputs/plotConfig/calculate）、注入的 oak API（oakscriptjs 精选表面）与合规红线（纯计算，禁 require/网络/DOM）。用户要写或修改技术指标（含移植 TradingView Pine Script）时先读它；指标文件放进 indicatorFolderPath，文件名 slug 即指标 id，插件自动注册进指标系统（内置 15 个指标的 id 不可占用）。",
+        "返回 StrataBoard「自定义指标」功能的编写指南：指标文件的 module.exports 契约（metadata/inputConfig/defaultInputs/plotConfig/calculate）、注入的 oak API（oakscriptjs 精选表面）与合规红线（纯计算，禁 require/网络/DOM）。用户要写或修改有权使用的技术指标代码时先读它；指标文件放进 indicatorFolderPath，文件名 slug 即指标 id，插件自动注册进指标系统。插件不内置指标。",
     },
     async () =>
       jsonResult({
@@ -181,6 +182,47 @@ async function main(): Promise<void> {
         indicatorFolderPath: ctx.settings.indicatorFolderPath ?? "指标",
         guide: AI_INDICATOR_PROMPT,
       })
+  );
+
+  server.registerTool(
+    "render_card_png",
+    {
+      description:
+        "把一段 Markdown 里的第一个 StrataBoard 卡片块（quote/overlay/spread）渲染成 PNG 图片，直接返回图片内容。用于把图表带给不支持本插件的平台（如飞书文档）。financial-widget/calendar 卡片不支持渲染。",
+      inputSchema: {
+        markdown: z.string().describe("包含一个卡片围栏块（```quote/```overlay/```spread）的 Markdown 文本"),
+        width: z.number().int().positive().optional().describe("图片宽度（CSS px，按 2x 输出），默认 960"),
+        height: z.number().int().positive().optional().describe("图片高度，默认 400"),
+      },
+    },
+    async ({ markdown, width, height }) => {
+      try {
+        const rendered = await renderCardPngBase64(ctx, { markdown, width, height });
+        return {
+          content: [
+            { type: "image" as const, data: rendered.pngBase64, mimeType: "image/png" as const },
+            { type: "text" as const, text: JSON.stringify({ ok: true, title: rendered.title, width: rendered.width, height: rendered.height }) },
+          ],
+        };
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
+  server.registerTool(
+    "render_doc_images",
+    {
+      description:
+        "把一篇 Markdown 文章里的全部 StrataBoard 卡片块渲染成 PNG（写入 <文章名>.assets/ 或 outDir），并生成一份图片链接版 Markdown（<文章名>.images.md），用于发布到飞书等平台。逐块返回渲染状态；失败的块保留原文。",
+      inputSchema: {
+        file: z.string().describe("文章路径：绝对路径或 vault 相对路径"),
+        outDir: z.string().optional().describe("PNG 输出目录，默认 <文章目录>/<文章名>.assets/"),
+        width: z.number().int().positive().optional().describe("图片宽度（CSS px，按 2x 输出），默认 960"),
+        height: z.number().int().positive().optional().describe("图片高度，默认 400"),
+      },
+    },
+    wrap(({ file, outDir, width, height }) => renderDoc(ctx, { file, outDir, width, height }))
   );
 
   await server.connect(new StdioServerTransport());

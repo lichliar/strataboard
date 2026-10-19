@@ -13,8 +13,9 @@ import { pluginDir } from "./deploy-target.mjs";
  * (no "v" prefix — the Obsidian plugin portal requires the release tag to
  * exactly match manifest.json's version) → push the tag → `gh release
  * create` with the built plugin files from the deploy target (main.js /
- * manifest.json / styles.css / sql-wasm.wasm — the wasm is required by the
- * SQLite cache — plus cli.js / mcp-server.js, the AI-facing entry points).
+ * manifest.json / styles.css — sql.js's wasm is embedded in the bundles —
+ * plus cli.js / mcp-server.js, the AI-facing entry points, and the
+ * project/third-party license files).
  *
  * Requires the GitHub CLI (`gh`) to be authenticated.
  */
@@ -40,7 +41,15 @@ run(`git push origin ${branch}`);
 run(`git tag ${tag}`);
 run(`git push origin ${tag}`);
 
-const files = ["main.js", "manifest.json", "styles.css", "sql-wasm.wasm", "cli.js", "mcp-server.js"].map((f) =>
+const files = [
+  "main.js",
+  "manifest.json",
+  "styles.css",
+  "cli.js",
+  "mcp-server.js",
+  "LICENSE",
+  "THIRD-PARTY-LICENSES.md",
+].map((f) =>
   JSON.stringify(join(pluginDir, f))
 );
 console.log(`→ Creating GitHub release ${tag} from ${pluginDir}`);

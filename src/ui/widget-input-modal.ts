@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Setting, type TextAreaComponent, type TextComponent } from "obsidian";
-import { parseWidgetCode, type WidgetCodeParse } from "../modules/widget-parser";
+import { parseWidgetCode, parseWidgetInput, type WidgetCodeParse } from "../modules/widget-parser";
 import { FolderPathSelect } from "./folder-suggester";
 import { t } from "../i18n";
 
@@ -8,8 +8,7 @@ import { t } from "../i18n";
 // side-toolbar controls extracted from the code, written back into it
 // bidirectionally). The standard flow: open the TradingView widget docs via
 // the CTA, configure the widget on their site, paste the generated code back
-// here, then 插入. Any HTML the parser can't recognize degrades to manual
-// editing with an empty params page.
+// here, then 插入. Content outside the TradingView HTTPS allowlist is rejected.
 
 export interface WidgetInputModalResult {
   title: string;
@@ -98,6 +97,10 @@ export class WidgetInputModal extends Modal {
         new Notice(t("请粘贴组件代码或 iframe URL。"));
         return;
       }
+      if (!parseWidgetInput(this.code)) {
+        new Notice(t("仅支持 TradingView 官方 HTTPS URL 或组件代码。"));
+        return;
+      }
       this.close();
       this.onSubmit({
         title: this.titleValue.trim(),
@@ -135,6 +138,10 @@ export class WidgetInputModal extends Modal {
     docsBox.createDiv({
       cls: "fc-widget-net-notice",
       text: t("⚠ 中国大陆用户注意：TradingView 组件的访问与显示需要可用的国际网络环境。"),
+    });
+    docsBox.createDiv({
+      cls: "fc-field-hint",
+      text: t("TradingView 是独立的第三方服务，与 StrataBoard 及 Obsidian 无隶属或背书关系；组件内容由 TradingView 提供并受其服务条款与隐私政策约束，组件中的归属信息始终保留。"),
     });
 
     // 标题 + 自动识别 badge
@@ -234,7 +241,10 @@ export class WidgetInputModal extends Modal {
     }
     row.createSpan({
       cls: "fc-field-hint",
-      text: t("支持嵌入代码 / iframe URL；任意 HTML 片段降级为手动编辑"),
+      text:
+        parsed?.kind === "invalid"
+          ? t("无法识别：仅支持 TradingView 官方 HTTPS URL 或组件代码")
+          : t("仅支持 TradingView 官方嵌入代码或 HTTPS iframe URL"),
     });
   }
 

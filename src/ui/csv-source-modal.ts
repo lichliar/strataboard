@@ -5,8 +5,9 @@ import { normalizeJsonDate } from "../modules/quote-format-parsers";
 import { applyInfoDescs } from "./info-desc";
 import { t } from "../i18n";
 
-// Setup dialog for one format "csv" custom source (设置页 → 自定义数据源 →
-// 添加 CSV 源): points a source at a vault-local CSV file. The user picks the
+// Setup dialog for one format "csv" custom source (设置页 → 数据源 →
+// 添加数据源 → vault CSV): points a source at a vault-local CSV file. The
+// user picks the
 // file, the dialog parses the header live (column preview), and the column
 // mapping is derived automatically (deriveCsvMapping in csv-quote-client.ts):
 //   - a header containing open/high/low/close columns → OHLCV mode: one
@@ -62,17 +63,27 @@ export class CsvSourceModal extends Modal {
   private parseTimer: number | undefined;
   private nameText: TextComponent | undefined;
 
-  constructor(app: App, def: CustomSourceDef | undefined, onSubmit: (def: CustomSourceDef) => void) {
+  constructor(app: App, def: Partial<CustomSourceDef> | undefined, onSubmit: (def: CustomSourceDef) => void) {
     super(app);
-    this.isNew = !def;
-    this.def = def
-      ? { ...def, jsonMap: def.jsonMap ? { ...def.jsonMap, cols: { ...def.jsonMap.cols } } : undefined, symbols: def.symbols ? [...def.symbols] : undefined }
-      : {
-          id: `src-${Date.now().toString(36)}`,
-          name: "",
-          enabled: true,
-          format: "csv",
-        };
+    this.isNew = !def?.id;
+    if (def?.id) {
+      this.def = {
+        ...(def as CustomSourceDef),
+        jsonMap: def.jsonMap ? { ...def.jsonMap, cols: { ...def.jsonMap.cols } } : undefined,
+        symbols: def.symbols ? [...def.symbols] : undefined,
+      };
+    } else {
+      // AI-drafted prefill (no id): defaults first, draft fields on top.
+      const prefill = { ...(def ?? {}) };
+      delete prefill.id;
+      this.def = {
+        id: `src-${Date.now().toString(36)}`,
+        name: "",
+        enabled: true,
+        format: "csv",
+        ...prefill,
+      } as CustomSourceDef;
+    }
     this.nameTouched = !this.isNew;
     this.onSubmit = onSubmit;
     this.setTitle(this.isNew ? t("添加 CSV 数据源") : t("编辑 CSV 数据源"));
@@ -126,17 +137,6 @@ export class CsvSourceModal extends Modal {
         this.def.name = value.trim();
         this.nameTouched = true;
       });
-    });
-
-    const iconSetting = new Setting(contentEl)
-      .setName(t("自定义图标（可选）"))
-      .setDesc(t("粘贴 SVG 代码；留空则在「插入图表」菜单中用颜色圆点区分。"));
-    iconSetting.settingEl.addClass("fc-setting-stacked");
-    iconSetting.addTextArea((text) => {
-      text.setValue(this.def.icon ?? "").onChange((value) => {
-        this.def.icon = value.trim() || undefined;
-      });
-      text.inputEl.addClass("fc-mono");
     });
 
     const previewEl = contentEl.createDiv("fc-csv-preview");

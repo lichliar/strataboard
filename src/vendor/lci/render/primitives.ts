@@ -123,7 +123,7 @@ export function anchorData(points: Array<{ time: number; value: number }>, grid:
     if (!byTime.has(t)) byTime.set(t, p.value);
   }
   return Array.from(byTime.entries())
-    .sort((a, b) => a[0] - b[0])
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
     .map(([t, v]) => ({ time: t as unknown as Time, value: v }));
 }
 
