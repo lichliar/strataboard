@@ -10,6 +10,21 @@
   
 </p>
 
+<p align="center">
+  <a href="https://obsidian.md/plugins?id=strataboard"><img alt="Obsidian" src="https://img.shields.io/badge/Obsidian-%E2%89%A5%201.11.4-7C3AED?logo=obsidian&logoColor=white"></a>
+  <img alt="License" src="https://img.shields.io/github/license/lichliar/strataboard">
+  <img alt="Release" src="https://img.shields.io/github/v/release/lichliar/strataboard">
+  <img alt="Last commit" src="https://img.shields.io/github/last-commit/lichliar/strataboard">
+  <img alt="Telemetry" src="https://img.shields.io/badge/telemetry-none-2ea44f">
+</p>
+
+<p align="center">
+  <a href="https://obsidian.md/plugins?id=strataboard"><img alt="Install in Obsidian" src="https://img.shields.io/badge/INSTALL-Obsidian-7C3AED?style=for-the-badge&logo=obsidian&logoColor=white"></a>
+  <a href="https://github.com/lichliar/strataboard/releases/latest"><img alt="Download" src="https://img.shields.io/badge/DOWNLOAD-ZIP-2ea44f?style=for-the-badge&logo=github&logoColor=white"></a>
+  <a href="https://github.com/lichliar/strataboard"><img alt="Source" src="https://img.shields.io/badge/SOURCE-GitHub-181717?style=for-the-badge&logo=github&logoColor=white"></a>
+  <a href="https://github.com/lichliar/strataboard/issues"><img alt="Issues" src="https://img.shields.io/badge/ISSUES-open-0969da?style=for-the-badge&logo=github&logoColor=white"></a>
+</p>
+
 
 ## 功能
 
