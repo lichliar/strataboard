@@ -1,4 +1,5 @@
-import { Menu, Notice, TFile, addIcon, setTooltip, type WorkspaceLeaf } from "obsidian";
+import { Menu, Notice, TFile, addIcon, type WorkspaceLeaf } from "obsidian";
+import { setTooltip } from "../ui/tooltip";
 import { TB_ICONS, TB_MENU_ICONS } from "./toolbar-icons";
 import { LOGO_SVG } from "./logo";
 import { SERIES_LINE_COLORS } from "./overlay-lines";

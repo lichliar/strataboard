@@ -1,8 +1,11 @@
 import { parse, stringify } from "yaml";
 import {
   ASSET_TYPES,
+  CORR_TRANSFORMS,
+  SERIES_VALUE_KINDS,
   type AssetType,
   type ChartTheme,
+  type CorrTransform,
   type DisplayOverrides,
   type OverlayCompareMode,
   type OverlaySpec,
@@ -10,6 +13,7 @@ import {
   type SeriesLineType,
   type SeriesRef,
   type SeriesSource,
+  type SeriesValueKind,
   type SpreadSpec,
 } from "../types";
 import { parseExpression } from "./expression";
@@ -26,7 +30,7 @@ export interface SeriesSpecParseResult<T> {
 
 const VALID_SOURCES: SeriesSource[] = ["quote", "card"];
 const VALID_ASSET_TYPES: AssetType[] = ASSET_TYPES;
-const VALID_PERIODS: SeriesPeriod[] = ["D", "M", "Q", "Y"];
+const VALID_PERIODS: SeriesPeriod[] = ["D", "W", "M", "Q", "Y"];
 
 export const DEFAULT_OVERLAY_SPEC: OverlaySpec = {
   series: [],
@@ -51,7 +55,7 @@ const DISPLAY_OVERRIDE_KEYS = [
   "showLegend", "legendFrosted", "legendOpacity", "showLatestValue", "showPointMarkers", "showGrid", "gridOpacity",
 ];
 export const OVERLAY_KNOWN_KEYS: ReadonlySet<string> = new Set([
-  "series", "range", "period", "normalize", "lineType", "theme", "title", "viewStart", "viewEnd",
+  "series", "range", "period", "normalize", "lineType", "theme", "title", "correlation", "viewStart", "viewEnd",
   ...DISPLAY_OVERRIDE_KEYS,
 ]);
 export const SPREAD_KNOWN_KEYS: ReadonlySet<string> = new Set([
@@ -66,6 +70,15 @@ function unknownKeysError(map: Record<string, unknown>, known: ReadonlySet<strin
   if (unknown.length === 0) return null;
   return t("卡片配置包含未知或已删除的字段：{keys}", { keys: unknown.join(", ") });
 }
+
+// Strict known-key whitelist for one series entry, same discipline as the
+// card-level whitelists: a typo'd or not-yet-implemented field (e.g. `kin`)
+// must surface as a parse error instead of being silently ignored. cardPath
+// is listed so it reaches the targeted legacy-error branch in parseSeriesRef
+// instead of the generic unknown-key error.
+const SERIES_REF_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  "source", "tsCode", "assetType", "sourceId", "profile", "cardId", "cardPath", "label", "scale", "kind", "corr",
+]);
 
 export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlaySpec> {
   const map = parseYamlMap(source);
@@ -95,6 +108,8 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
   if (viewEnd !== undefined && typeof viewEnd !== "string") return viewEnd;
   const normalize = parseNormalize(map.normalize);
   if (typeof normalize !== "string") return normalize;
+  const correlation = parseAutoFlag(map.correlation, "correlation");
+  if (typeof correlation !== "boolean" && correlation !== undefined) return correlation;
   const lineType = parseLineType(map.lineType);
   if (typeof lineType === "object") return lineType;
   const theme = parseTheme(map.theme);
@@ -109,6 +124,7 @@ export function parseOverlaySpec(source: string): SeriesSpecParseResult<OverlayS
       period,
       normalize,
       ...seriesTitle(map),
+      ...(correlation === false ? { correlation: false } : {}),
       ...(lineType ? { lineType } : {}),
       ...(theme ? { theme } : {}),
       ...display,
@@ -210,6 +226,7 @@ export function stringifyOverlaySpec(spec: OverlaySpec): string {
     ...(spec.title ? { title: spec.title } : {}),
     ...(spec.period && spec.period !== "D" ? { period: spec.period } : {}),
     ...(spec.normalize && spec.normalize !== "percent" ? { normalize: spec.normalize } : {}),
+    ...(spec.correlation === false ? { correlation: false } : {}),
     ...(spec.lineType ? { lineType: spec.lineType } : {}),
     ...(spec.theme && spec.theme !== "auto" ? { theme: spec.theme } : {}),
     ...displayOverridesYaml(spec),
@@ -267,6 +284,10 @@ function parseSeriesRef(raw: unknown, path: string, allowScale = false): SeriesR
     return t("{path} 必须是一个 YAML 对象。", { path });
   }
   const map = raw as Record<string, unknown>;
+  const unknown = Object.keys(map).filter((key) => !SERIES_REF_KNOWN_KEYS.has(key));
+  if (unknown.length > 0) {
+    return t("{path} 包含未知字段：{keys}", { path, keys: unknown.join(", ") });
+  }
 
   let scaleValue: number | undefined;
   if (map.scale !== undefined && map.scale !== null) {
@@ -290,6 +311,9 @@ function parseSeriesRef(raw: unknown, path: string, allowScale = false): SeriesR
   const ref: SeriesRef = { source };
 
   if (source === "card") {
+    if (map.profile !== undefined && map.profile !== null && String(map.profile).trim()) {
+      return t("{path} 不支持 profile 字段（口径仅对行情系列可用）。", { path });
+    }
     // Legacy cardPath refs are recognized only to give a targeted error —
     // they are never resolved. The one-click upgrade (设置 → 高级 →
     // 清理维护) rewrites them; the file path stays in the YAML as a clue.
@@ -321,6 +345,11 @@ function parseSeriesRef(raw: unknown, path: string, allowScale = false): SeriesR
       return t("{path} 缺少有效的 sourceId（自定义数据源 id）。", { path });
     }
     ref.sourceId = sourceId;
+    if (map.profile !== undefined && map.profile !== null) {
+      const profile = String(map.profile).trim();
+      if (!profile) return t("{path} 的 profile 不能为空。", { path });
+      ref.profile = profile;
+    }
   }
 
   const label = String(map.label ?? "").trim();
@@ -329,6 +358,24 @@ function parseSeriesRef(raw: unknown, path: string, allowScale = false): SeriesR
   }
   if (scaleValue !== undefined) {
     ref.scale = scaleValue;
+  }
+
+  // Value semantics / correlation transform (see SeriesRef): accepted on both
+  // quote and card legs — a referenced spread card's output can itself be a
+  // yield spread. Only the overlay correlation badge consumes them.
+  if (map.kind !== undefined && map.kind !== null) {
+    const kind = String(map.kind).trim() as SeriesValueKind;
+    if (!SERIES_VALUE_KINDS.includes(kind)) {
+      return t("{path} 的 kind 无效：{value}（应为 {valid}）。", { path, value: String(map.kind), valid: SERIES_VALUE_KINDS.join(" | ") });
+    }
+    ref.kind = kind;
+  }
+  if (map.corr !== undefined && map.corr !== null) {
+    const corr = String(map.corr).trim() as CorrTransform;
+    if (!CORR_TRANSFORMS.includes(corr)) {
+      return t("{path} 的 corr 无效：{value}（应为 {valid}）。", { path, value: String(map.corr), valid: CORR_TRANSFORMS.join(" | ") });
+    }
+    ref.corr = corr;
   }
 
   return ref;
@@ -344,7 +391,7 @@ function parsePeriod(raw: unknown): SeriesPeriod | { error: string } {
   if (raw === undefined || raw === null) return "D";
   const value = String(raw).trim().toUpperCase() as SeriesPeriod;
   if (!VALID_PERIODS.includes(value)) {
-    return { error: t("无效的 period：{value}（应为 D | M | Q | Y）。", { value: String(raw) }) };
+    return { error: t("无效的 period：{value}（应为 D | W | M | Q | Y）。", { value: String(raw) }) };
   }
   return value;
 }

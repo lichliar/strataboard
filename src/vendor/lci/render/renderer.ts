@@ -119,6 +119,8 @@ export interface IndicatorRendererOptions {
    * Without it markers are drawn by the renderer's own primitive and bar colours are not drawn.
    */
   mainSeries?: ISeriesApi<SeriesType, Time>;
+  /** Price scale for an overlay indicator whose coordinates are independent of price. */
+  overlayScaleId?: string;
   /** Add bar slots after the last bar for drawings on future bars (default false: placed without extending) */
   extendTimeScale?: boolean;
   /** Keep the indicator pane when clear() empties it (pane height kept; default false) */
@@ -273,7 +275,11 @@ export class IndicatorRenderer {
 
   /** Options of a series in `pane`: left out of the autoscale in the price pane when autoscale is off */
   private scaleOptions(pane: number): DeepPartial<SeriesOptionsCommon> {
-    return pane === 0 && this.renderOpts.autoscale === false ? { autoscaleInfoProvider: () => null } : {};
+    if (pane !== 0) return {};
+    return {
+      ...(this.opts.overlayScaleId ? { priceScaleId: this.opts.overlayScaleId } : {}),
+      ...(this.renderOpts.autoscale === false ? { autoscaleInfoProvider: () => null } : {}),
+    };
   }
 
   /** Plot series options from the render options (labels on the price scale, precision) */
@@ -356,7 +362,8 @@ export class IndicatorRenderer {
       lastValueVisible: false,
       priceLineVisible: false,
       crosshairMarkerVisible: false,
-      ...(autoscale ? this.scaleOptions(pane) : { autoscaleInfoProvider: () => null }),
+      ...this.scaleOptions(pane),
+      ...(!autoscale ? { autoscaleInfoProvider: () => null } : {}),
     }, pane));
   }
 
@@ -708,17 +715,28 @@ export class IndicatorRenderer {
       return { native, extended };
     };
 
-    // price pane: on the main series, else on an anchor that is left out of the autoscale
-    const onPrice = split(markers.filter((m) => !inPane(m)), !!main);
-    if (onPrice.native.length || onPrice.extended.length) {
-      const target = main ?? (this.anchor(0, false) as unknown as ISeriesApi<SeriesType, Time>);
-      if (!main) this.setData(target, anchorData(this.grid.bars.map((b) => ({ time: b.time, value: b.close })), this.grid));
-      if (onPrice.native.length) this.markerPlugins.push(createSeriesMarkers(target, onPrice.native));
-      if (onPrice.extended.length) {
+    // Price-relative markers stay on the host price series. atPrice markers of
+    // a scale:none overlay use an anchor on the independent scale instead.
+    const priceMarkers = markers.filter((m) => !inPane(m) && (!isPrice(m) || !this.opts.overlayScaleId));
+    const independentMarkers = markers.filter((m) => !inPane(m) && isPrice(m) && !!this.opts.overlayScaleId);
+    const drawOn = (list: MarkerData[], target: ISeriesApi<SeriesType, Time>, nativeAllowed: boolean) => {
+      const parts = split(list, nativeAllowed);
+      if (parts.native.length) this.markerPlugins.push(createSeriesMarkers(target, parts.native));
+      if (parts.extended.length) {
         const primitive = new ExtendedMarkerPrimitive(this.grid);
         this.attach(target, primitive as ISeriesPrimitive<Time>);
-        primitive.setMarkers(onPrice.extended);
+        primitive.setMarkers(parts.extended);
       }
+    };
+    if (priceMarkers.length) {
+      const target = main ?? (this.anchor(0, false) as unknown as ISeriesApi<SeriesType, Time>);
+      if (!main) this.setData(target, anchorData(this.grid.bars.map((b) => ({ time: b.time, value: b.close })), this.grid));
+      drawOn(priceMarkers, target, !!main);
+    }
+    if (independentMarkers.length) {
+      const target = this.anchor(0);
+      this.setData(target, anchorData(independentMarkers.map((m) => ({ time: m.time, value: m.price! })), this.grid));
+      drawOn(independentMarkers, target, true);
     }
 
     // indicator pane: on an anchor that holds the marker prices

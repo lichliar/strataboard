@@ -27,7 +27,11 @@ const HIDE_DELAY_MS = 150;
 // text everywhere, so a textContent
 // tooltip loses nothing.
 export function applyInfoDescs(root: HTMLElement): void {
-  for (const orphan of Array.from(document.querySelectorAll<HTMLElement>(".fc-info-tip"))) {
+  // The root may live in a popout OS window (settings opened in its own
+  // window): all DOM work goes through root.ownerDocument — the global
+  // document is the main window and would paint tips in the wrong place.
+  const doc = root.ownerDocument;
+  for (const orphan of Array.from(doc.querySelectorAll<HTMLElement>(".fc-info-tip"))) {
     const owner = (orphan as unknown as { fcOwner?: HTMLElement }).fcOwner;
     if (!owner || !owner.isConnected) orphan.remove();
   }
@@ -61,7 +65,7 @@ export function applyInfoDescs(root: HTMLElement): void {
     };
     const onDocClick = (e: MouseEvent) => {
       if (!icon.isConnected) {
-        document.removeEventListener("click", onDocClick, true);
+        doc.removeEventListener("click", onDocClick, true);
         return;
       }
       if (e.target instanceof Node && !icon.contains(e.target) && !(tipEl && tipEl.contains(e.target))) hide();
@@ -73,28 +77,30 @@ export function applyInfoDescs(root: HTMLElement): void {
       clearTimers();
       // One tooltip at a time: any other tip (pinned elsewhere, or orphaned
       // by a re-render) goes away when a new one shows.
-      for (const other of Array.from(document.querySelectorAll<HTMLElement>(".fc-info-tip"))) {
+      for (const other of Array.from(doc.querySelectorAll<HTMLElement>(".fc-info-tip"))) {
         if (other !== tipEl) other.remove();
       }
       if (!tipEl) {
         // Obsidian can transform the body while a settings window/modal is
         // open. A fixed descendant of that transformed tree no longer uses
         // viewport coordinates, so keep the tip under <html>, outside the
-        // transformed body subtree.
-        tipEl = document.createElement("div");
+        // transformed body subtree — and in the icon's own document, since a
+        // popout settings window is a different document/viewport entirely.
+        tipEl = doc.createElement("div");
         tipEl.className = "fc-info-tip";
         tipEl.textContent = text;
         // Theme variables are commonly scoped to `body.theme-*`; copy the
         // computed custom properties onto the portal so moving it outside
         // body does not lose Obsidian's colors, fonts, or layer tokens.
-        const bodyStyle = getComputedStyle(document.body);
+        const view = doc.defaultView ?? window;
+        const bodyStyle = view.getComputedStyle(doc.body);
         for (let i = 0; i < bodyStyle.length; i += 1) {
           const property = bodyStyle.item(i);
           if (property.startsWith("--")) {
             tipEl.style.setProperty(property, bodyStyle.getPropertyValue(property));
           }
         }
-        document.documentElement.appendChild(tipEl);
+        doc.documentElement.appendChild(tipEl);
         (tipEl as unknown as { fcOwner: HTMLElement }).fcOwner = icon;
         // Moving onto the tooltip keeps it open (text selection, reading).
         tipEl.addEventListener("mouseenter", clearTimers);
@@ -105,16 +111,17 @@ export function applyInfoDescs(root: HTMLElement): void {
       const rect = icon.getBoundingClientRect();
       tipEl.style.top = `${rect.bottom + 6}px`;
       // Clamp against the right viewport edge (max-width is 300px).
-      tipEl.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 316))}px`;
-      document.addEventListener("scroll", onScroll, true);
+      const viewWidth = (doc.defaultView ?? window).innerWidth;
+      tipEl.style.left = `${Math.max(8, Math.min(rect.left, viewWidth - 316))}px`;
+      doc.addEventListener("scroll", onScroll, true);
     };
     const hide = () => {
       clearTimers();
       tipEl?.remove();
       tipEl = null;
       pinned = false;
-      document.removeEventListener("click", onDocClick, true);
-      document.removeEventListener("scroll", onScroll, true);
+      doc.removeEventListener("click", onDocClick, true);
+      doc.removeEventListener("scroll", onScroll, true);
     };
     const scheduleHide = () => {
       hideTimer = window.setTimeout(hide, HIDE_DELAY_MS);
@@ -140,7 +147,7 @@ export function applyInfoDescs(root: HTMLElement): void {
       }
       show();
       pinned = true;
-      document.addEventListener("click", onDocClick, true);
+      doc.addEventListener("click", onDocClick, true);
     });
   }
 }

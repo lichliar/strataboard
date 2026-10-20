@@ -10,7 +10,7 @@ export const AI_INDICATOR_PROMPT = `我在用一个 Obsidian 插件（StrataBoar
 
 文件契约（必须遵守）：
 - 纯 CommonJS 风格：module.exports = { metadata, inputConfig, defaultInputs, plotConfig, calculate }，文件名（不含 .js）slug 化后就是指标 id；
-- metadata: { title: 完整名, shortTitle: 短名（图表图例用）, overlay: true/false }——overlay=true 画在主图（K 线）上，false 独占一个副图窗格；可选 labelParams: ["length"] 指定图表标签中显示的参数；不写时默认显示首个数值参数，MACD 默认显示前三个数值参数；
+- metadata: { title: 完整名, shortTitle: 短名（图表图例用）, overlay: true/false, scale?: "price"|"none" }——overlay=true 画在主图（K 线）上，false 独占一个副图窗格；主图指标若使用 0–N 等抽象坐标，设置 scale:"none" 使用不可见独立坐标轴，否则省略或使用 scale:"price"；可选 labelParams: ["length"] 指定图表标签中显示的参数；不写时默认显示首个数值参数，MACD 默认显示前三个数值参数；
 - inputConfig: 参数声明数组，每项 { id, type, title, defval, min?, max?, step?, options?, group? }；type 用 int/float/bool/string/source/color 之一，options 仅 string 类型的下拉选项；
 - defaultInputs: { 参数id: 默认值 }，与 inputConfig 一一对应；
 - calculate(bars, inputs) 是唯一的计算入口：bars 是 K 线数组，每根 { time（秒级 Unix 时间戳）, open, high, low, close, volume }；inputs 是用户参数（已与 defaultInputs 合并）。返回 { metadata: { title, shorttitle, overlay }（注意返回值里 shorttitle 全小写）, plots: { plot0: [{ time, value }, ...] } }；

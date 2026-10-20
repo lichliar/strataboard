@@ -1,4 +1,5 @@
-import { App, Modal, Notice, setIcon, setTooltip } from "obsidian";
+import { App, Modal, Notice, setIcon } from "obsidian";
+import { setTooltip } from "./tooltip";
 import type { CustomSourceDef, SymbolItem } from "../types";
 import { sourceNeedsApiKey, sourceSupportsRemoteSearch } from "../types";
 import { isDeadCode, matchSymbolEntry } from "../utils/symbol-list";

@@ -3,7 +3,7 @@ import type { CustomSourceDef, JsonSourceMap, OhlcvRow, ResolvedCustomSourceDef 
 import { sourceNeedsApiKey } from "../types";
 import { newCredentialId, type CredentialStore } from "../modules/credentials";
 import { CREDENTIAL_NEW, renderCredentialField, type CredentialFieldHandle } from "./credential-field";
-import { redactSecretsWith } from "../modules/redact";
+import { redactError, redactSecretsWith } from "../modules/redact";
 import type { AiTaskContext, AiTaskRequest } from "../modules/ai/tasks";
 import { outlineSample } from "../utils/sample-outline";
 import { evaluateUrl } from "../utils/url-policy";
@@ -155,7 +155,7 @@ function isAiMappingPayload(value: unknown): value is AiMappingPayload {
 export class CustomSourceModal extends Modal {
   private def: CustomSourceDef;
   private isNew: boolean;
-  private onSubmit: (def: CustomSourceDef) => void;
+  private onSubmit: (def: CustomSourceDef) => void | Promise<void>;
   // Raw inputs (what the user pasted; def carries the templated form).
   private rawKlineUrl: string;
   private rawSearchUrl: string;
@@ -185,23 +185,35 @@ export class CustomSourceModal extends Modal {
   // Credential UI state: undefined = 不配置凭据, CREDENTIAL_NEW = 新建凭据…
   // (ui/credential-field.ts), otherwise a stored credential id. pendingSecret
   // is the (unsaved) secret typed for a new credential or a rotation of the
-  // selected one — it never touches the def.
+  // selected one — it never touches the def. pendingCredentialName is the
+  // (unsaved) label for the credential; persisted into credentialNames on
+  // 保存.
   private credentialChoice: string | undefined;
   private pendingSecret = "";
+  private pendingCredentialName = "";
   private credentialField: CredentialFieldHandle | null = null;
+  // Save clicks are serialized. The previous implementation could start two
+  // probes/commits before the first promise completed, making the final
+  // notice disagree with the values shown in the form.
+  private savePromise: Promise<void> | null = null;
+  private inputRevision = 0;
+  private lastStableSnapshot: CustomSourceDef;
 
   constructor(
     app: App,
     // Full def = edit; a Partial without id = AI-drafted prefill (new-source
     // semantics, defaults fill the gaps). No arg = blank new source.
     def: Partial<CustomSourceDef> | undefined,
-    onSubmit: (def: CustomSourceDef) => void,
+    onSubmit: (def: CustomSourceDef) => void | Promise<void>,
     // Opens the settings window on the AI 助手 tab (AI section step 1).
     private onOpenAiSettings: () => void,
     // Existing sources, for labeling shared credentials in the picker.
     private allSources: CustomSourceDef[] = [],
     // Central credential seam (modules/credentials.ts).
     private credentials: CredentialStore,
+    // User-given credential labels (pluginSettings.credentialNames live
+    // reference — the dialog writes it on 保存, the caller persists).
+    private credentialNames: Record<string, string>,
     // URL policy plumbing: confirmed loopback-http origins + the callback
     // that persists a freshly confirmed one (settings.ts wires both).
     private allowedLoopbackHttpOrigins: string[],
@@ -239,21 +251,33 @@ export class CustomSourceModal extends Modal {
     if (this.isNew && !this.def.testCode) this.def.testCode = this.sampleCode;
     this.mappingOpen = this.def.format === "json";
     this.credentialChoice = this.def.credentialId;
+    this.pendingCredentialName = this.credentialChoice ? this.credentialNames[this.credentialChoice] ?? "" : "";
     // Editing a json source: the open-time probe must reuse the stored
     // mapping instead of re-guessing it.
     this.keepJsonMapOnNextProbe = !this.isNew && this.def.format === "json" && !!this.def.jsonMap;
+    this.lastStableSnapshot = this.cloneDef(this.def);
     this.onSubmit = onSubmit;
     this.setTitle(this.isNew ? t("添加自定义数据源") : t("编辑自定义数据源"));
   }
 
   onOpen() {
+    this.contentEl.addEventListener("input", this.onFormMutation, true);
+    this.contentEl.addEventListener("change", this.onFormMutation, true);
     this.render();
     // Editing an existing source: probe right away so the status block
     // confirms the endpoint still works.
     if (this.def.klineUrl) void this.runDetection();
   }
 
+  private markInputChanged(): void {
+    this.inputRevision++;
+  }
+
+  private readonly onFormMutation = (): void => this.markInputChanged();
+
   onClose() {
+    this.contentEl.removeEventListener("input", this.onFormMutation, true);
+    this.contentEl.removeEventListener("change", this.onFormMutation, true);
     if (this.detectTimer !== undefined) window.clearTimeout(this.detectTimer);
     this.contentEl.empty();
   }
@@ -279,6 +303,9 @@ export class CustomSourceModal extends Modal {
     const footer = contentEl.createDiv("fc-modal-footer");
     const cancelBtn = footer.createEl("button", { text: t("取消") });
     cancelBtn.addEventListener("click", () => this.close());
+    const restoreBtn = footer.createEl("button", { text: t("恢复最近一次探测版本") });
+    restoreBtn.disabled = this.probeKey() === this.probedKey && !this.detectError;
+    restoreBtn.addEventListener("click", () => this.restoreLastStableSnapshot());
     const saveBtn = footer.createEl("button", { text: t("保存"), cls: "mod-cta" });
     saveBtn.addEventListener("click", () => void this.saveWithProbe());
 
@@ -301,6 +328,28 @@ export class CustomSourceModal extends Modal {
       this.def.bodyTemplate ?? "",
       this.def.transport ?? "",
     ].join("::");
+  }
+
+  private cloneDef(def: CustomSourceDef): CustomSourceDef {
+    return JSON.parse(JSON.stringify(def)) as CustomSourceDef;
+  }
+
+  private restoreLastStableSnapshot(): void {
+    this.def = this.cloneDef(this.lastStableSnapshot);
+    this.rawKlineUrl = this.def.klineUrl ?? "";
+    this.rawSearchUrl = this.def.searchUrl ?? "";
+    this.sampleCode = this.def.testCode ?? this.sampleCode;
+    this.credentialChoice = this.def.credentialId;
+    this.pendingCredentialName = this.credentialChoice ? this.credentialNames[this.credentialChoice] ?? "" : "";
+    this.detectError = "";
+    this.sampleJson = undefined;
+    this.sampleText = "";
+    this.detectedRows = [];
+    this.candidates = [];
+    this.probedKey = "";
+    this.markInputChanged();
+    this.render();
+    if (this.def.klineUrl) void this.runDetection();
   }
 
   // Fires the inline probe shortly after the user stops editing the URL or
@@ -485,6 +534,29 @@ export class CustomSourceModal extends Modal {
         })
       );
 
+    // 数值类型 (CustomSourceDef.seriesKind): the source-level default value
+    // semantics the overlay correlation badge falls back to when a series
+    // doesn't declare its own kind. Options fold yield/spread/level together
+    // (all compute as first differences).
+    const KIND_UI_OPTIONS: Record<"price" | "level" | "change", string> = {
+      price: t("价格 / 指数"),
+      level: t("利率 / 利差 / 其他水平值"),
+      change: t("涨跌幅 / 同比（已是变化量）"),
+    };
+    new Setting(advanced)
+      .setName(t("数值类型（可选）"))
+      .setDesc(t("该源返回的数值是什么，用于对比卡相关系数按语义计算（价格算收益率，利率/利差算差分，已是涨跌幅则原值参与）。系列卡片里可再单独覆盖；不确定就保持默认。"))
+      .addDropdown((dropdown) => {
+        const folded = def.seriesKind === "yield" || def.seriesKind === "spread" ? "level" : def.seriesKind;
+        dropdown.addOption("", t("默认（{kind}）", { kind: KIND_UI_OPTIONS.price }));
+        dropdown.addOption("price", KIND_UI_OPTIONS.price);
+        dropdown.addOption("level", KIND_UI_OPTIONS.level);
+        dropdown.addOption("change", KIND_UI_OPTIONS.change);
+        dropdown.setValue(folded ?? "").onChange((value) => {
+          def.seriesKind = value ? (value as CustomSourceDef["seriesKind"]) : undefined;
+        });
+      });
+
     const searchPreview = advanced.createDiv({ cls: "fc-field-hint fc-mono fc-template-preview fc-hidden" });
     const searchSetting = new Setting(advanced)
       .setName(t("搜索 URL（可选）"))
@@ -586,6 +658,8 @@ export class CustomSourceModal extends Modal {
       credentials: this.credentials,
       selectedId: this.credentialChoice,
       pendingSecret: this.pendingSecret,
+      pendingName: this.pendingCredentialName,
+      names: this.credentialNames,
       describeId: (id) => {
         const users = this.allSources.filter((s) => s.credentialId === id).map((s) => s.name);
         return users.length > 0
@@ -613,6 +687,7 @@ export class CustomSourceModal extends Modal {
       onChange: (sel) => {
         this.credentialChoice = sel.id;
         this.pendingSecret = sel.pendingSecret ?? "";
+        this.pendingCredentialName = sel.pendingName ?? "";
       },
     });
   }
@@ -785,6 +860,7 @@ export class CustomSourceModal extends Modal {
           this.searchHint = t("搜索接口检测失败，不影响 K 线使用。");
         }
       }
+      this.lastStableSnapshot = this.cloneDef(this.def);
     } catch (err) {
       this.detectError = redactSecretsWith(err instanceof Error ? err.message : String(err), this.extraSecrets());
       reportSourceHealth(this.def.id, false, this.detectError);
@@ -805,7 +881,16 @@ export class CustomSourceModal extends Modal {
   // Save: make sure the current inputs have been probed before committing,
   // and open the mapping section when a generic-JSON source still parses
   // nothing.
-  private async saveWithProbe() {
+  private saveWithProbe(): Promise<void> {
+    if (this.savePromise) return this.savePromise;
+    this.savePromise = this.saveWithProbeOnce().finally(() => {
+      this.savePromise = null;
+    });
+    return this.savePromise;
+  }
+
+  private async saveWithProbeOnce() {
+    const saveRevision = this.inputRevision;
     if (!this.def.name) {
       new Notice(t("请填写数据源名称。"));
       return;
@@ -853,7 +938,14 @@ export class CustomSourceModal extends Modal {
       this.openMappingSection();
       return;
     }
-    this.save();
+    if (saveRevision !== this.inputRevision) {
+      // A field changed while the asynchronous probe was running. Do not
+      // commit a snapshot that the user can no longer see; the next click
+      // starts from the current form values and current probe key.
+      new Notice(t("表单内容刚刚发生变化，请重新测试后保存。"));
+      return;
+    }
+    await this.save();
   }
 
   // ===== AI debug prompt =====
@@ -886,6 +978,9 @@ export class CustomSourceModal extends Modal {
   // can align its sourceId with this source.
   private aiContextDraft(): Partial<CustomSourceDef> {
     const draft: Partial<CustomSourceDef> & { apiKey?: string } = { ...this.def };
+    delete draft.id;
+    delete draft.name;
+    delete draft.filePath;
     delete draft.credentialId;
     delete draft.apiKey;
     delete draft.enabled;
@@ -898,7 +993,7 @@ export class CustomSourceModal extends Modal {
   private openAiDiagnosis() {
     if (!this.onOpenAiPanel) return;
     const context: AiTaskContext = {
-      existingSources: this.allSources.map((s) => ({ id: s.id, name: s.name, format: s.format })),
+      existingSources: this.allSources.filter((s) => s.enabled !== false).map((s, i) => ({ id: s.id, alias: `源${String.fromCharCode(65 + i)}`, name: s.name, format: s.format })),
       sourceDraft: this.aiContextDraft(),
       errorText: redactSecretsWith(this.detectError, this.extraSecrets()),
     };
@@ -1281,7 +1376,7 @@ export class CustomSourceModal extends Modal {
     }
   }
 
-  private save() {
+  private async save() {
     const def = this.def;
     const credentialFields = findEmbeddedCredentialFields(def);
     if (credentialFields.length > 0) {
@@ -1321,6 +1416,8 @@ export class CustomSourceModal extends Modal {
         const id = newCredentialId();
         this.credentials.set(id, secret);
         def.credentialId = id;
+        const name = this.pendingCredentialName.trim();
+        if (name) this.credentialNames[id] = name;
       }
     } else if (!this.credentialChoice) {
       def.credentialId = undefined;
@@ -1328,8 +1425,17 @@ export class CustomSourceModal extends Modal {
       def.credentialId = this.credentialChoice;
       const rotated = this.pendingSecret.trim();
       if (rotated) this.credentials.set(this.credentialChoice, rotated);
+      // Rename (or un-name) the selected credential; the label is shared by
+      // every source referencing this id.
+      const name = this.pendingCredentialName.trim();
+      if (name) this.credentialNames[this.credentialChoice] = name;
+      else delete this.credentialNames[this.credentialChoice];
     }
-    this.close();
-    this.onSubmit(def);
+    try {
+      await this.onSubmit(def);
+      this.close();
+    } catch (error) {
+      new Notice(t("数据源保存失败：{msg}", { msg: redactError(error) }), 10000);
+    }
   }
 }

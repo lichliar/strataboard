@@ -1,4 +1,5 @@
-import { MarkdownRenderChild, setIcon, setTooltip } from "obsidian";
+import { MarkdownRenderChild, setIcon } from "obsidian";
+import { setTooltip } from "../ui/tooltip";
 import {
   createChart,
   AreaSeries,
@@ -28,6 +29,9 @@ import { t } from "../i18n";
 interface SeriesChartRendererOptions {
   title?: string;      // header title, e.g. "对比（美的集团+贵州茅台）（归一化）"; omitted = no header
   subtitle?: string;   // small muted line under the title, e.g. the normalization base date
+  // Hover text for the subtitle line; defaults to the subtitle itself. The
+  // overlay card uses it to explain what the correlation badge measures.
+  subtitleTooltip?: string;
   lines: SeriesChartLine[];
   valueSuffix?: string; // e.g. "%" appended to legend values and price-axis ticks
   theme?: ChartTheme;  // default "auto" (follow Obsidian; only then is the theme watcher attached)
@@ -166,7 +170,7 @@ export class SeriesChartRenderer extends MarkdownRenderChild {
       setTooltip(titleEl, this.options.title);
       if (this.options.subtitle) {
         const subtitleEl = mainEl.createDiv({ cls: "financial-series-chart-subtitle", text: this.options.subtitle });
-        setTooltip(subtitleEl, this.options.subtitle);
+        setTooltip(subtitleEl, this.options.subtitleTooltip ?? this.options.subtitle);
       }
       if (this.options.scriptNote) {
         const noteEl = mainEl.createDiv({ cls: "financial-series-chart-script-note", text: this.options.scriptNote });

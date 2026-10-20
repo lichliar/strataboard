@@ -1,9 +1,9 @@
 import { Notice } from "obsidian";
 import type { CustomSourceDef, OhlcvRow, ParsedCardSpec, ResolvedCustomSourceDef, SymbolItem } from "../types";
-import { cacheAssetKey, isWholeTableSearchSource } from "../types";
+import { cacheAssetKey, cacheSymbolKey, isWholeTableSearchSource } from "../types";
 import type { ApiKeyResolver } from "./credentials";
 import { resolveDateRange, formatDate, parseDateYmd, nextTradingDate, prevTradingDate } from "../utils/date";
-import { matchSymbolEntry } from "../utils/symbol-list";
+import { matchSymbolEntry, splitLegacyProfileRef } from "../utils/symbol-list";
 import { SqliteCache } from "./sqlite-cache";
 import { CustomQuoteClient } from "./custom-quote-client";
 import { CsvQuoteClient } from "./csv-quote-client";
@@ -107,8 +107,14 @@ export class DataAdapter {
   // week/month re-fetched from "last cached date + 1" would overwrite the
   // complete period row with an incomplete one.
   private toKey(spec: ParsedCardSpec) {
+    // Legacy "code@profile" shorthand and the explicit profile field fetch the
+    // same stream — normalize the key so both hit one cache entry.
+    const def = spec.sourceId ? this.customSources.find((s) => s.id === spec.sourceId) : undefined;
+    const { symbol, profile } = def
+      ? splitLegacyProfileRef(def, spec.symbol, spec.profile)
+      : { symbol: spec.symbol, profile: spec.profile };
     return {
-      symbol: spec.symbol,
+      symbol: cacheSymbolKey(symbol, profile),
       assetType: cacheAssetKey(spec.assetType, spec.sourceId),
       freq: "D" as const,
     };
@@ -272,12 +278,12 @@ export class DataAdapter {
       if (!def.filePath) {
         // Remote CSV/TSV: fetched over HTTP, health already recorded by
         // sendSourceRequest.
-        return new CsvQuoteClient(def, this.readVaultFile).fetchKline(spec.symbol, start, end);
+        return new CsvQuoteClient(def, this.readVaultFile).fetchKline(spec.symbol, start, end, undefined, spec.profile);
       }
       // Vault-local CSV: record the read/parse outcome for the settings-page
       // connection badge (no HTTP seam to catch it otherwise).
       try {
-        const rows = await new CsvQuoteClient(def, this.readVaultFile).fetchKline(spec.symbol, start, end);
+        const rows = await new CsvQuoteClient(def, this.readVaultFile).fetchKline(spec.symbol, start, end, undefined, spec.profile);
         reportSourceHealth(def.id, true);
         return rows;
       } catch (e) {
@@ -289,11 +295,11 @@ export class DataAdapter {
     // persisted in the symbol cache when the user picked it — it outranks
     // codeRules when resolving {p.*} params. Absent for hand-entered codes,
     // which fall back to codeRules / source defaults.
-    const declaredProfile = await this.cache
+    const declaredProfile = spec.profile ?? await this.cache
       .lookupSymbol(spec.symbol, cacheAssetKey("custom", def.id))
       .then((item) => item?.profile)
       .catch(() => undefined);
-    return new CustomQuoteClient(def).fetchKline(spec.symbol, start, end, undefined, declaredProfile);
+    return new CustomQuoteClient(def).fetchKline(spec.symbol, start, end, undefined, declaredProfile, spec.profile);
   }
 
   private resample(rows: OhlcvRow[], freq: "W" | "M" | "Q" | "Y"): OhlcvRow[] {

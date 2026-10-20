@@ -70,6 +70,7 @@ export interface CustomSourceDef {
   searchPaginate?: SearchEndpoint["paginate"]; // pagination for the PRIMARY searchUrl/searchBodyTemplate pair (extra `searches` entries carry their own paginate); same contract as SearchEndpoint.paginate, template needs {offset}
   searchProfile?: string;          // declared profiles tier for codes returned by the PRIMARY search pair (like SearchEndpoint.profile)
   deadCodes?: string[];            // regexes for codes known to be unplottable (the interface serves the class but not these codes, e.g. a delisted family); search results mark (not remove) them
+  seriesKind?: SeriesValueKind;     // source-level default value semantics for series cards (SeriesRef.kind outranks it; absent = "price"). Declared by the user — never inferred from the source name or code shape.
   credentialId?: string;            // reference into Obsidian SecretStorage (see modules/credentials.ts); the secret itself is NEVER persisted in data.json
   apiKeyHeader?: string;            // optional auth header spec: "Name" or "Name: value-template" where the template may contain {apiKey} (e.g. "Authorization: Bearer {apiKey}")
   headers?: Record<string, string>; // static extra headers (values may contain {apiKey}); applied first, apiKeyHeader wins on a name conflict
@@ -207,6 +208,13 @@ export function cacheAssetKey(assetType: string, sourceId?: string): string {
   return assetType === "custom" && sourceId ? `custom:${sourceId}` : assetType;
 }
 
+// Series profiles produce distinct OHLCV streams for the same source/code.
+// Keep that distinction in the raw-row cache key without changing the code
+// sent to the source or the symbol-search cache schema.
+export function cacheSymbolKey(symbol: string, profile?: string): string {
+  return profile ? `${symbol}|profile:${profile}` : symbol;
+}
+
 export type Freq = "D" | "W" | "M" | "Q" | "Y";
 export type RangePreset = "1y" | "3y" | "5y" | "10y" | "20y" | "ytd" | "max";
 export type ChartTheme = "auto" | "dark" | "light";
@@ -286,6 +294,7 @@ export interface ParsedCardSpec {
   title?: string; // YAML title: overrides the default chart title (header / watermark / export)
   assetType: AssetType;
   sourceId?: string; // which CustomSourceDef feeds this card
+  profile?: string; // runtime series profile override; quote cards do not persist this field
   freq: Freq;
   range: string;
   version: number;
@@ -329,17 +338,40 @@ export interface PriceLineSpec {
 
 export type SeriesSource = "quote" | "card";
 
-// Resampling period for series cards: daily / monthly / quarterly / yearly.
-export type SeriesPeriod = "D" | "M" | "Q" | "Y";
+// Resampling period for series cards: daily / weekly / monthly / quarterly /
+// yearly.
+export type SeriesPeriod = "D" | "W" | "M" | "Q" | "Y";
+
+// What the values of a series ARE (declared, never guessed from the profile
+// string / code suffix / source name):
+//   price  — price / index level (default)
+//   yield  — interest rate / yield level
+//   spread — a price/yield spread or premium
+//   level  — any other level that may cross zero
+//   change — already a change (MoM/YoY/percent-change/first-diff result)
+export type SeriesValueKind = "price" | "yield" | "spread" | "level" | "change";
+export const SERIES_VALUE_KINDS: SeriesValueKind[] = ["price", "yield", "spread", "level", "change"];
+
+// How a series enters the overlay correlation badge:
+//   return — simple return c/p−1 (zero previous values dropped)
+//   diff   — first difference c−p
+//   bond   — negated first difference −(c−p), the bond-return direction
+//   raw    — the value participates as-is (for `change` kind series)
+//   none   — the leg is excluded from the correlation
+export type CorrTransform = "return" | "diff" | "bond" | "raw" | "none";
+export const CORR_TRANSFORMS: CorrTransform[] = ["return", "diff", "bond", "raw", "none"];
 
 export interface SeriesRef {
   source: SeriesSource;
   tsCode?: string;        // quote only, e.g. "600519.SH"
   assetType?: AssetType;  // quote only
   sourceId?: string;      // quote only: which CustomSourceDef feeds it
+  profile?: string;       // quote only: explicit CustomSourceDef profile/口径
   cardId?: string;        // card only: stable id of the referenced spread card (SpreadSpec.id)
   label?: string;         // optional display name override
   scale?: number;         // overlay cards only: visual multiplier applied to the plotted values (default 1)
+  kind?: SeriesValueKind; // value semantics; default resolution: this field > CustomSourceDef.seriesKind > "price"
+  corr?: CorrTransform;   // explicit correlation-transform override; absent = derived from the resolved kind
 }
 
 export interface SeriesPoint {
@@ -383,6 +415,7 @@ export interface OverlaySpec extends DisplayOverrides {
   normalize?: OverlayCompareMode;  // default "percent"
   lineType?: SeriesLineType;  // default "simple", applies to every line
   theme?: ChartTheme;     // default "auto" (follow Obsidian)
+  correlation?: boolean;  // default true: the two-series correlation badge; false hides it entirely
   viewStart?: string;  // YYYY-MM-DD, persisted wheel-zoom visible range
   viewEnd?: string;    // YYYY-MM-DD
 }

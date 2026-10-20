@@ -55,6 +55,7 @@ type PanelPhase =
   | { name: "error"; error: string; outboundPreview?: string };
 
 const KIND_TITLES: Record<AiTaskKind, string> = {
+  clarification: "补充信息",
   "add-source": "配置数据源",
   "fix-source": "修复数据源",
   "quote-card": "创建数据卡",
@@ -66,6 +67,7 @@ const KIND_TITLES: Record<AiTaskKind, string> = {
 };
 
 const KIND_HINTS: Record<AiTaskKind, string> = {
+  clarification: "当前任务缺少必要信息，请回答下面的问题后继续。",
   "add-source": "描述接口地址与返回的数据形态，AI 会生成数据源配置草稿提案。",
   "fix-source": "已带入当前配置与报错信息，可直接发送，也可补充说明。",
   "quote-card": "基于已有数据源生成数据卡配置提案。",
@@ -131,14 +133,14 @@ export class AiPanelView extends ItemView {
   }
 
   async onClose(): Promise<void> {
-    this.runner?.cancel();
+    this.runner?.reset();
     this.runner = null;
   }
 
   // main.ts entry for context-carrying tasks (fix-source now, card-editor
   // assist in later stages): replaces the active task and focuses the input.
   startTask(task: AiTaskRequest): void {
-    this.runner?.cancel();
+    this.runner?.reset();
     this.runner = null;
     this.request = task;
     this.panelInitiated = false;
@@ -165,6 +167,26 @@ export class AiPanelView extends ItemView {
       const head = contentEl.createDiv("fc-ai-head");
       head.createDiv({ cls: "fc-ai-title", text: t(KIND_TITLES[kind]) });
       head.createDiv({ cls: "fc-ai-context", text: t(KIND_HINTS[kind]) });
+      head.createDiv({ cls: "fc-ai-context fc-ai-context-scope", text: t("上下文仅限当前任务；完成、切换或关闭后会清空") });
+      const scope = head.createDiv("fc-ai-actions");
+      const scopeBtn = scope.createEl("button", { text: t("查看上下文范围") });
+      scopeBtn.addEventListener("click", () => {
+        const context = this.request?.context;
+        const sourceCount = context?.existingSources.length ?? 0;
+        const indicatorCount = context?.existingIndicators?.length ?? 0;
+        const lines = [
+          `任务：${KIND_TITLES[kind]}`,
+          `数据源摘要：${sourceCount} 个（仅使用临时别名）`,
+          `指标摘要：${indicatorCount} 个（仅使用临时别名）`,
+          `当前配置：${context?.sourceDraft ? "已包含脱敏草稿" : "无"}`,
+          `错误文本：${context?.errorText ? "已包含脱敏错误" : "无"}`,
+          `响应样本：${context?.sampleText ? "已包含截断样本" : "无"}`,
+          `当前卡片：${context?.currentCardSpec ? "已包含脱敏配置" : "无"}`,
+        ];
+        new AiCopyPreviewModal(this.app, lines.join("\n")).open();
+      });
+      const clearBtn = scope.createEl("button", { text: t("清空上下文") });
+      clearBtn.addEventListener("click", () => this.resetContext());
     }
 
     switch (this.phase.name) {
@@ -200,7 +222,7 @@ export class AiPanelView extends ItemView {
       const btn = quick.createEl("button", { cls: "fc-ai-quick-btn", text: t(label) });
       if (kind === activeKind) btn.addClass("is-active");
       btn.addEventListener("click", () => {
-        this.runner?.cancel();
+        this.runner?.reset();
         this.runner = null;
         this.request = { kind, goal: this.goalText, context: this.host.getTaskContext() };
         this.panelInitiated = true;
@@ -242,6 +264,8 @@ export class AiPanelView extends ItemView {
 
   private renderRunning(contentEl: HTMLElement): void {
     const status = contentEl.createDiv("fc-ai-status");
+    status.setAttr("role", "status");
+    status.setAttr("aria-live", "polite");
     status.createDiv("fc-ai-spinner");
     status.createSpan({ text: t("正在等待服务商响应…") });
     const cancelBtn = status.createEl("button", { text: t("取消") });
@@ -251,6 +275,20 @@ export class AiPanelView extends ItemView {
   private renderProposal(contentEl: HTMLElement, proposal: AiProposal, outboundPreview: string): void {
     const card = contentEl.createDiv("fc-ai-proposal");
     card.createDiv({ cls: "fc-ai-proposal-summary", text: proposal.summary });
+    if (proposal.evidence && proposal.evidence.length > 0) {
+      const evidence = card.createEl("details", { cls: "fc-ai-evidence" });
+      evidence.createEl("summary", { text: t("可验证依据") });
+      const list = evidence.createEl("ul");
+      for (const item of proposal.evidence) list.createEl("li", { text: item });
+    }
+    if (proposal.kind === "clarification") {
+      const questions = card.createDiv("fc-ai-clarifications");
+      for (const item of proposal.questions) {
+        const row = questions.createDiv("fc-ai-clarification");
+        row.createSpan({ cls: "fc-ai-diff-key", text: item.field });
+        row.createSpan({ text: item.question });
+      }
+    }
     const isSourceProposal = proposal.kind === "add-source" || proposal.kind === "fix-source";
     if (isSourceProposal) this.renderSourceDiff(card, proposal);
     const row = card.createDiv("fc-ai-actions");
@@ -273,6 +311,8 @@ export class AiPanelView extends ItemView {
     outboundBtn.addEventListener("click", () => {
       new AiCopyPreviewModal(this.app, outboundPreview).open();
     });
+    const diagnosticsBtn = row.createEl("button", { text: t("查看脱敏诊断") });
+    diagnosticsBtn.addEventListener("click", () => this.openDiagnostics());
 
     if (isSourceProposal) {
       // Secondary action: probe the draft/patch read-only. A failed probe
@@ -282,7 +322,10 @@ export class AiPanelView extends ItemView {
       probeBtn.addEventListener("click", () => void this.probeDraft(proposal));
       if (this.host.applyProposal) {
         const applyBtn = row.createEl("button", { cls: "mod-cta", text: t("打开表单完成保存") });
-        applyBtn.addEventListener("click", () => void this.host.applyProposal?.(proposal, this));
+        applyBtn.addEventListener("click", () => {
+          const applied = this.host.applyProposal?.(proposal, this);
+          if (applied) void applied.finally(() => this.resetContext());
+        });
       }
       if (this.probeResult && this.probeResult !== "pending") {
         const result = this.probeResult;
@@ -294,7 +337,7 @@ export class AiPanelView extends ItemView {
           line.setText(t("探测失败：{msg}", { msg: result.error }));
         }
       }
-    } else if (this.host.applyProposal) {
+    } else if (proposal.kind !== "clarification" && this.host.applyProposal) {
       const labels: Partial<Record<AiProposal["kind"], string>> = {
         "quote-card": "创建数据卡",
         "overlay-card": "创建对比卡",
@@ -304,7 +347,10 @@ export class AiPanelView extends ItemView {
         script: "保存脚本草稿",
       };
       const applyBtn = row.createEl("button", { cls: "mod-cta", text: t(labels[proposal.kind] ?? "应用提案") });
-      applyBtn.addEventListener("click", () => void this.host.applyProposal?.(proposal, this));
+      applyBtn.addEventListener("click", () => {
+        const applied = this.host.applyProposal?.(proposal, this);
+        if (applied) void applied.finally(() => this.resetContext());
+      });
     }
 
     const input = contentEl.createDiv("fc-ai-input");
@@ -355,6 +401,7 @@ export class AiPanelView extends ItemView {
 
   private renderError(contentEl: HTMLElement, error: string, outboundPreview?: string): void {
     const box = contentEl.createDiv("fc-ai-error");
+    box.setAttr("role", "alert");
     box.createDiv({ text: error });
     const actions = contentEl.createDiv("fc-ai-actions");
     if (outboundPreview) {
@@ -363,6 +410,8 @@ export class AiPanelView extends ItemView {
         new AiCopyPreviewModal(this.app, outboundPreview).open();
       });
     }
+    const diagnosticsBtn = actions.createEl("button", { text: t("查看脱敏诊断") });
+    diagnosticsBtn.addEventListener("click", () => this.openDiagnostics());
     const manualBtn = actions.createEl("button", { text: t("打开手动设置") });
     manualBtn.addEventListener("click", () => this.host.openAiSettings());
     const retryBtn = actions.createEl("button", { cls: "mod-cta", text: t("重试") });
@@ -418,8 +467,42 @@ export class AiPanelView extends ItemView {
   }
 
   private cancelRun(): void {
-    this.runner?.cancel();
+    this.runner?.reset();
     this.runner = null;
+    this.probeResult = null;
+    this.phase = { name: "idle" };
+    this.focusInputOnRender = true;
+    this.render();
+  }
+
+  private openDiagnostics(): void {
+    const events = this.runner?.getDiagnostics() ?? [];
+    const quality = this.runner?.getQualitySnapshot();
+    const lines = quality
+      ? [
+          `请求次数：${quality.requests}`,
+          `校验通过：${quality.validated}`,
+          `校验失败：${quality.validationFailures}`,
+          `上下文截断：${quality.truncated ? "是" : "否"}`,
+          `取消次数：${quality.cancelled}`,
+          "",
+          ...events.map((event) => `${new Date(event.at).toISOString()}  ${event.stage}`),
+        ]
+      : events.map((event) => `${new Date(event.at).toISOString()}  ${event.stage}`);
+    new AiCopyPreviewModal(this.app, lines.length > 0 ? lines.join("\n") : t("当前任务还没有可复制的诊断事件。")).open();
+  }
+
+  // Clear all task-local state after a proposal is handed to a controlled
+  // form or when the user explicitly cancels. The form owns persistence; the
+  // panel must not retain the previous model transcript while another source
+  // is being configured.
+  private resetContext(): void {
+    this.runner?.reset();
+    this.runner = null;
+    this.request = null;
+    this.panelInitiated = false;
+    this.goalText = "";
+    this.reviseText = "";
     this.probeResult = null;
     this.phase = { name: "idle" };
     this.focusInputOnRender = true;

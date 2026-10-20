@@ -110,6 +110,7 @@ export class SeriesAdapter {
       symbol: ref.tsCode!,
       assetType: ref.assetType!,
       sourceId: ref.sourceId,
+      profile: ref.profile,
       freq: "D",
       range,
       version: 1,
@@ -158,7 +159,7 @@ export class SeriesAdapter {
   }
 
   static defaultLabel(ref: SeriesRef): string {
-    return ref.tsCode ?? "";
+    return ref.tsCode ? (ref.profile ? `${ref.tsCode} · ${ref.profile}` : ref.tsCode) : "";
   }
 
   // Display name for a series ref: explicit label first, then the referenced
@@ -171,7 +172,7 @@ export class SeriesAdapter {
       const path = ref.cardId ? await this.host.resolveCardId(ref.cardId) : null;
       return basename(path) ?? t("计算卡");
     }
-    return ref.tsCode ?? "";
+    return ref.tsCode ? (ref.profile ? `${ref.tsCode} · ${ref.profile}` : ref.tsCode) : "";
   }
 
   // Sync variant for contexts that cannot await (edit modals): uses only the
@@ -182,7 +183,7 @@ export class SeriesAdapter {
       const path = ref.cardId ? this.host.resolveCardIdSync?.(ref.cardId) ?? null : null;
       return basename(path) ?? t("计算卡");
     }
-    return ref.tsCode ?? "";
+    return ref.tsCode ? (ref.profile ? `${ref.tsCode} · ${ref.profile}` : ref.tsCode) : "";
   }
 }
 
@@ -196,10 +197,12 @@ function ymdToIso(ymd: string): string {
 }
 
 // Resamples ascending points to the requested period by taking the LAST
-// observation per bucket (calendar month / quarter / year), keeping that
-// observation's actual date. "D" is the identity. Monthly data passing
-// through "M" is therefore unchanged; through "Q"/"Y" it keeps the last
-// month of each quarter/year, which is the desired semantics.
+// observation per bucket (ISO week / calendar month / quarter / year),
+// keeping that observation's actual date. "D" is the identity. Monthly data
+// passing through "M" is therefore unchanged; through "Q"/"Y" it keeps the
+// last month of each quarter/year, which is the desired semantics. The weekly
+// bucket key is the week's Monday, same convention as data-adapter's W
+// resampling.
 function resamplePoints(points: SeriesPoint[], period: SeriesPeriod): SeriesPoint[] {
   if (period === "D" || points.length === 0) return points;
   const bucketOf = (date: string): string => {
@@ -207,6 +210,12 @@ function resamplePoints(points: SeriesPoint[], period: SeriesPeriod): SeriesPoin
     if (period === "Q") {
       const quarter = Math.floor((Number(date.slice(5, 7)) - 1) / 3) + 1;
       return `${date.slice(0, 4)}-Q${quarter}`;
+    }
+    if (period === "W") {
+      const d = new Date(`${date}T00:00:00`);
+      const day = d.getDay();
+      d.setDate(d.getDate() - day + (day === 0 ? -6 : 1));
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     }
     return date.slice(0, 7);
   };

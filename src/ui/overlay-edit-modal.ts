@@ -32,6 +32,8 @@ export class OverlayEditModal extends Modal {
   private period: SeriesPeriod;
   private compareMode: OverlayCompareMode;
   private lineType: SeriesLineType;
+  // 显示相关系数 toggle (YAML correlation: false hides the badge entirely).
+  private correlation: boolean;
   // Raw text of the per-series 缩放系数 inputs (indexed like the series rows);
   // empty = 1. Parsed and validated at save time.
   private scaleInputs: string[];
@@ -66,6 +68,7 @@ export class OverlayEditModal extends Modal {
     this.period = spec.period ?? "D";
     this.compareMode = spec.normalize ?? "percent";
     this.lineType = spec.lineType ?? "simple";
+    this.correlation = spec.correlation !== false;
     this.scaleInputs = spec.series.map((ref) => (ref.scale !== undefined ? String(ref.scale) : ""));
     this.theme = spec.theme ?? "auto";
     this.displayOverrides = {
@@ -177,6 +180,15 @@ export class OverlayEditModal extends Modal {
         });
       });
 
+    new Setting(pageEl)
+      .setName(t("显示相关系数"))
+      .setDesc(t("恰好两个系列时在标题下显示逐期相关徽标；统计的是变动量的相关性，与图上画的水平线形状回答的是两个问题。"))
+      .addToggle((toggle) =>
+        toggle.setValue(this.correlation).onChange((value) => {
+          this.correlation = value;
+        })
+      );
+
     // 缩放系数 rows are (re)built by renderScaleRows — on open and whenever
     // the data tab is activated, so series-row edits are reflected.
     this.scaleRowsEl = pageEl.createDiv();
@@ -202,7 +214,9 @@ export class OverlayEditModal extends Modal {
       true,
       this.openSymbolPicker,
       this.listReferenceableCards,
-      this.customSources
+      this.customSources,
+      // 值语义/相关变换 dropdowns: the overlay correlation badge consumes them.
+      true
     );
     this.editors.push(editor);
     this.updateAddRow();
@@ -326,6 +340,7 @@ export class OverlayEditModal extends Modal {
       range: this.range,
       period: this.period,
       normalize: this.compareMode,
+      ...(this.correlation ? {} : { correlation: false }),
       ...(this.lineType !== "simple" ? { lineType: this.lineType } : {}),
       ...(this.theme !== "auto" ? { theme: this.theme } : {}),
       // 图表设置 overrides: undefined fields are dropped by the serializer.

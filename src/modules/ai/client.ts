@@ -15,6 +15,10 @@ export interface AiConnectionConfig {
   baseUrl: string;
   model: string;
   apiKey?: string;
+  // Optional per-request controls; callers can omit them to use safe bounds.
+  timeoutMs?: number;
+  maxResponseChars?: number;
+  maxRevisionRounds?: number;
 }
 
 export interface AiChatMessage {
@@ -40,7 +44,7 @@ export async function chatCompletion(cfg: AiConnectionConfig, messages: AiChatMe
       method: "POST",
       headers,
       body: JSON.stringify({ model: cfg.model.trim(), messages, response_format: { type: "json_object" } }),
-      timeoutMs: 90_000,
+      timeoutMs: Math.min(120_000, Math.max(10_000, cfg.timeoutMs ?? 90_000)),
       retry: 0,
     });
   } catch (e) {
@@ -55,5 +59,8 @@ export async function chatCompletion(cfg: AiConnectionConfig, messages: AiChatMe
   const content = (response.json as { choices?: { message?: { content?: unknown } }[] } | undefined)?.choices?.[0]
     ?.message?.content;
   if (typeof content !== "string" || !content) throw new Error(t("服务商返回了无法识别的响应"));
+  if (content.length > (cfg.maxResponseChars ?? 200_000)) {
+    throw new Error(t("服务商响应过大，已拒绝处理"));
+  }
   return content;
 }

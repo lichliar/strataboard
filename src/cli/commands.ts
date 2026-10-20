@@ -56,6 +56,8 @@ export interface CliSettings {
   showSeriesPointMarkers?: boolean;
   showChartGrid?: boolean;
   gridOpacity?: number;
+  // 指标 tab global switch for the overlay correlation badge; absent = on.
+  showOverlayCorrelation?: boolean;
   // Global rise/fall colors (通用 tab); read by the headless renderers.
   riseColor?: string;
   fallColor?: string;

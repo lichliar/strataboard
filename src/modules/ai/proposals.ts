@@ -19,6 +19,7 @@ import { parseOverlaySpec, parseSpreadSpec, stringifyOverlaySpec, stringifySprea
 import type { ChartTheme, ChartType, Freq, OverlayCompareMode, SeriesPeriod } from "../../types";
 
 export type AiTaskKind =
+  | "clarification"
   | "add-source"
   | "fix-source"
   | "quote-card"
@@ -28,15 +29,17 @@ export type AiTaskKind =
   | "indicator-doc"
   | "script";
 
+type ProposalMeta = { summary: string; evidence?: string[] };
 export type AiProposal =
-  | { kind: "add-source"; summary: string; draft: Partial<CustomSourceDef> }
-  | { kind: "fix-source"; summary: string; sourceId: string; patch: Partial<CustomSourceDef> }
-  | { kind: "quote-card"; summary: string; spec: ParsedCardSpec }
-  | { kind: "overlay-card"; summary: string; spec: OverlaySpec }
-  | { kind: "spread-card"; summary: string; spec: SpreadSpec }
-  | { kind: "indicator"; summary: string; title: string; code: string }
-  | { kind: "indicator-doc"; summary: string; indicatorId: string; title: string; markdown: string; plotCode: string }
-  | { kind: "script"; summary: string; filename: string; code: string };
+  | ({ kind: "clarification"; questions: { field: string; question: string }[] } & ProposalMeta)
+  | ({ kind: "add-source"; draft: Partial<CustomSourceDef> } & ProposalMeta)
+  | ({ kind: "fix-source"; sourceId: string; patch: Partial<CustomSourceDef> } & ProposalMeta)
+  | ({ kind: "quote-card"; spec: ParsedCardSpec } & ProposalMeta)
+  | ({ kind: "overlay-card"; spec: OverlaySpec } & ProposalMeta)
+  | ({ kind: "spread-card"; spec: SpreadSpec } & ProposalMeta)
+  | ({ kind: "indicator"; title: string; code: string } & ProposalMeta)
+  | ({ kind: "indicator-doc"; indicatorId: string; title: string; markdown: string; plotCode: string } & ProposalMeta)
+  | ({ kind: "script"; filename: string; code: string } & ProposalMeta);
 
 export type ProposalValidation = { ok: true; proposal: AiProposal } | { ok: false; error: string };
 
@@ -44,10 +47,16 @@ export type ProposalValidation = { ok: true; proposal: AiProposal } | { ok: fals
 export interface ProposalContext {
   allowedLoopbackHttpOrigins: readonly string[];
   existingSourceIds: readonly string[];
+  // Model-facing aliases are resolved back to real ids only after parsing.
+  // This keeps source ids out of outbound prompts while preserving the
+  // existing proposal/application seam.
+  sourceAliases?: Readonly<Record<string, string>>;
   existingIndicatorIds?: readonly string[];
+  indicatorAliases?: Readonly<Record<string, string>>;
 }
 
 const VALID_KINDS: readonly AiTaskKind[] = [
+  "clarification",
   "add-source",
   "fix-source",
   "quote-card",
@@ -79,6 +88,7 @@ const SOURCE_WHITELIST_KEYS: ReadonlySet<string> = new Set([
   "codeRules",
   "searchProfile",
   "deadCodes",
+  "seriesKind",
   "bodyEncoding",
   "apiKeyHeader",
 ]);
@@ -106,6 +116,24 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function asNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function resolveAlias(value: string, aliases: Readonly<Record<string, string>> | undefined): string {
+  return aliases?.[value] ?? value;
+}
+
+function readEvidence(map: Record<string, unknown>): string[] | undefined {
+  if (!Array.isArray(map.evidence)) return undefined;
+  const values = map.evidence
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => value.trim().slice(0, 240))
+    .slice(0, 5);
+  return values.length > 0 ? values : undefined;
+}
+
+function meta(summary: string, map: Record<string, unknown>): ProposalMeta {
+  const evidence = readEvidence(map);
+  return evidence ? { summary, evidence } : { summary };
 }
 
 // Tolerates a Markdown ```json fence around the payload.
@@ -140,6 +168,8 @@ export function parseProposal(raw: string, ctx: ProposalContext): ProposalValida
   if (!summary) return fail("缺少必填字段 summary（一句话说明）。");
 
   switch (kind) {
+    case "clarification":
+      return validateClarification(map, summary);
     case "add-source":
       return validateAddSource(map, summary, ctx);
     case "fix-source":
@@ -157,6 +187,24 @@ export function parseProposal(raw: string, ctx: ProposalContext): ProposalValida
     case "script":
       return validateScript(map, summary);
   }
+}
+
+function validateClarification(map: Record<string, unknown>, summary: string): ProposalValidation {
+  if (!Array.isArray(map.questions) || map.questions.length < 1 || map.questions.length > 3) {
+    return fail("clarification.questions 必须包含 1～3 个问题。");
+  }
+  const questions: { field: string; question: string }[] = [];
+  for (const [index, raw] of map.questions.entries()) {
+    const entry = asRecord(raw);
+    const field = asNonEmptyString(entry?.field);
+    const question = asNonEmptyString(entry?.question);
+    if (!field || !question) return fail(`clarification.questions[${index}] 必须包含 field 和 question。`);
+    if (/api.?key|cookie|authorization|密码|密钥|凭据|个人信息/i.test(`${field} ${question}`)) {
+      return fail("澄清问题不能索取 API Key、Cookie、凭据或个人信息。");
+    }
+    questions.push({ field: field.slice(0, 80), question: question.slice(0, 240) });
+  }
+  return { ok: true, proposal: { kind: "clarification", ...meta(summary, map), questions } };
 }
 
 // ===== data sources =====
@@ -236,28 +284,30 @@ function validateAddSource(map: Record<string, unknown>, summary: string, ctx: P
       return fail("format 为 json 时 draft.jsonMap 必须给出 cols.date 与 cols.close 两列映射。");
     }
   }
-  return { ok: true, proposal: { kind: "add-source", summary, draft } };
+  return { ok: true, proposal: { kind: "add-source", ...meta(summary, map), draft } };
 }
 
 function validateFixSource(map: Record<string, unknown>, summary: string, ctx: ProposalContext): ProposalValidation {
-  const sourceId = asNonEmptyString(map.sourceId);
-  if (!sourceId) return fail("缺少必填字段 sourceId（要修复的数据源 id）。");
+  const rawSourceId = asNonEmptyString(map.sourceId);
+  if (!rawSourceId) return fail("缺少必填字段 sourceId（要修复的数据源）。");
+  const sourceId = resolveAlias(rawSourceId, ctx.sourceAliases);
   if (!ctx.existingSourceIds.includes(sourceId)) {
-    return fail(`sourceId「${sourceId}」不存在；只能修复已有数据源（可选：${ctx.existingSourceIds.join("、")}）。`);
+    return fail(`sourceId「${rawSourceId}」不存在；只能修复已有数据源。`);
   }
   const { draft, error } = sanitizeSourceDraft(map.patch, ctx, "patch");
   if (!draft) return fail(error!);
   if (Object.keys(draft).length === 0) return fail("patch 为空：至少给出一个需要修改的字段。");
-  return { ok: true, proposal: { kind: "fix-source", summary, sourceId, patch: draft } };
+  return { ok: true, proposal: { kind: "fix-source", ...meta(summary, map), sourceId, patch: draft } };
 }
 
 // ===== cards =====
 
 function checkSourceId(raw: unknown, ctx: ProposalContext, label: string): { sourceId?: string; error?: string } {
-  const sourceId = asNonEmptyString(raw);
-  if (!sourceId) return { error: `${label} 缺少有效的 sourceId（自定义数据源 id）。` };
+  const rawSourceId = asNonEmptyString(raw);
+  if (!rawSourceId) return { error: `${label} 缺少有效的数据源。` };
+  const sourceId = resolveAlias(rawSourceId, ctx.sourceAliases);
   if (!ctx.existingSourceIds.includes(sourceId)) {
-    return { error: `${label} 引用的数据源「${sourceId}」不存在（已有：${ctx.existingSourceIds.join("、")}）。` };
+    return { error: `${label} 引用的数据源「${rawSourceId}」不存在。` };
   }
   return { sourceId };
 }
@@ -290,11 +340,11 @@ function validateQuoteCard(map: Record<string, unknown>, summary: string, ctx: P
 
   const parsed = parseCardSpec(stringifyCardSpec(spec));
   if (!parsed.ok) return fail(`卡片配置校验失败：${parsed.error.message}`);
-  return { ok: true, proposal: { kind: "quote-card", summary, spec: parsed.spec } };
+  return { ok: true, proposal: { kind: "quote-card", ...meta(summary, map), spec: parsed.spec } };
 }
 
 // Shared by overlay-card and spread-card: the proposal's spec.series entries
-// are simplified quote refs ({sourceId, code, label?, scale?}); they are
+// are simplified quote refs ({sourceId, code, profile?, label?, scale?}); they are
 // expanded to full SeriesRefs and validated by the real spec parsers.
 function validateSeriesCard(
   map: Record<string, unknown>,
@@ -319,8 +369,16 @@ function validateSeriesCard(
     const { sourceId, error } = checkSourceId(entry.sourceId, ctx, label);
     if (!sourceId) return fail(error!);
     const ref: SeriesRef = { source: "quote", tsCode: code, assetType: "custom", sourceId };
+    const profile = asNonEmptyString(entry.profile);
+    if (profile) ref.profile = profile;
     const labelText = asNonEmptyString(entry.label);
     if (labelText) ref.label = labelText;
+    // Value semantics / correlation transform: passed through verbatim — the
+    // real spec parsers below reject invalid enum values.
+    const seriesKind = asNonEmptyString(entry.kind);
+    if (seriesKind) ref.kind = seriesKind as SeriesRef["kind"];
+    const corr = asNonEmptyString(entry.corr);
+    if (corr) ref.corr = corr as SeriesRef["corr"];
     // scale is an overlay-only visual multiplier; dropped silently for spread.
     if (kind === "overlay-card" && typeof entry.scale === "number" && Number.isFinite(entry.scale) && entry.scale !== 0) {
       ref.scale = entry.scale;
@@ -338,11 +396,12 @@ function validateSeriesCard(
     if (title) spec.title = title;
     if (period) spec.period = period;
     if (theme) spec.theme = theme;
+    if (specRaw.correlation === false) spec.correlation = false;
     const normalize = asNonEmptyString(specRaw.normalize) as OverlayCompareMode | undefined;
     if (normalize) spec.normalize = normalize;
     const parsed = parseOverlaySpec(stringifyOverlaySpec(spec));
     if (!parsed.spec) return fail(`对比卡配置校验失败：${parsed.error}`);
-    return { ok: true, proposal: { kind, summary, spec: parsed.spec } };
+    return { ok: true, proposal: { kind, ...meta(summary, map), spec: parsed.spec } };
   }
 
   const expression = asNonEmptyString(specRaw.expression);
@@ -353,7 +412,7 @@ function validateSeriesCard(
   if (theme) spec.theme = theme;
   const parsed = parseSpreadSpec(stringifySpreadSpec(spec));
   if (!parsed.spec) return fail(`计算卡配置校验失败：${parsed.error}`);
-  return { ok: true, proposal: { kind, summary, spec: parsed.spec } };
+  return { ok: true, proposal: { kind, ...meta(summary, map), spec: parsed.spec } };
 }
 
 // ===== indicator / script =====
@@ -363,14 +422,15 @@ function validateIndicator(map: Record<string, unknown>, summary: string): Propo
   if (!title) return fail("indicator 提案缺少非空的 title（指标名）。");
   const code = checkCode(map.code);
   if (typeof code !== "string") return code;
-  return { ok: true, proposal: { kind: "indicator", summary, title, code } };
+  return { ok: true, proposal: { kind: "indicator", ...meta(summary, map), title, code } };
 }
 
 function validateIndicatorDoc(map: Record<string, unknown>, summary: string, ctx: ProposalContext): ProposalValidation {
-  const indicatorId = asNonEmptyString(map.indicatorId);
-  if (!indicatorId) return fail("indicator-doc 提案缺少 indicatorId（要说明的既有指标 id）。");
+  const rawIndicatorId = asNonEmptyString(map.indicatorId);
+  if (!rawIndicatorId) return fail("indicator-doc 提案缺少 indicatorId（要说明的既有指标）。");
+  const indicatorId = resolveAlias(rawIndicatorId, ctx.indicatorAliases);
   if (!ctx.existingIndicatorIds?.includes(indicatorId)) {
-    return fail(`indicatorId「${indicatorId}」不存在；请先选择已加载的指标。`);
+    return fail(`indicatorId「${rawIndicatorId}」不存在；请先选择已加载的指标。`);
   }
   const title = asNonEmptyString(map.title);
   if (!title) return fail("indicator-doc 提案缺少非空的 title（说明标题）。");
@@ -379,7 +439,7 @@ function validateIndicatorDoc(map: Record<string, unknown>, summary: string, ctx
   const plotCode = checkLongText(map.plotCode, "plotCode", 60_000);
   if (typeof plotCode !== "string") return plotCode;
   if (!/matplotlib|pyplot/i.test(plotCode)) return fail("plotCode 必须使用 Matplotlib（包含 matplotlib 或 pyplot）。");
-  return { ok: true, proposal: { kind: "indicator-doc", summary, indicatorId, title, markdown, plotCode } };
+  return { ok: true, proposal: { kind: "indicator-doc", ...meta(summary, map), indicatorId, title, markdown, plotCode } };
 }
 
 function validateScript(map: Record<string, unknown>, summary: string): ProposalValidation {
@@ -390,7 +450,7 @@ function validateScript(map: Record<string, unknown>, summary: string): Proposal
   }
   const code = checkCode(map.code);
   if (typeof code !== "string") return code;
-  return { ok: true, proposal: { kind: "script", summary, filename, code } };
+  return { ok: true, proposal: { kind: "script", ...meta(summary, map), filename, code } };
 }
 
 // No sandboxing here — execution never happens in the assistant path; the

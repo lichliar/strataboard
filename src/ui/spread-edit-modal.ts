@@ -1,4 +1,5 @@
-import { App, Modal, Notice, Setting, setTooltip, type ColorComponent, type TextComponent } from "obsidian";
+import { App, Modal, Notice, Setting, type ColorComponent, type TextComponent } from "obsidian";
+import { setTooltip } from "./tooltip";
 import type { ChartTheme, CustomSourceDef, DisplayOverrides, SeriesPeriod, SeriesRef, SpreadSpec } from "../types";
 import { SeriesRefEditor, type OpenSymbolPicker } from "./series-ref-editor";
 import { parseExpression } from "../modules/expression";

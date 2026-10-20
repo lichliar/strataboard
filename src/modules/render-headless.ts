@@ -32,7 +32,7 @@ import {
 } from "lightweight-charts";
 import type { Bar, IndicatorResult } from "oakscriptjs";
 import { JSDOM } from "jsdom";
-import type { AssetType, OhlcvRow, OverlaySpec, SeriesPoint, SpreadSpec, SymbolItem } from "../types";
+import type { AssetType, CustomSourceDef, OhlcvRow, OverlaySpec, SeriesPoint, SeriesRef, SpreadSpec, SymbolItem } from "../types";
 import { DEFAULT_RISE_COLOR, DEFAULT_FALL_COLOR } from "../types";
 import { parseCardSpec, DEFAULT_CARD_HEIGHT } from "./card-spec";
 import { parseOverlaySpec, parseSpreadSpec } from "./series-spec";
@@ -44,7 +44,7 @@ import { DataAdapter } from "./data-adapter";
 import { SeriesAdapter } from "./series-adapter";
 import { formatExpressionTitle } from "./expression";
 import { CHART_PALETTE, addTitleWatermark, buildChartOptions, composePng, drawChartPaneLabels, floorIndex, toChartTime, timeToYmd, type ChartPaneLabel, type ChartPngHeader } from "./chart-png";
-import { SERIES_LINE_COLORS, buildOverlayLine, toZScore, type SeriesChartLine } from "./overlay-lines";
+import { SERIES_LINE_COLORS, buildOverlayLine, computeSeriesCorrelation, resolveCorrTransform, toZScore, type SeriesChartLine } from "./overlay-lines";
 import { IndicatorRenderer } from "../vendor/lci/render";
 import { ohlcvToBars } from "./indicators/bars";
 import { computeIndicatorForInstance } from "./indicators/compute";
@@ -145,6 +145,10 @@ function chartFontFamily(): string {
 export interface HeadlessRenderDeps {
   dataAdapter: DataAdapter;
   seriesAdapter: SeriesAdapter;
+  // Custom source definitions, consulted for the source-level default value
+  // semantics (seriesKind) when the overlay correlation badge resolves each
+  // leg's transform.
+  customSources: CustomSourceDef[];
   // Symbol-cache lookup for the quote header's display name/code (optional:
   // falls back to the raw symbol).
   lookupSymbol?: (symbol: string, assetType: AssetType, sourceId?: string) => Promise<SymbolItem | null>;
@@ -153,6 +157,8 @@ export interface HeadlessRenderDeps {
     showSeriesPointMarkers?: boolean;
     showChartGrid?: boolean;
     gridOpacity?: number;
+    // Global 指标 tab switch for the overlay correlation badge; absent = on.
+    showOverlayCorrelation?: boolean;
     // Global 涨色/跌色 from the plugin settings (data.json); absent = the
     // DEFAULT_RISE_COLOR/DEFAULT_FALL_COLOR defaults.
     riseColor?: string;
@@ -348,17 +354,23 @@ async function renderQuotePng(body: string, deps: HeadlessRenderDeps, width: num
   const bars = ohlcvToBars(data);
   const renderBars = bars.map((bar, i) => ({ ...bar, time: toChartTime(data[i].tradeDate) as unknown as number }));
   const overlayLegend: { label: string; color: string; value?: string }[] = [];
-  for (const instance of indicators) {
+  for (const [indicatorIndex, instance] of indicators.entries()) {
     if (instance.hidden) continue;
     const computed = computeIndicatorForInstance(instance, bars, data);
     if (!computed || !computed.def.metadata.overlay) continue;
     const { def, inputs, adapted } = computed;
-    new IndicatorRenderer(chart, { paneIndex: 0, mainSeries: priceSeries }).render(
+    const overlayScaleId = def.metadata.scale === "none"
+      ? `indicator:${instance.id}:${indicatorIndex}`
+      : undefined;
+    new IndicatorRenderer(chart, { paneIndex: 0, mainSeries: priceSeries, overlayScaleId }).render(
       { overlay: true, plotConfig: def.plotConfig ?? [], hlineConfig: def.hlineConfig, fillConfig: def.fillConfig },
       adapted as unknown as IndicatorResult,
       renderBars,
       { inputs }
     );
+    if (overlayScaleId) {
+      chart.panes()[0]?.priceScale(overlayScaleId).applyOptions({ visible: false, borderVisible: false });
+    }
     const visiblePlots = (def.plotConfig ?? []).filter((plot) => plot.display !== "none");
     for (const [plotIndex, plot] of visiblePlots.entries()) {
       const points = adapted.plots?.[plot.id];
@@ -624,6 +636,24 @@ async function renderOverlayPng(body: string, deps: HeadlessRenderDeps, width: n
   const compareMode = spec.normalize ?? "percent";
   const lineNames = await Promise.all(spec.series.map((ref) => deps.seriesAdapter.resolveLabel(ref)));
   const allPoints = await Promise.all(spec.series.map((ref) => deps.seriesAdapter.loadSeries(ref, spec.range, period)));
+  // Same correlation dispatch as the Obsidian renderer (main.ts): per-leg
+  // transform from the declared value semantics; corr: none opts a leg out.
+  // The 指标 tab global switch gates the badge for every card (absent = on).
+  const showCorrelation = deps.settings.showOverlayCorrelation !== false;
+  const sourceDefOf = (ref: SeriesRef): CustomSourceDef | undefined =>
+    ref.source === "quote" ? deps.customSources.find((s) => s.id === ref.sourceId) : undefined;
+  const correlation =
+    showCorrelation &&
+    spec.correlation !== false &&
+    spec.series.length === 2 &&
+    spec.series.every((ref) => resolveCorrTransform(ref, sourceDefOf(ref)) !== "none")
+      ? computeSeriesCorrelation(
+          allPoints[0],
+          allPoints[1],
+          resolveCorrTransform(spec.series[0], sourceDefOf(spec.series[0])),
+          resolveCorrTransform(spec.series[1], sourceDefOf(spec.series[1]))
+        )
+      : undefined;
 
   const overlayLines = spec.series.map((ref, i) => {
     const built = buildOverlayLine(ref, allPoints[i], compareMode, lineNames[i]);
@@ -660,7 +690,9 @@ async function renderOverlayPng(body: string, deps: HeadlessRenderDeps, width: n
   const subtitle = buildOverlaySubtitle(
     spec,
     lineNames,
-    allPoints.map((points) => points[0]?.date)
+    allPoints.map((points) => points[0]?.date),
+    correlation,
+    showCorrelation
   );
 
   return renderSeriesPng(

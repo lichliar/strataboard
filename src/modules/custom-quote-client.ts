@@ -224,13 +224,13 @@ export class CustomQuoteClient {
   // declaredProfile is the classification the search endpoint declared for
   // this code (persisted in the symbol cache on pick) — it outranks
   // codeRules when resolving {p.*} params.
-  async fetchKline(code: string, start: string, end: string, stats?: KlineParseStats, declaredProfile?: string): Promise<OhlcvRow[]> {
+  async fetchKline(code: string, start: string, end: string, stats?: KlineParseStats, declaredProfile?: string, explicitProfile?: string): Promise<OhlcvRow[]> {
     if (!this.def.klineUrl) {
       throw new Error(t("自定义数据源「{name}」缺少 K线 URL 配置。", { name: this.def.name }));
     }
     if (this.def.format === "tencent") return this.fetchTencentKline(code, start, end);
     if (this.def.format === "eastmoney") return this.fetchEastmoneyKline(code, start, end);
-    return this.fetchJsonKline(code, start, end, stats, declaredProfile);
+    return this.fetchJsonKline(code, start, end, stats, declaredProfile, explicitProfile);
   }
 
   // Tencent format: one call returns at most PAGE_SIZE bars, so page
@@ -276,9 +276,9 @@ export class CustomQuoteClient {
   // Tushare) work through the same path. With def.paginate set (and an
   // {offset} placeholder present), the request loops offset-paged until a
   // short page or maxPages.
-  private async fetchJsonKline(code: string, start: string, end: string, stats?: KlineParseStats, declaredProfile?: string): Promise<OhlcvRow[]> {
+  private async fetchJsonKline(code: string, start: string, end: string, stats?: KlineParseStats, declaredProfile?: string, explicitProfile?: string): Promise<OhlcvRow[]> {
     const { urlCode, mapCode } = splitCompositeCode(code);
-    const params = resolveSymbolParams(this.def, code, declaredProfile);
+    const params = resolveSymbolParams(this.def, code, declaredProfile, explicitProfile);
     const map = this.def.jsonMap ? resolveMapCode(this.def.jsonMap, mapCode, params) : undefined;
     if (!map) {
       throw new Error(t("自定义数据源「{name}」缺少 JSON 字段映射配置。", { name: this.def.name }));
@@ -408,9 +408,9 @@ export async function fetchKlineSample(def: ResolvedCustomSourceDef, code: strin
 // klineUrl instead of a vault filePath): the same template fill, symbol
 // params, missing-param guard and auth as fetchJsonKline, but the response
 // body comes back unparsed for the CSV parser.
-export async function fetchSourceText(def: ResolvedCustomSourceDef, code: string, start: string, end: string): Promise<string> {
+export async function fetchSourceText(def: ResolvedCustomSourceDef, code: string, start: string, end: string, declaredProfile?: string, explicitProfile?: string): Promise<string> {
   const urlCode = splitCompositeCode(code).urlCode;
-  const params = resolveSymbolParams(def, code);
+  const params = resolveSymbolParams(def, code, declaredProfile, explicitProfile);
   const missing = missingSymbolParams(def, params);
   if (missing.length > 0) {
     throw new Error(

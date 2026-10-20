@@ -4,6 +4,7 @@ import { deriveCsvMapping, parseCsvKline, parseCsvTable, type CsvTable } from ".
 import { normalizeJsonDate } from "../modules/quote-format-parsers";
 import { applyInfoDescs } from "./info-desc";
 import { t } from "../i18n";
+import { redactError } from "../modules/redact";
 
 // Setup dialog for one format "csv" custom source (设置页 → 数据源 →
 // 添加数据源 → vault CSV): points a source at a vault-local CSV file. The
@@ -52,7 +53,7 @@ class CsvFileSuggestModal extends SuggestModal<string> {
 export class CsvSourceModal extends Modal {
   private def: CustomSourceDef;
   private isNew: boolean;
-  private onSubmit: (def: CustomSourceDef) => void;
+  private onSubmit: (def: CustomSourceDef) => void | Promise<void>;
   // Once the user edits 名称 by hand, file picks stop overwriting it.
   private nameTouched = false;
   private table: CsvTable | null = null;
@@ -63,7 +64,7 @@ export class CsvSourceModal extends Modal {
   private parseTimer: number | undefined;
   private nameText: TextComponent | undefined;
 
-  constructor(app: App, def: Partial<CustomSourceDef> | undefined, onSubmit: (def: CustomSourceDef) => void) {
+  constructor(app: App, def: Partial<CustomSourceDef> | undefined, onSubmit: (def: CustomSourceDef) => void | Promise<void>) {
     super(app);
     this.isNew = !def?.id;
     if (def?.id) {
@@ -267,7 +268,7 @@ export class CsvSourceModal extends Modal {
     }
   }
 
-  private save() {
+  private async save() {
     const def = this.def;
     if (!def.filePath) {
       new Notice(t("请选择 CSV 文件。"));
@@ -297,7 +298,11 @@ export class CsvSourceModal extends Modal {
       );
       return;
     }
-    this.close();
-    this.onSubmit(def);
+    try {
+      await this.onSubmit(def);
+      this.close();
+    } catch (error) {
+      new Notice(t("数据源保存失败：{msg}", { msg: redactError(error) }), 10000);
+    }
   }
 }

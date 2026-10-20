@@ -1,5 +1,13 @@
 import { Setting, type DropdownComponent } from "obsidian";
-import { type CustomSourceDef, type ReferenceableCard, type ReferenceableCardKind, type SeriesRef, type SymbolItem } from "../types";
+import {
+  type CorrTransform,
+  type CustomSourceDef,
+  type ReferenceableCard,
+  type ReferenceableCardKind,
+  type SeriesRef,
+  type SeriesValueKind,
+  type SymbolItem,
+} from "../types";
 import { t } from "../i18n";
 
 // Opens the symbol picker for a custom source (remote search or manual
@@ -28,12 +36,20 @@ export class SeriesRefEditor {
   readonly el: HTMLElement;
   private source: SeriesRowSource;
   private code: string;
+  private profile: string;
   // Selected entry in the 已有卡片 dropdown: `sp:<cardId>` for spread cards,
   // `q:<path>` for quote cards (the path is only a picker key — picking a
   // quote card emits a plain quote ref, never a file reference).
   private cardKey: string;
   private cards: ReferenceableCard[] = [];
   private label: string;
+  // Value semantics / correlation transform (SeriesRef.kind/corr). Kept for
+  // EVERY row so hand-written values round-trip through any editor; the
+  // dropdowns themselves only render when allowSemantics (overlay cards —
+  // the correlation badge lives there).
+  private kind: SeriesValueKind | "";
+  private corr: CorrTransform | "";
+  private allowSemantics: boolean;
   private allowCardRef: boolean;
   private openSymbolPicker?: OpenSymbolPicker;
   private listReferenceableCards?: ListReferenceableCards;
@@ -47,20 +63,27 @@ export class SeriesRefEditor {
     allowCardRef = true,
     openSymbolPicker?: OpenSymbolPicker,
     listReferenceableCards?: ListReferenceableCards,
-    customSources?: CustomSourceDef[]
+    customSources?: CustomSourceDef[],
+    allowSemantics = false
   ) {
     this.customSources = customSources ?? [];
     this.allowCardRef = allowCardRef;
+    this.allowSemantics = allowSemantics;
     this.openSymbolPicker = openSymbolPicker;
     this.listReferenceableCards = listReferenceableCards;
     this.onRemove = onRemove;
+    this.kind = initial.kind ?? "";
+    this.corr = initial.corr ?? "";
 
     // Backfill the row state from the existing ref.
     this.code = "";
+    this.profile = "";
     this.cardKey = "";
     if (initial.source === "quote") {
       this.source = `custom:${initial.sourceId ?? this.customSources[0]?.id ?? ""}`;
       this.code = initial.tsCode ?? "";
+      this.profile = initial.profile ?? "";
+      this.normalizeLegacyProfileCode();
     } else if (allowCardRef) {
       // Hand-written YAML may still carry a card leg where the UI forbids it
       // (allowCardRef=false) — that case falls through to the default source.
@@ -117,6 +140,7 @@ export class SeriesRefEditor {
         // Clear source-specific values so a stale pick can never survive a
         // source switch.
         this.code = "";
+        this.profile = "";
         this.cardKey = "";
         this.renderControls();
       });
@@ -137,6 +161,7 @@ export class SeriesRefEditor {
       // custom:<id> — the source is fixed by the first column, so the code
       // picker binds to it directly.
       this.addQuotePicker(setting);
+      this.addProfilePicker(setting);
     }
 
     setting.addText((text) =>
@@ -147,6 +172,10 @@ export class SeriesRefEditor {
           this.label = value;
         })
     );
+
+    if (this.allowSemantics) {
+      this.addSemanticsPickers(setting);
+    }
 
     if (this.onRemove) {
       setting.addButton((btn) =>
@@ -166,6 +195,8 @@ export class SeriesRefEditor {
           // Custom rows are bound to their fixed sourceId.
           this.openSymbolPicker?.((item) => {
             this.code = item.tsCode;
+            this.profile = item.profile ?? "";
+            this.normalizeLegacyProfileCode();
             if (!this.label.trim()) {
               this.label = item.name;
             }
@@ -193,6 +224,84 @@ export class SeriesRefEditor {
           })
       );
     }
+  }
+
+  private sourceDef(): CustomSourceDef | undefined {
+    return this.customSources.find((def) => def.id === this.sourceId);
+  }
+
+  // 值语义 dropdown (overlay cards only, via allowSemantics). The corr
+  // override stays YAML-only — one dropdown, plain-language options. The UI
+  // folds yield/spread/level into one option (all three compute identically);
+  // a hand-written yield/spread value displays as the folded option but is
+  // only rewritten to "level" if the user actually changes the dropdown.
+  private addSemanticsPickers(setting: Setting): void {
+    // What "自动" resolves to for this row: the source's declared seriesKind,
+    // else the global price default — shown so the effective behavior is
+    // visible without touching anything.
+    const autoKind = this.sourceDef()?.seriesKind;
+    const KIND_OPTION_LABELS: Record<"price" | "level" | "change", string> = {
+      price: t("价格 / 指数"),
+      level: t("利率 / 利差 / 其他水平值"),
+      change: t("涨跌幅 / 同比（已是变化量）"),
+    };
+    const folded = this.kind === "yield" || this.kind === "spread" ? "level" : this.kind;
+    setting.addDropdown((dropdown) => {
+      const autoLabel = KIND_OPTION_LABELS[autoKind === "yield" || autoKind === "spread" ? "level" : autoKind === "change" ? "change" : "price"];
+      dropdown.addOption("", autoKind ? t("值语义：自动（{kind} · 数据源默认）", { kind: autoLabel }) : t("值语义：自动（{kind}）", { kind: autoLabel }));
+      dropdown.addOption("price", KIND_OPTION_LABELS.price);
+      dropdown.addOption("level", KIND_OPTION_LABELS.level);
+      dropdown.addOption("change", KIND_OPTION_LABELS.change);
+      if (this.kind && folded !== "price" && folded !== "level" && folded !== "change") {
+        dropdown.addOption(this.kind, `${this.kind}${t("（不可用）")}`);
+      }
+      dropdown.setValue(folded).onChange((value) => {
+        this.kind = value as SeriesValueKind | "";
+      });
+      dropdown.selectEl.title = t("这个序列的数值是什么；决定相关徽标按收益率、差分还是原值计算");
+    });
+  }
+
+  private usesMapCode(def: CustomSourceDef | undefined): boolean {
+    return Object.values(def?.jsonMap?.cols ?? {}).some((value) => typeof value === "string" && value.includes("{code}"));
+  }
+
+  private profileOptions(): string[] {
+    const def = this.sourceDef();
+    if (!def?.profiles || this.usesMapCode(def)) return [];
+    return Object.keys(def.profiles);
+  }
+
+  // Existing cards may use the legacy code@profile shorthand. Normalize it
+  // into the explicit editor state when the suffix is a declared profile;
+  // wide-table code@column values remain untouched.
+  private normalizeLegacyProfileCode(): void {
+    if (!this.code.includes("@")) return;
+    const def = this.sourceDef();
+    if (!def || this.usesMapCode(def)) return;
+    const at = this.code.indexOf("@");
+    const base = this.code.slice(0, at);
+    const suffix = this.code.slice(at + 1);
+    if (def.profiles?.[suffix] && (!this.profile || this.profile === suffix)) {
+      this.code = base;
+      this.profile = suffix;
+    }
+  }
+
+  private addProfilePicker(setting: Setting): void {
+    const options = this.profileOptions();
+    if (options.length === 0) return;
+    const current = this.profile && options.includes(this.profile) ? this.profile : this.profile;
+    setting.addDropdown((dropdown) => {
+      dropdown.addOption("", t("默认口径"));
+      for (const profile of options) dropdown.addOption(profile, profile);
+      if (current && !options.includes(current)) {
+        dropdown.addOption(current, `${current}${t("（不可用）")}`);
+      }
+      dropdown.setValue(current).onChange((value) => {
+        this.profile = value;
+      });
+    });
   }
 
   // Fills the 已有卡片 dropdown once the provider resolves, grouped by card
@@ -273,10 +382,17 @@ export class SeriesRefEditor {
       }
     } else {
       ref = { source: "quote", tsCode: this.code.trim(), assetType: "custom", sourceId: this.sourceId };
+      if (this.profile) ref.profile = this.profile;
     }
     const label = this.label.trim();
     if (label) {
       ref.label = label;
+    }
+    if (this.kind) {
+      ref.kind = this.kind;
+    }
+    if (this.corr) {
+      ref.corr = this.corr;
     }
     return ref;
   }

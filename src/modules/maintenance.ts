@@ -1,6 +1,7 @@
 import { TFile, type App } from "obsidian";
 import { parseDocument } from "yaml";
-import { cacheAssetKey, type AssetType, type SeriesRef } from "../types";
+import { cacheAssetKey, cacheSymbolKey, type AssetType, type CustomSourceDef, type SeriesRef } from "../types";
+import { splitLegacyProfileRef } from "../utils/symbol-list";
 import { parseCardSpec, findUnknownCardKeys, CALENDAR_KNOWN_KEYS, QUOTE_KNOWN_KEYS, WIDGET_KNOWN_KEYS } from "./card-spec";
 import {
   parseOverlaySpec,
@@ -228,14 +229,20 @@ export interface UsedCacheKeys {
 
 // Scans every markdown file in the vault (cards may also live inline in any
 // note via insertCardIntoMd) and collects the cache keys its cards use. Card
-// refs are followed through the card index (cardId → file).
-export async function collectUsedCacheKeys(app: App, cardIndex: CardIndex): Promise<UsedCacheKeys> {
+// refs are followed through the card index (cardId → file). customSources is
+// needed to normalize legacy "code@profile" refs onto the same cache key the
+// fetch path uses (splitLegacyProfileRef).
+export async function collectUsedCacheKeys(
+  app: App,
+  cardIndex: CardIndex,
+  customSources: CustomSourceDef[]
+): Promise<UsedCacheKeys> {
   const keys: UsedCacheKeys = { quotes: new Set() };
   const visitedCards = new Set<string>();
   for (const file of app.vault.getMarkdownFiles()) {
     const content = await app.vault.cachedRead(file);
     for (const block of extractPluginBlocks(content)) {
-      await collectBlockKeys(app, cardIndex, block, keys, visitedCards);
+      await collectBlockKeys(app, cardIndex, block, keys, visitedCards, customSources);
     }
   }
   return keys;
@@ -246,7 +253,8 @@ async function collectBlockKeys(
   cardIndex: CardIndex,
   block: PluginBlock,
   keys: UsedCacheKeys,
-  visitedCards: Set<string>
+  visitedCards: Set<string>,
+  customSources: CustomSourceDef[]
 ): Promise<void> {
   switch (block.type) {
     case "quote": {
@@ -263,7 +271,7 @@ async function collectBlockKeys(
         block.type === "overlay" ? parseOverlaySpec(block.body) : parseSpreadSpec(block.body);
       if (!result.spec) return;
       for (const ref of result.spec.series) {
-        await collectRefKeys(app, cardIndex, ref, keys, visitedCards);
+        await collectRefKeys(app, cardIndex, ref, keys, visitedCards, customSources);
       }
       return;
     }
@@ -275,12 +283,18 @@ async function collectRefKeys(
   cardIndex: CardIndex,
   ref: SeriesRef,
   keys: UsedCacheKeys,
-  visitedCards: Set<string>
+  visitedCards: Set<string>,
+  customSources: CustomSourceDef[]
 ): Promise<void> {
   switch (ref.source) {
-    case "quote":
-      keys.quotes.add(`${ref.tsCode}|${cacheAssetKey(ref.assetType!, ref.sourceId)}`);
+    case "quote": {
+      const def = customSources.find((s) => s.id === ref.sourceId);
+      const { symbol, profile } = def
+        ? splitLegacyProfileRef(def, ref.tsCode!, ref.profile)
+        : { symbol: ref.tsCode!, profile: ref.profile };
+      keys.quotes.add(`${cacheSymbolKey(symbol, profile)}|${cacheAssetKey(ref.assetType!, ref.sourceId)}`);
       return;
+    }
     case "card": {
       // Follow the referenced spread card (cycle-safe, keyed by cardId) — its
       // own series count as used too.
@@ -293,7 +307,7 @@ async function collectRefKeys(
       if (!(file instanceof TFile)) return;
       const content = await app.vault.cachedRead(file);
       for (const block of extractPluginBlocks(content)) {
-        await collectBlockKeys(app, cardIndex, block, keys, visitedCards);
+        await collectBlockKeys(app, cardIndex, block, keys, visitedCards, customSources);
       }
       return;
     }

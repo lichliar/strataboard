@@ -27,7 +27,7 @@ export interface IndicatorDef {
   description?: string;
   /** 均线 | 通道 | 震荡 | 动量 | 趋势 | 波动 | 成交量 | 自定义 */
   category: string;
-  metadata: { title: string; shortTitle: string; overlay: boolean };
+  metadata: { title: string; shortTitle: string; overlay: boolean; scale: "price" | "none" };
   inputConfig: InputConfig[];
   defaultInputs: Record<string, unknown>;
   /** Optional ordered input ids to include in chart labels. */
@@ -84,6 +84,9 @@ export function validateIndicatorDef(raw: unknown): ValidateIndicatorResult {
   if (typeof meta.overlay !== "boolean") {
     return { ok: false, error: "metadata.overlay 缺失或不是布尔值" };
   }
+  if (meta.scale !== undefined && meta.scale !== "price" && meta.scale !== "none") {
+    return { ok: false, error: "metadata.scale 必须是 price 或 none" };
+  }
 
   if (!Array.isArray(obj.inputConfig)) {
     return { ok: false, error: "inputConfig 缺失或不是数组" };
@@ -115,6 +118,7 @@ export function validateIndicatorDef(raw: unknown): ValidateIndicatorResult {
       title: meta.title as string,
       shortTitle: meta.shortTitle as string,
       overlay: meta.overlay as boolean,
+      scale: meta.scale === "none" ? "none" : "price",
     },
     inputConfig: obj.inputConfig as InputConfig[],
     defaultInputs: obj.defaultInputs as Record<string, unknown>,

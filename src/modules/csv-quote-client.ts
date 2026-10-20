@@ -18,7 +18,7 @@ import { t } from "../i18n";
 export class CsvQuoteClient {
   constructor(private def: ResolvedCustomSourceDef, private readFile: (path: string) => Promise<string>) {}
 
-  async fetchKline(code: string, start: string, end: string): Promise<OhlcvRow[]> {
+  async fetchKline(code: string, start: string, end: string, declaredProfile?: string, explicitProfile?: string): Promise<OhlcvRow[]> {
     if (!this.def.filePath && !this.def.klineUrl) {
       throw new Error(t("CSV 数据源「{name}」缺少文件路径或 URL 配置。", { name: this.def.name }));
     }
@@ -27,8 +27,8 @@ export class CsvQuoteClient {
     }
     const text = this.def.filePath
       ? await this.readFile(this.def.filePath)
-      : await fetchSourceText(this.def, code, start, end);
-    return parseCsvKline(text, this.def.jsonMap, splitCompositeCode(code).mapCode, resolveSymbolParams(this.def, code))
+      : await fetchSourceText(this.def, code, start, end, declaredProfile, explicitProfile);
+    return parseCsvKline(text, this.def.jsonMap, splitCompositeCode(code).mapCode, resolveSymbolParams(this.def, code, declaredProfile, explicitProfile))
       .filter((row) => row.tradeDate >= start && row.tradeDate <= end);
   }
 }

@@ -47,7 +47,7 @@ import { formatExpressionTitle } from "./modules/expression";
 import { setRequestInterval, setAllowedLoopbackHttpOrigins } from "./modules/http";
 import { redactSecrets, redactError } from "./modules/redact";
 import { SeriesChartRenderer } from "./modules/series-chart-renderer";
-import { buildOverlayLine, normalizeToPctChange, toZScore } from "./modules/overlay-lines";
+import { buildOverlayLine, computeSeriesCorrelation, normalizeToPctChange, resolveCorrTransform, toZScore } from "./modules/overlay-lines";
 import {
   DEFAULT_OVERLAY_SPEC,
   DEFAULT_SPREAD_SPEC,
@@ -58,7 +58,7 @@ import {
   stringifySpreadSpec,
   type SeriesSpecParseResult,
 } from "./modules/series-spec";
-import { buildOverlaySubtitle, buildSpreadSubtitle } from "./modules/series-summary";
+import { buildOverlaySubtitle, buildSpreadSubtitle, CORRELATION_TOOLTIP } from "./modules/series-summary";
 import { ManualSymbolModal } from "./ui/manual-symbol-modal";
 import { UnifiedSearchModal, type CategoryId, type SearchHistoryEntry } from "./ui/unified-search-modal";
 import { SourcePickerModal, type SourcePickerEntry } from "./ui/source-picker-modal";
@@ -83,6 +83,7 @@ import { runScript, isPathInside, SCRIPT_TIMEOUT_MS, type ScriptRunResult } from
 import { parseCsvKline } from "./modules/csv-quote-client";
 import { ScriptManagerModal } from "./ui/script-manager-modal";
 import { SetupGuideModal } from "./ui/setup-guide-modal";
+import { detachTooltipManager } from "./ui/tooltip";
 import { ConfirmModal } from "./ui/confirm-modal";
 import { ScriptRunConfirmModal } from "./ui/script-run-confirm-modal";
 import { IndicatorConfirmModal } from "./ui/indicator-confirm-modal";
@@ -601,6 +602,26 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       const allPoints = await Promise.all(
         spec.series.map((ref) => this.fcPlugin.seriesAdapter.loadSeries(ref, spec.range, period, false, new Set(), meta))
       );
+      // Correlation badge: each leg's transform comes from its DECLARED value
+      // semantics (series kind/corr > source seriesKind > price), never from
+      // the raw values — a yield level gets Δ, not a ratio return. A leg with
+      // corr: none opts out; the subtitle reports the exclusion instead. The
+      // 指标 tab global switch gates the badge for every card.
+      const showCorrelation = this.fcPlugin.pluginSettings.showOverlayCorrelation;
+      const sourceDefOf = (ref: SeriesRef): CustomSourceDef | undefined =>
+        ref.source === "quote" ? this.fcPlugin.pluginSettings.customSources.find((s) => s.id === ref.sourceId) : undefined;
+      const correlation =
+        showCorrelation &&
+        spec.correlation !== false &&
+        spec.series.length === 2 &&
+        spec.series.every((ref) => resolveCorrTransform(ref, sourceDefOf(ref)) !== "none")
+          ? computeSeriesCorrelation(
+              allPoints[0],
+              allPoints[1],
+              resolveCorrTransform(spec.series[0], sourceDefOf(spec.series[0])),
+              resolveCorrTransform(spec.series[1], sourceDefOf(spec.series[1]))
+            )
+          : undefined;
       const overlayLines = spec.series.map((ref, i) => {
         const built = buildOverlayLine(ref, allPoints[i], compareMode, lineNames[i]);
         // Per-series 缩放系数: a pure visual multiplier on the plotted values
@@ -644,7 +665,9 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       const subtitle = buildOverlaySubtitle(
         spec,
         lineNames,
-        allPoints.map((points) => points[0]?.date)
+        allPoints.map((points) => points[0]?.date),
+        correlation,
+        showCorrelation
       );
 
       this.containerEl.empty();
@@ -656,6 +679,10 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       this.chartRenderer = new SeriesChartRenderer(this.containerEl, {
         title,
         subtitle,
+        // The badge's hover explanation only makes sense when the card can
+        // show a correlation (two series, not switched off globally or per card).
+        subtitleTooltip:
+          showCorrelation && spec.series.length === 2 && spec.correlation !== false ? t(CORRELATION_TOOLTIP) : undefined,
         scriptNote: scriptProvs.length > 0 ? formatScriptNote(scriptProvs) : undefined,
         lines: overlayLines.map((l) => (spec.lineType ? { ...l.line, lineType: spec.lineType } : l.line)),
         valueSuffix,
@@ -704,6 +731,7 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
           symbol: ref.tsCode!,
           assetType: ref.assetType!,
           sourceId: ref.sourceId,
+          profile: ref.profile,
           freq: "D",
           range: spec.range,
           version: 1,
@@ -866,6 +894,7 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
           symbol: ref.tsCode!,
           assetType: ref.assetType!,
           sourceId: ref.sourceId,
+          profile: ref.profile,
           freq: "D",
           range: spec.range,
           version: 1,
@@ -1284,6 +1313,7 @@ export default class StrataBoardPlugin extends Plugin {
   onunload() {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_STRATABOARD_AI);
     this.toolbar.detach();
+    detachTooltipManager();
     this.sqliteCache?.save().then(() => this.sqliteCache?.close()).catch((e) => {
       console.error("StrataBoard: failed to save SQLite cache on unload", e);
       this.sqliteCache?.close();
@@ -1329,6 +1359,7 @@ export default class StrataBoardPlugin extends Plugin {
     // settings never share a reference with DEFAULT_SETTINGS.
     this.pluginSettings.approvedScriptHashes = { ...(stored?.approvedScriptHashes ?? {}) };
     this.pluginSettings.approvedIndicatorHashes = { ...(stored?.approvedIndicatorHashes ?? {}) };
+    this.pluginSettings.credentialNames = { ...(stored?.credentialNames ?? {}) };
     this.pluginSettings.indicatorOverrides = Object.fromEntries(
       Object.entries(stored?.indicatorOverrides ?? {}).map(([id, value]) => [id, {
         ...(typeof value?.name === "string" ? { name: value.name } : {}),
@@ -1445,6 +1476,9 @@ export default class StrataBoardPlugin extends Plugin {
         const cfg: AiConnectionConfig = {
           baseUrl: settings?.baseUrl ?? "",
           model: settings?.model ?? "",
+          timeoutMs: settings?.timeoutMs,
+          maxResponseChars: settings?.maxResponseChars,
+          maxRevisionRounds: settings?.maxRevisionRounds,
           apiKey: settings?.credentialId
             ? this.credentials.get(settings.credentialId) ?? undefined
             : undefined,
@@ -1454,12 +1488,15 @@ export default class StrataBoardPlugin extends Plugin {
       getProposalContext: () => ({
         allowedLoopbackHttpOrigins: this.pluginSettings.allowedLoopbackHttpOrigins,
         existingSourceIds: this.enabledCustomSources().map((s) => s.id),
+        sourceAliases: Object.fromEntries(this.enabledCustomSources().map((s, i) => [`源${String.fromCharCode(65 + i)}`, s.id])),
         existingIndicatorIds: indicatorRegistry.list().map((def) => def.id),
+        indicatorAliases: Object.fromEntries(indicatorRegistry.list().map((def, i) => [`指标${i + 1}`, def.id])),
       }),
       getTaskContext: () => ({
-        existingSources: this.enabledCustomSources().map((s) => ({ id: s.id, name: s.name, format: s.format })),
-        existingIndicators: indicatorRegistry.list().map((def) => ({
+        existingSources: this.enabledCustomSources().map((s, i) => ({ id: s.id, alias: `源${String.fromCharCode(65 + i)}`, name: s.name, format: s.format })),
+        existingIndicators: indicatorRegistry.list().map((def, i) => ({
           id: def.id,
+          alias: `指标${i + 1}`,
           name: def.name,
           overlay: def.metadata.overlay,
           ...(def.description ? { description: def.description } : {}),

@@ -6,11 +6,16 @@ import { applyInfoDescs } from "./info-desc";
 // Shared credential picker (凭据): dropdown (不配置凭据 / 新建凭据… / stored
 // ids / stale-reference fallback) plus a password input shown whenever the
 // selection is not 不配置凭据 — for 新建凭据… it collects the new secret, for
-// an existing id a filled value ROTATES the stored secret. The component owns
-// no persistence: every edit is reported through onChange and the caller
-// decides when to store via the credential seam (custom-source-modal saves on
-// 保存; the AI 助手 BYOK block saves immediately). pendingSecret is unsaved
-// input — callers must include it in redactSecretsWith extras while unsaved.
+// an existing id a filled value ROTATES the stored secret. An optional name
+// input sits above the password box: credentials can carry a user-given
+// label (stored by the caller in pluginSettings.credentialNames, not a
+// secret) so several credentials stay distinguishable in the dropdown; the
+// label is shown in place of / ahead of the describeId fallback. The
+// component owns no persistence: every edit is reported through onChange and
+// the caller decides when to store via the credential seam
+// (custom-source-modal saves on 保存; the AI 助手 BYOK block saves
+// immediately). pendingSecret is unsaved input — callers must include it in
+// redactSecretsWith extras while unsaved.
 
 // Dropdown sentinel for "create a new credential" — real ids always carry the
 // strataboard-cred- prefix (credentials.ts), so this can never collide. An
@@ -20,6 +25,9 @@ export const CREDENTIAL_NEW = "__new__";
 export interface CredentialSelection {
   id?: string;
   pendingSecret?: string;
+  // Unsaved name input (create = name for the new credential, existing id =
+  // rename); empty string means "no label".
+  pendingName?: string;
 }
 
 export interface CredentialFieldOptions {
@@ -28,6 +36,11 @@ export interface CredentialFieldOptions {
   selectedId?: string;
   // Unsaved secret text to prefill the password box with.
   pendingSecret?: string;
+  // Unsaved name text to prefill the name box with; defaults to the stored
+  // name of selectedId.
+  pendingName?: string;
+  // Stored user-given labels keyed by credential id (read-only here).
+  names?: Record<string, string>;
   // Label for a stored id (e.g. sources referencing it); defaults to 已保存凭据.
   describeId?: (id: string) => string;
   // Setting description, recomputed whenever the selection changes.
@@ -46,7 +59,12 @@ export interface CredentialFieldHandle {
 }
 
 export function renderCredentialField(container: HTMLElement, opts: CredentialFieldOptions): CredentialFieldHandle {
-  let selection: CredentialSelection = { id: opts.selectedId, pendingSecret: opts.pendingSecret ?? "" };
+  const storedName = (id?: string) => (id && id !== CREDENTIAL_NEW ? opts.names?.[id] ?? "" : "");
+  let selection: CredentialSelection = {
+    id: opts.selectedId,
+    pendingSecret: opts.pendingSecret ?? "",
+    pendingName: opts.pendingName ?? storedName(opts.selectedId),
+  };
 
   const setting = new Setting(container).setName(t("凭据（API Key）"));
   setting.settingEl.addClass("fc-setting-stacked");
@@ -64,7 +82,9 @@ export function renderCredentialField(container: HTMLElement, opts: CredentialFi
       dropdown.addOption("", t("不配置凭据"));
       dropdown.addOption(CREDENTIAL_NEW, t("新建凭据…"));
       for (const id of opts.credentials.list()) {
-        dropdown.addOption(id, opts.describeId?.(id) ?? t("已保存凭据"));
+        const desc = opts.describeId?.(id) ?? t("已保存凭据");
+        const name = opts.names?.[id];
+        dropdown.addOption(id, name ? t("{name}（{desc}）", { name, desc }) : desc);
       }
       // The saved reference may point at a deleted secret — keep it
       // selectable so the UI reflects reality instead of silently switching.
@@ -72,12 +92,21 @@ export function renderCredentialField(container: HTMLElement, opts: CredentialFi
         dropdown.addOption(selection.id, t("当前凭据（已失效，请重新选择）"));
       }
       dropdown.setValue(selection.id ?? "").onChange((value) => {
-        selection = { id: value || undefined, pendingSecret: "" };
+        selection = { id: value || undefined, pendingSecret: "", pendingName: storedName(value || undefined) };
         render();
         notify();
       });
     });
     if (selection.id) {
+      setting.addText((text) => {
+        text
+          .setPlaceholder(t("凭据名称（可选），便于区分多个凭据"))
+          .setValue(selection.pendingName ?? "")
+          .onChange((value) => {
+            selection.pendingName = value;
+            notify();
+          });
+      });
       setting.addText((text) => {
         text
           .setPlaceholder(
@@ -105,7 +134,7 @@ export function renderCredentialField(container: HTMLElement, opts: CredentialFi
     seedNewSecret(secret) {
       // An existing credential stays the explicit choice — never hijack it.
       if (selection.id && selection.id !== CREDENTIAL_NEW) return;
-      selection = { id: CREDENTIAL_NEW, pendingSecret: secret };
+      selection = { id: CREDENTIAL_NEW, pendingSecret: secret, pendingName: "" };
       render();
       notify();
     },

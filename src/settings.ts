@@ -1,4 +1,5 @@
-import { App, Menu, Modal, Notice, PluginSettingTab, Setting, TFile, setTooltip } from "obsidian";
+import { App, Menu, Modal, Notice, PluginSettingTab, Setting, TFile } from "obsidian";
+import { setTooltip } from "./ui/tooltip";
 import type StrataBoardPlugin from "./main";
 import type { ChartThemeDefault, CustomSourceDef, IndicatorGroup, ToolbarPosition } from "./types";
 import { DEFAULT_FALL_COLOR, DEFAULT_RISE_COLOR, sourceNeedsApiKey, cacheAssetKey } from "./types";
@@ -93,7 +94,17 @@ export interface StrataBoardSettings {
   // 插件内 AI（BYOK）: user-configured OpenAI-compatible endpoint + model for
   // the in-plugin assistant (modules/ai/client.ts). undefined = 未配置; the
   // API key lives in SecretStorage behind credentialId, never in data.json.
-  aiAssistant?: { baseUrl: string; model: string; credentialId?: string };
+  aiAssistant?: {
+    baseUrl: string;
+    model: string;
+    credentialId?: string;
+    timeoutMs?: number;
+    maxResponseChars?: number;
+    maxRevisionRounds?: number;
+  };
+  // 凭据命名: user-given labels for SecretStorage credentials, keyed by
+  // credentialId. Not a secret — shown in the credential picker dropdown.
+  credentialNames: Record<string, string>;
   cardLibraryPath: string;
   widgetCardPath: string;
   componentCardPath: string;
@@ -129,6 +140,10 @@ export interface StrataBoardSettings {
   // only — applying a group to a card expands it into the card's own
   // indicators list; cards never reference groups.
   indicatorGroups: IndicatorGroup[];
+  // 指标: global switch for the overlay (compare) card correlation badge.
+  // Off hides the badge everywhere; a card can still opt out individually
+  // while this is on (editor 显示相关系数 toggle / YAML `correlation: false`).
+  showOverlayCorrelation: boolean;
   // One-shot flag for the cardPath→cardId reference upgrade: false until a
   // scan proves the vault clean (startup probe, or the 清理维护 dry-run), the
   // upgrade runs with nothing left behind, or the user explicitly marks it
@@ -183,6 +198,7 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   customSources: [],
   language: "zh",
   searchHistory: [],
+  credentialNames: {},
   cardLibraryPath: "金融卡片",
   widgetCardPath: "金融卡片/TradingView Widgets",
   componentCardPath: "金融卡片/组件",
@@ -196,6 +212,7 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   approvedIndicatorHashes: {},
   indicatorOverrides: {},
   indicatorGroups: [],
+  showOverlayCorrelation: true,
   cardRefsUpgraded: false,
   dataCachePath: "金融卡片/数据缓存",
   symbolCachePath: "金融卡片/股票代码缓存",
@@ -263,15 +280,35 @@ export function openPrefilledSourceModal(
   draft: Partial<CustomSourceDef> | undefined,
   onSaved?: () => void
 ): void {
-  const onSubmit = (result: CustomSourceDef) => {
-    const sources = plugin.pluginSettings.customSources;
-    const index = sources.findIndex((s) => s.id === result.id);
-    if (index >= 0) {
-      sources[index] = result;
-    } else {
-      sources.push(result);
+  const expectedExistingSnapshot = draft?.id
+    ? JSON.stringify(plugin.pluginSettings.customSources.find((source) => source.id === draft.id) ?? null)
+    : undefined;
+  const onSubmit = async (result: CustomSourceDef): Promise<void> => {
+    // Commit a new array only after deriving the complete next state. If the
+    // settings write fails, restore the previous reference so an in-memory
+    // source cannot look saved while data.json still contains the old value.
+    const previous = plugin.pluginSettings.customSources;
+    if (expectedExistingSnapshot !== undefined) {
+      const current = previous.find((source) => source.id === result.id);
+      if (JSON.stringify(current ?? null) !== expectedExistingSnapshot) {
+        throw new Error(t("数据源已被其他窗口修改，请重新打开后再保存。"));
+      }
     }
-    void plugin.saveSettings().then(() => onSaved?.());
+    const next = previous.slice();
+    const index = next.findIndex((s) => s.id === result.id);
+    if (expectedExistingSnapshot === undefined && index >= 0) {
+      throw new Error(t("数据源 ID 已存在，请重新打开添加流程。"));
+    }
+    if (index >= 0) next[index] = result;
+    else next.push(result);
+    plugin.pluginSettings.customSources = next;
+    try {
+      await plugin.saveSettings();
+      onSaved?.();
+    } catch (error) {
+      plugin.pluginSettings.customSources = previous;
+      throw error;
+    }
   };
   if (draft?.format === "csv") {
     new CsvSourceModal(app, draft, onSubmit).open();
@@ -284,6 +321,7 @@ export function openPrefilledSourceModal(
     () => openSettingsTab(app, "external-ai"),
     plugin.pluginSettings.customSources,
     plugin.credentials,
+    plugin.pluginSettings.credentialNames,
     plugin.pluginSettings.allowedLoopbackHttpOrigins,
     async (origin) => {
       plugin.pluginSettings.allowedLoopbackHttpOrigins = [
@@ -470,6 +508,24 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       text: t("自定义指标由用户提供，插件不内置、审核或背书任何指标及其输出。指标在受限运行环境中执行（无网络、文件与 Obsidian API），该环境只用于降低误操作风险，不能抵御恶意代码；指标首次运行或内容变化后需要你确认。仅添加你理解且信任的代码。"),
     });
 
+    // Global switch for the overlay card correlation badge; per-card opt-out
+    // stays in the overlay editor (显示相关系数) / YAML `correlation: false`.
+    const correlationSetting = new Setting(containerEl)
+      .setName(t("对比卡相关系数"))
+      .setDesc(t("全局开关：关闭后所有对比卡都不再计算和显示相关系数徽标。"))
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.pluginSettings.showOverlayCorrelation).onChange(async (value) => {
+          this.plugin.pluginSettings.showOverlayCorrelation = value;
+          await this.plugin.saveSettings();
+        })
+      );
+    setTooltip(
+      correlationSetting.nameEl,
+      t(
+        "使用方法：恰有两个系列的对比卡会在副标题显示相关系数徽标——价格类序列按收益率、利率/利差等水平值按一阶差分、已是涨跌幅的按原值，在共同交易日上计算逐期相关（Pearson）；统计与图上的归一化线条无关，悬停副标题可见完整口径说明。单张卡片可在「编辑对比卡 → 数据」中单独关闭。"
+      )
+    );
+
     const folder = normalizePath(this.plugin.pluginSettings.indicatorFolderPath);
     const customDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
     customDetails.createEl("summary", { text: t("自定义指标") });
@@ -598,19 +654,17 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           .join(" · ")
       );
     setting.settingEl.addClass("fc-keep-desc");
-    setting.addToggle((toggle) =>
-      toggle
-        .setTooltip(t("启用/禁用指标"))
-        .setValue(!disabled)
-        .onChange(async (value) => {
-          const list = this.plugin.pluginSettings.disabledIndicators.filter((p) => p !== rel);
-          if (!value) list.push(rel);
-          this.plugin.pluginSettings.disabledIndicators = list;
-          await this.plugin.saveSettings();
-          await syncIndicatorFiles(this.plugin);
-          this.display();
-        })
-    );
+    setting.addToggle((toggle) => {
+      setTooltip(toggle.toggleEl, t("启用/禁用指标"));
+      toggle.setValue(!disabled).onChange(async (value) => {
+        const list = this.plugin.pluginSettings.disabledIndicators.filter((p) => p !== rel);
+        if (!value) list.push(rel);
+        this.plugin.pluginSettings.disabledIndicators = list;
+        await this.plugin.saveSettings();
+        await syncIndicatorFiles(this.plugin);
+        this.display();
+      });
+    });
     setting.addButton((btn) => btn.setButtonText(t("编辑")).onClick(() => this.openIndicatorEditModal(def)));
     setting.addButton((btn) =>
       btn
@@ -947,15 +1001,64 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           })
       );
 
+    new Setting(details)
+      .setName(t("请求超时（秒）"))
+      .setDesc(t("单次模型请求的最长等待时间，范围 10～120 秒。"))
+      .addText((text) => {
+        text.inputEl.type = "number";
+        text.setValue(String(Math.round((aiAssistant().timeoutMs ?? 90_000) / 1000)));
+        text.onChange(async (value) => {
+          const parsed = Number(value);
+          const seconds = Math.min(120, Math.max(10, Number.isFinite(parsed) && value.trim() !== "" ? parsed : 90));
+          aiAssistant().timeoutMs = seconds * 1000;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(details)
+      .setName(t("最大响应字符数"))
+      .setDesc(t("超过此大小的模型响应会被拒绝，范围 10,000～200,000。"))
+      .addText((text) => {
+        text.inputEl.type = "number";
+        text.setValue(String(aiAssistant().maxResponseChars ?? 200_000));
+        text.onChange(async (value) => {
+          const parsed = Number(value);
+          const chars = Math.min(200_000, Math.max(10_000, Number.isFinite(parsed) && value.trim() !== "" ? parsed : 200_000));
+          aiAssistant().maxResponseChars = chars;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(details)
+      .setName(t("最大修订轮数"))
+      .setDesc(t("同一任务允许的模型修订次数，范围 0～5。"))
+      .addText((text) => {
+        text.inputEl.type = "number";
+        text.setValue(String(aiAssistant().maxRevisionRounds ?? 2));
+        text.onChange(async (value) => {
+          const parsed = Number(value);
+          aiAssistant().maxRevisionRounds = Math.min(5, Math.max(0, Number.isFinite(parsed) && value.trim() !== "" ? parsed : 2));
+          await this.plugin.saveSettings();
+        });
+      });
+
     // Credential picker shared with the source dialog (ui/credential-field.ts);
     // unlike the dialog (which persists on 保存), every change here writes
     // through immediately: 新建凭据… mints an id on the first non-empty
     // secret, an existing id + new secret rotates it, 不配置凭据 clears the
-    // reference.
+    // reference. Name edits land in pluginSettings.credentialNames.
     let pendingNewCredentialId: string | undefined;
+    const credentialNames = this.plugin.pluginSettings.credentialNames;
+    const applyCredentialName = (id: string | undefined, pendingName: string | undefined) => {
+      if (!id || id === CREDENTIAL_NEW) return;
+      const name = pendingName?.trim() ?? "";
+      if (name) credentialNames[id] = name;
+      else delete credentialNames[id];
+    };
     renderCredentialField(details, {
       credentials: this.plugin.credentials,
       selectedId: this.plugin.pluginSettings.aiAssistant?.credentialId,
+      names: credentialNames,
       desc: () =>
         t("密钥保存在 Obsidian SecretStorage，不写入 data.json；仅作为 Authorization 头发送到你配置的服务商地址。"),
       onChange: (sel) => {
@@ -968,6 +1071,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
             pendingNewCredentialId ??= newCredentialId();
             this.plugin.credentials.set(pendingNewCredentialId, secret);
             settings.credentialId = pendingNewCredentialId;
+            applyCredentialName(pendingNewCredentialId, sel.pendingName);
           } else {
             settings.credentialId = undefined;
           }
@@ -975,6 +1079,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
           settings.credentialId = sel.id;
           const rotated = sel.pendingSecret?.trim() ?? "";
           if (rotated) this.plugin.credentials.set(sel.id, rotated);
+          applyCredentialName(sel.id, sel.pendingName);
         }
         void this.plugin.saveSettings();
       },
@@ -997,7 +1102,13 @@ export class StrataBoardSettingTab extends PluginSettingTab {
               : undefined;
             // The ping message mentions JSON on purpose: providers in strict
             // json_object mode reject requests whose messages lack the word.
-            await chatCompletion({ baseUrl: settings.baseUrl, model: settings.model, apiKey }, [
+            await chatCompletion({
+              baseUrl: settings.baseUrl,
+              model: settings.model,
+              apiKey,
+              timeoutMs: settings.timeoutMs,
+              maxResponseChars: settings.maxResponseChars,
+            }, [
               { role: "user", content: t("请用 JSON 回复 {\"ok\":true}") },
             ]);
             new Notice(t("连接成功"));
@@ -1062,19 +1173,18 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         .setDesc(t("数据源组 · {n} 个源", { n: members.length }));
       header.nameEl.prepend(this.sourceAvatar(group, paletteColor(`group:${group}`)));
       header
-        .addExtraButton((btn) =>
-          btn
-            .setIcon(expanded ? "chevron-down" : "chevron-right")
-            .setTooltip(expanded ? t("收起分组") : t("展开分组"))
-            .onClick(() => {
-              if (this.expandedSourceGroups.has(group)) {
-                this.expandedSourceGroups.delete(group);
-              } else {
-                this.expandedSourceGroups.add(group);
-              }
-              this.display();
-            })
-        )
+        .addExtraButton((btn) => {
+          btn.setIcon(expanded ? "chevron-down" : "chevron-right");
+          setTooltip(btn.extraSettingsEl, expanded ? t("收起分组") : t("展开分组"));
+          btn.onClick(() => {
+            if (this.expandedSourceGroups.has(group)) {
+              this.expandedSourceGroups.delete(group);
+            } else {
+              this.expandedSourceGroups.add(group);
+            }
+            this.display();
+          });
+        })
         .addButton((btn) =>
           btn.setButtonText(t("重命名")).onClick(() => {
             new TextInputModal(this.app, t("重命名分组"), (name) => {
@@ -1256,15 +1366,14 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         this.display();
       })
     );
-    setting.addExtraButton((btn) =>
-      btn
-        .setIcon("ellipsis-vertical")
-        .setTooltip(t("更多操作"))
-        .onClick(() => {
-          const rect = btn.extraSettingsEl.getBoundingClientRect();
-          this.openSourceRowMenu({ x: rect.left, y: rect.bottom + 4 }, def, groupNames);
-        })
-    );
+    setting.addExtraButton((btn) => {
+      btn.setIcon("ellipsis-vertical");
+      setTooltip(btn.extraSettingsEl, t("更多操作"));
+      btn.onClick(() => {
+        const rect = btn.extraSettingsEl.getBoundingClientRect();
+        this.openSourceRowMenu({ x: rect.left, y: rect.bottom + 4 }, def, groupNames);
+      });
+    });
   }
 
   // Kebab menu of a source row. Force a DOM menu (like the canvas toolbar):
@@ -1336,6 +1445,8 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       if (credentialId && !this.plugin.pluginSettings.customSources.some((s) => s.credentialId === credentialId)) {
         new ConfirmModal(this.app, t("数据源已删除。它引用的凭据已没有其他数据源使用，是否一并删除保存的密钥？"), () => {
           this.plugin.credentials.remove(credentialId);
+          delete this.plugin.pluginSettings.credentialNames[credentialId];
+          void this.plugin.saveSettings();
         }).open();
       }
     }).open();
@@ -1663,7 +1774,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
 
   private async runStaleCacheCleanup(): Promise<void> {
     new Notice(t("正在扫描闲置数据缓存…"));
-    const used = await collectUsedCacheKeys(this.app, this.plugin.cardIndex);
+    const used = await collectUsedCacheKeys(this.app, this.plugin.cardIndex, this.plugin.pluginSettings.customSources);
     const stale = await findStaleCacheEntries(this.plugin.sqliteCache, used);
     if (stale.length === 0) {
       new Notice(t("没有发现闲置的数据缓存。"));

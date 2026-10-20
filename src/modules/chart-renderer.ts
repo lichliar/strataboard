@@ -1,4 +1,5 @@
-import { MarkdownRenderChild, Notice, setIcon, setTooltip } from "obsidian";
+import { MarkdownRenderChild, Notice, setIcon } from "obsidian";
+import { setTooltip } from "../ui/tooltip";
 import {
   createChart,
   CandlestickSeries,
@@ -700,7 +701,7 @@ export class ChartRenderer extends MarkdownRenderChild {
   private addOverlayIndicators(data: OhlcvRow[]) {
     if (this.options.indicators.length === 0 || !this.chart || !this.priceSeries) return;
     const ctx = this.indicatorContext(data);
-    for (const instance of this.options.indicators) {
+    for (const [indicatorIndex, instance] of this.options.indicators.entries()) {
       if (instance.hidden) continue;
       const computed = this.computeIndicator(instance, ctx, data);
       if (!computed) {
@@ -710,7 +711,14 @@ export class ChartRenderer extends MarkdownRenderChild {
       if (!computed.def.metadata.overlay) continue;
       try {
         const { def, inputs, adapted } = computed;
-        const renderer = new IndicatorRenderer(this.chart, { paneIndex: 0, mainSeries: this.priceSeries });
+        const overlayScaleId = def.metadata.scale === "none"
+          ? `indicator:${instance.id}:${indicatorIndex}`
+          : undefined;
+        const renderer = new IndicatorRenderer(this.chart, {
+          paneIndex: 0,
+          mainSeries: this.priceSeries,
+          overlayScaleId,
+        });
         renderer.render(
           {
             overlay: true,
@@ -722,6 +730,14 @@ export class ChartRenderer extends MarkdownRenderChild {
           ctx.renderBars,
           { inputs }
         );
+        if (overlayScaleId) {
+          // Overlay scales are used only for coordinate mapping; keep the
+          // chart's visible right axis reserved for prices.
+          this.chart.panes()[0]?.priceScale(overlayScaleId).applyOptions({
+            visible: false,
+            borderVisible: false,
+          });
+        }
         const visiblePlots = (def.plotConfig ?? []).filter((plot) => plot.display !== "none");
         for (const [plotIndex, plot] of visiblePlots.entries()) {
           const points = adapted.plots?.[plot.id];

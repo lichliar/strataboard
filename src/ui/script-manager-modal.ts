@@ -1,4 +1,5 @@
 import { App, Modal, Notice, Setting, TFile } from "obsidian";
+import { setTooltip } from "./tooltip";
 import type StrataBoardPlugin from "../main";
 import { ensureFolder } from "../modules/daily-notes";
 import { syncScriptSources } from "../modules/script-sources";
@@ -115,18 +116,16 @@ export class ScriptManagerModal extends Modal {
             : t("产物：output/{name}.csv（未注册为数据源）", { name: file.basename })
           : t("产物：尚无（运行后写入 output/{name}.csv）", { name: file.basename })
       );
-    setting.addToggle((toggle) =>
-      toggle
-        .setTooltip(t("启用/禁用脚本"))
-        .setValue(!disabled)
-        .onChange(async (value) => {
-          const list = this.plugin.pluginSettings.disabledScripts.filter((p) => p !== rel);
-          if (!value) list.push(rel);
-          this.plugin.pluginSettings.disabledScripts = list;
-          await this.plugin.saveSettings();
-          this.render();
-        })
-    );
+    setting.addToggle((toggle) => {
+      setTooltip(toggle.toggleEl, t("启用/禁用脚本"));
+      toggle.setValue(!disabled).onChange(async (value) => {
+        const list = this.plugin.pluginSettings.disabledScripts.filter((p) => p !== rel);
+        if (!value) list.push(rel);
+        this.plugin.pluginSettings.disabledScripts = list;
+        await this.plugin.saveSettings();
+        this.render();
+      });
+    });
     if (hasOutput && !outputRegistered) {
       setting.addButton((btn) =>
         btn.setButtonText(t("部署为数据源")).onClick(() => void this.deployOutput(outputPath))
@@ -134,7 +133,7 @@ export class ScriptManagerModal extends Modal {
     }
     setting.addButton((btn) => {
       btn.setButtonText(t("立即运行")).setDisabled(disabled);
-      if (disabled) btn.setTooltip(t("脚本已禁用"));
+      if (disabled) setTooltip(btn.buttonEl, t("脚本已禁用"));
       btn.onClick(() => void this.runNow(file));
     });
   }

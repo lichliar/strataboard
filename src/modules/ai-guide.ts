@@ -84,11 +84,14 @@ indicators:
 
 - \`series\`（必填，1–10 条），每条：
   - \`source\`：\`quote\`|\`card\`
-  - quote：\`tsCode\` + \`assetType: custom\` + \`sourceId\`（自定义源 id）
+  - quote：\`tsCode\` + \`assetType: custom\` + \`sourceId\`（自定义源 id）+ 可选 \`profile\`（数据源已定义的口径名；优先于符号表和源默认口径）
   - card：\`cardId\`（引用卡片库中已有**计算卡**的稳定 id，即其 YAML 里的 \`id\` 字段；改名/移动卡片文件不影响引用。引用数据卡请直接用 quote 系列——读取该数据卡的 代码/数据源 写成 quote 条目即可）
   - \`label\`：显示名覆盖（可选）；\`scale\`：视觉缩放系数（仅对比卡可用，可选）
+  - \`kind\`：值语义（可选）：\`price\`（默认，价格/指数）|\`yield\`（收益率/利率）|\`spread\`（价差/利差）|\`level\`（可跨零的一般水平值）|\`change\`（已是环比/同比/百分比变化）。**收益率、利差、同比等非价格序列必须声明**，否则两系列卡片的相关系数会按价格误算收益率。缺省顺序：series \`kind\` > 数据源 \`seriesKind\` > \`price\`；不要从口径名或代码猜测
+  - \`corr\`：相关变换覆盖（可选）：\`return\`（简单收益率）|\`diff\`（一阶差分）|\`bond\`（债券收益方向 −Δ）|\`raw\`（原值参与）|\`none\`（该系列不参与相关）。默认按 kind 推导：price→return，yield/spread/level→diff，change→raw
 - \`range\`（默认 10y）、\`period\`（\`D\`|\`M\`|\`Q\`|\`Y\` 重采样粒度，默认 D）、\`theme\`
 - \`normalize\`：\`percent\`（默认，各线按首点归一为涨跌幅）|\`zscore\`（标准化）|\`axis\`（各自独立纵轴）|\`none\`（原始值同轴）
+- \`correlation\`：\`false\` 可关闭副标题的两系列相关系数徽标（默认显示；统计的是逐期变动的相关，与图上水平线形状不同）
 - \`title\`（可选）：整体标题覆盖——写了即替代默认的「对比（名1+名2）」（及归一化等模式后缀），作用于图表标题栏、水印、导出 PNG 的文件名与图内标题
 
 \`\`\`overlay

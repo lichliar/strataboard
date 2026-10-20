@@ -1,4 +1,5 @@
 import { App, Setting, setIcon } from "obsidian";
+import { setTooltip } from "./tooltip";
 import type { IndicatorInstance } from "../types";
 import type { IndicatorDef } from "../modules/indicators/contract";
 import { indicatorRegistry } from "../modules/indicators/registry";
@@ -202,8 +203,8 @@ export class IndicatorListEditor {
       });
     };
     row.addExtraButton((btn) => {
-      btn.setIcon("arrow-up").setTooltip(t("上移"));
-      btn.extraSettingsEl.setAttribute("aria-label", t("上移"));
+      btn.setIcon("arrow-up");
+      setTooltip(btn.extraSettingsEl, t("上移"));
       if (index === 0) btn.setDisabled(true);
       onControlClick(btn, () => {
         if (index === 0) return;
@@ -212,8 +213,8 @@ export class IndicatorListEditor {
       });
     });
     row.addExtraButton((btn) => {
-      btn.setIcon("arrow-down").setTooltip(t("下移"));
-      btn.extraSettingsEl.setAttribute("aria-label", t("下移"));
+      btn.setIcon("arrow-down");
+      setTooltip(btn.extraSettingsEl, t("下移"));
       if (index === instances.length - 1) btn.setDisabled(true);
       onControlClick(btn, () => {
         if (index >= instances.length - 1) return;
@@ -222,8 +223,8 @@ export class IndicatorListEditor {
       });
     });
     row.addExtraButton((btn) => {
-      btn.setIcon(instance.hidden ? "eye-off" : "eye").setTooltip(instance.hidden ? t("显示指标") : t("隐藏指标"));
-      btn.extraSettingsEl.setAttribute("aria-label", instance.hidden ? t("显示指标") : t("隐藏指标"));
+      btn.setIcon(instance.hidden ? "eye-off" : "eye");
+      setTooltip(btn.extraSettingsEl, instance.hidden ? t("显示指标") : t("隐藏指标"));
       onControlClick(btn, () => {
         if (instance.hidden) {
           delete instance.hidden;

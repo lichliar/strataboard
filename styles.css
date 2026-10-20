@@ -466,6 +466,51 @@ body.theme-dark {
   color: var(--fc-muted);
 }
 
+/* Shared action tooltip (src/ui/tooltip.ts) — replaces Obsidian's native
+   tooltips for every setTooltip call site. Lives under <html> with fixed
+   positioning (outside any transformed body subtree; theme variables are
+   copied inline at show time) and re-anchors to its owner element every
+   animation frame, so it tracks toolbar drags / canvas pan-zoom and dies
+   with the owner instead of drifting. Entry animation: 160ms fade + 3px
+   rise (spec 09: 300–500ms delay handled in JS, 150–180ms motion here). */
+.fc-tooltip {
+  position: fixed;
+  /* Above modals (same layer as Obsidian's native tooltips). */
+  z-index: var(--layer-tooltip, 70);
+  width: max-content;
+  max-width: 300px;
+  padding: 4px 8px;
+  border-radius: var(--fc-radius-sm);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  box-shadow: var(--fc-shadow-md);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  /* Preserve the \n in multi-line tooltip texts (health badges). */
+  white-space: pre-line;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 160ms ease-out, transform 160ms ease-out;
+}
+
+.fc-tooltip.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+/* prefers-reduced-motion: keep the tooltip, drop the decorative motion
+   (opacity-only transition is also motion — cut the transition entirely). */
+@media (prefers-reduced-motion: reduce) {
+  .fc-tooltip {
+    transition: none;
+    transform: none;
+  }
+}
+
 /* ===== Unified card edit modal (wireframe #screen-unified) ===== */
 
 /* Sub-page tabs (基础设置 / 显示设置 / 技术指标). */
@@ -3202,6 +3247,23 @@ body.theme-dark {
 .fc-ai-diff-key {
   color: var(--fc-muted);
   flex: none;
+}
+.fc-ai-evidence,
+.fc-ai-clarifications {
+  margin: 8px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--fc-radius-sm);
+}
+.fc-ai-evidence summary {
+  cursor: pointer;
+  color: var(--fc-muted);
+}
+.fc-ai-clarification {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  line-height: 1.5;
 }
 .fc-ai-probe-result {
   font-size: 11px;

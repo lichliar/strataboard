@@ -236,6 +236,7 @@ export async function createRenderRuntime(vault: string, settings: CliSettings):
     deps: {
       dataAdapter,
       seriesAdapter,
+      customSources: settings.customSources ?? [],
       lookupSymbol: (symbol, assetType, sourceId) =>
         cache
           .lookupSymbol(symbol, cacheAssetKey(assetType, sourceId))
@@ -246,6 +247,7 @@ export async function createRenderRuntime(vault: string, settings: CliSettings):
         showSeriesPointMarkers: settings.showSeriesPointMarkers,
         showChartGrid: settings.showChartGrid,
         gridOpacity: settings.gridOpacity,
+        showOverlayCorrelation: settings.showOverlayCorrelation,
         riseColor: settings.riseColor,
         fallColor: settings.fallColor,
       },
