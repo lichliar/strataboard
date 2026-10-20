@@ -6,5 +6,6 @@
 	"description": "Insert financial data cards onto Canvas: quotes, macro series, overlays and widgets",
 	"author": "izzy",
 	"authorUrl": "https://github.com/lichliar",
+	"fundingUrl": "https://github.com/lichliar/strataboard#support",
 	"isDesktopOnly": true
 }

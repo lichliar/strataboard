@@ -76,3 +76,16 @@
 
 ## License
 MIT（见 [LICENSE](LICENSE)）。第三方依赖的许可见 [THIRD-PARTY-LICENSES.md](docs/THIRD-PARTY-LICENSES.md)；两份文件也会作为 Release 附件发布，许可证文本同时嵌入各 JavaScript bundle。
+
+<a id="support" name="support"></a>
+
+## 支持这个项目
+
+StrataBoard 以 MIT 许可证免费开放，无广告、无遥测，也不锁定任何功能。如果它帮你省下了时间，欢迎请我喝杯奶茶——打赏纯属自愿，不解锁额外功能，也不影响你使用完整插件。
+
+| 微信赞赏 | 支付宝赞赏 |
+| :---: | :---: |
+| <img src="docs/赞赏/微信赞赏码.jpg" width="240" alt="微信赞赏码"> | <img src="docs/赞赏/支付宝赞赏码.jpg" width="240" alt="支付宝赞赏码"> |
+
+- 数据源接入、企业部署、培训等合作：欢迎在 [Issues](https://github.com/lichliar/strataboard/issues) 留言。
+- 也欢迎提交 Issue / PR、补充文档，或分享你的使用案例。
