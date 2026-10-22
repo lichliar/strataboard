@@ -71,16 +71,13 @@
 
 ## 免责声明
 
-- 本插件代码依据 MIT 许可证发布，可在许可证范围内使用（包括商业使用）；本插件**不内置任何数据源**，也不授予任何第三方数据或内容的使用权。
-- 第三方数据能否用于商业用途、缓存、展示、导出或再分发，以相应来源的许可证、服务条款及你取得的授权为准。
-- 本插件展示的内容**不构成任何投资建议**。
-- 除你自行配置的数据接口、AI 助手接口与 TradingView 组件外，插件不会向任何服务器发送数据。API Key 保存在 Obsidian 的 SecretStorage 中，插件 `data.json` 只保存凭据引用、不含密钥本身；CLI/MCP 通过你显式设置的环境变量获得密钥。密钥仅发送到你配置的对应接口。缓存数据保存在 vault 本地。
-- TradingView 是独立的第三方服务，与本插件及 Obsidian 均无隶属或背书关系；TradingView 组件的内容由其官方提供并受其服务条款与隐私政策约束。
-
-完整版见 [免责声明](docs/免责声明.md)。
+- 本插件是金融数据汇总、统计与图表展示工具，不提供投资咨询、选股、择时或买卖点建议，不生成或推荐买卖信号；展示内容**不构成任何投资建议**。
+- 插件仅在你使用对应功能时，向你自行配置的数据接口、AI 接口和 TradingView 发起请求，不会向作者或其他服务器发送数据。
+- 插件代码以 MIT 许可证发布；第三方数据与组件的使用范围，以相应提供方的许可证、服务条款及你取得的授权为准。
+- 完整条款见[免责声明](docs/免责声明.md)。
 
 ## License
-MIT（见 [LICENSE](LICENSE)）。第三方依赖的许可见 [THIRD-PARTY-LICENSES.md](docs/THIRD-PARTY-LICENSES.md)；两份文件也会作为 Release 附件发布，许可证文本同时嵌入各 JavaScript bundle。
+MIT（见 [LICENSE](LICENSE)）。第三方依赖的许可见 [THIRD-PARTY-LICENSES.md](docs/THIRD-PARTY-LICENSES.md)。
 
 <a id="support" name="support"></a>
 
