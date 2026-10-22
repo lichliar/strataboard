@@ -78,8 +78,7 @@ export function setTooltip(el: HTMLElement, text: string | null | undefined, opt
   el.setAttribute("aria-label", text);
   if (options?.placement) el.setAttribute(PLACEMENT_ATTR, options.placement);
   if (options?.delay !== undefined) el.setAttribute(DELAY_ATTR, String(options.delay));
-  // Text updated while the tooltip is already showing (e.g. the toolbar logo
-  // toggling 展开/折叠) refreshes in place.
+  // Text updated while the tooltip is already showing refreshes in place.
   if (anchorEl === el && tipEl) {
     tipEl.textContent = text;
     position();

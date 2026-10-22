@@ -4,7 +4,6 @@ import type StrataBoardPlugin from "../main";
 import { ensureFolder } from "../modules/daily-notes";
 import { syncScriptSources } from "../modules/script-sources";
 import { MAX_OUTPUT_CHARS, SCRIPT_TIMEOUT_MS } from "../modules/script-runner";
-import { openSettingsTab } from "../settings";
 import { normalizePath } from "../utils/slug";
 import { t } from "../i18n";
 
@@ -16,9 +15,7 @@ import { t } from "../i18n";
 // status; an output that exists but is not registered as a source gets a
 // 部署为数据源 button (force-registers it via syncScriptSources). Scripts are
 // created outside the plugin (by the user or their AI) — there is no 新建
-// 脚本 button. The log area shows stdout/stderr of manual runs verbatim. The
-//「AI 助手」entry is just a jump button to the settings tab holding the
-// copyable script-writing prompt (single source of truth).
+// 脚本 button. The log area shows stdout/stderr of manual runs verbatim.
 
 export class ScriptManagerModal extends Modal {
   private logEl: HTMLElement | null = null;
@@ -71,7 +68,7 @@ export class ScriptManagerModal extends Modal {
     if (scripts.length === 0) {
       contentEl.createDiv({
         cls: "fc-field-hint",
-        text: t("脚本文件夹中还没有 Python 脚本：可在右栏 AI 助手中生成脚本草稿，确认保存后放入该文件夹即可，支持用子文件夹归类；脚本把结果 CSV 写入 output/ 子目录即可在卡片中使用。"),
+        text: t("脚本文件夹中还没有 Python 脚本：自行编写或用 AI 编写后放入该文件夹即可，支持用子文件夹归类；脚本把结果 CSV 写入 output/ 子目录即可在卡片中使用。"),
       });
     }
     // Group by subfolder: root scripts first, then one section per subfolder.
@@ -88,8 +85,6 @@ export class ScriptManagerModal extends Modal {
       contentEl.createDiv({ cls: "fc-script-folder-header", text: dir });
       for (const file of files) this.renderScriptRow(contentEl, file);
     }
-
-    this.renderAiSection(contentEl);
 
     contentEl.createDiv({ cls: "fc-field-hint", text: t("运行日志") });
     this.logEl = contentEl.createEl("pre", {
@@ -148,20 +143,6 @@ export class ScriptManagerModal extends Modal {
         : t("注册失败：产物文件暂无法解析。")
     );
     this.render();
-  }
-
-  // ===== AI 助手 (jump button; the copyable prompt lives in settings) =====
-
-  private renderAiSection(containerEl: HTMLElement) {
-    new Setting(containerEl)
-      .setName(t("AI 助手"))
-      .setDesc(t("在右栏 AI 助手中描述脚本需求；生成的代码仍需你确认后保存和运行。"))
-      .addButton((btn) =>
-        btn.setButtonText(t("前往 AI 助手")).onClick(() => {
-          this.close();
-          openSettingsTab(this.app, "external-ai");
-        })
-      );
   }
 
   private appendLog(text: string) {

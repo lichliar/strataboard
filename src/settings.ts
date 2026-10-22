@@ -7,7 +7,6 @@ import { t, setLanguage, type Language } from "./i18n";
 import { FolderPathSelect } from "./ui/folder-suggester";
 import { CleanupConfirmModal } from "./ui/cleanup-modal";
 import { ConfirmModal } from "./ui/confirm-modal";
-import { AiCopyPreviewModal } from "./ui/ai-copy-preview-modal";
 import { TextInputModal } from "./ui/text-input-modal";
 import { CustomSourceModal } from "./ui/custom-source-modal";
 import { CsvSourceModal } from "./ui/csv-source-modal";
@@ -32,6 +31,7 @@ import {
   type CardRefScanResult,
 } from "./modules/card-ref-migration";
 import { syncIndicatorFiles, getIndicatorLoadErrors, getUnapprovedIndicators } from "./modules/indicators/loader";
+import { syncIndicatorGroupToCards } from "./modules/indicator-group-sync";
 import { getIndicatorRuntimeErrors } from "./modules/indicators/compute";
 import { indicatorRegistry } from "./modules/indicators/registry";
 import { ensureFolder } from "./modules/daily-notes";
@@ -42,33 +42,6 @@ import { formatDateTime } from "./utils/date";
 import { ChoiceModal } from "./ui/choice-modal";
 import { paletteColor } from "./modules/toolbar";
 import { clearSourceHealth, getSourceHealth } from "./modules/source-health";
-import { newCredentialId } from "./modules/credentials";
-import { evaluateUrl } from "./utils/url-policy";
-import { redactError } from "./modules/redact";
-import { CREDENTIAL_NEW, renderCredentialField } from "./ui/credential-field";
-import { chatCompletion, isAiConfigured } from "./modules/ai/client";
-
-// One-click MCP/CLI setup prompt (AI 助手 tab): the user pastes it into
-// their own AI agent, which locates the vault itself and registers the MCP
-// server in its own config — that way the settings tab never has to display
-// the machine-local paths. The EN translation lives in i18n.ts under this
-// exact string as key; keep the two in sync.
-export const MCP_SETUP_PROMPT = `请帮我把 Obsidian 插件 StrataBoard 的 MCP server 配置好，之后你就可以直接调用它的工具了。
-
-背景：StrataBoard 是一个 Obsidian 数据卡片插件，附带一个 MCP stdio server（需要 Node 18+），入口文件是 <vault根目录>/.obsidian/plugins/strataboard/mcp-server.js。它提供这些工具：search_symbols / list_sources / validate_cards / probe_data / get_card_guide。
-
-请按以下步骤操作：
-1. 确定我的 vault 根目录：如果当前工作目录在某个 Obsidian vault 内（向上查找包含 .obsidian 目录的位置）就直接用它；找不到就问我，不要猜。
-2. 确认 mcp-server.js 已就位：检查 <vault根目录>/.obsidian/plugins/strataboard/ 下是否存在 mcp-server.js 和 cli.js。它们是可选文件，插件不会自行下载或更新；文件不存在时，打开 https://github.com/lichliar/strataboard/releases ，找到与插件版本号完全一致的 release（版本号见 Obsidian 设置 → StrataBoard → 高级 →「诊断与运行环境」中的「插件版本」），下载 mcp-server.js 和 cli.js，手动放进插件目录。
-   两个文件确认就位之前不要继续下一步。
-3. 按你的客户端注册名为 strataboard 的 MCP server：command 为 node，args 为 ["<vault根目录>/.obsidian/plugins/strataboard/mcp-server.js", "--vault", "<vault根目录>"]（也可以用环境变量 STRATABOARD_VAULT 传 vault 路径）。
-   - Codex：写入 ~/.codex/config.toml 的 [mcp_servers.strataboard]；
-   - Claude Code：执行 claude mcp add，或编辑对应的配置文件；
-   - 其它客户端：用它自己的 MCP 配置方式写入等价的 JSON。
-4. 写完后把最终配置内容给我看一遍，并告诉我是否需要重启或重载客户端才能生效。
-5. 如果 MCP 始终不可用，改用插件附带的 CLI：node "<vault根目录>/.obsidian/plugins/strataboard/cli.js" <命令> --vault "<vault根目录>"，命令有 search / sources / validate / probe。
-
-用我使用的语言与我交流，遇到拿不准的地方先问我再动手。`;
 
 // Human-readable byte size for the 诊断与运行环境 cache rows.
 function formatBytes(bytes: number): string {
@@ -91,17 +64,6 @@ export interface StrataBoardSettings {
   // Unified search pick history: the sensitive minimum (name/code/source id
   // only), newest first.
   searchHistory: { name: string; tsCode: string; sourceId?: string }[];
-  // 插件内 AI（BYOK）: user-configured OpenAI-compatible endpoint + model for
-  // the in-plugin assistant (modules/ai/client.ts). undefined = 未配置; the
-  // API key lives in SecretStorage behind credentialId, never in data.json.
-  aiAssistant?: {
-    baseUrl: string;
-    model: string;
-    credentialId?: string;
-    timeoutMs?: number;
-    maxResponseChars?: number;
-    maxRevisionRounds?: number;
-  };
   // 凭据命名: user-given labels for SecretStorage credentials, keyed by
   // credentialId. Not a secret — shown in the credential picker dropdown.
   credentialNames: Record<string, string>;
@@ -136,9 +98,10 @@ export interface StrataBoardSettings {
   // unapproved files are never loaded or executed.
   approvedIndicatorHashes: Record<string, string>;
   indicatorOverrides: Record<string, { name?: string; description?: string; defaultInputs?: Record<string, unknown> }>;
-  // 指标 → 指标组: named bundles of indicator instances. Settings-level
-  // only — applying a group to a card expands it into the card's own
-  // indicators list; cards never reference groups.
+  // 指标 → 指标组: named bundles of indicator instances. Applying a group to
+  // a card expands it into the card's own indicators list with a card-local
+  // group label; edits here are synced back to those cards (see
+  // modules/indicator-group-sync.ts).
   indicatorGroups: IndicatorGroup[];
   // 指标: global switch for the overlay (compare) card correlation badge.
   // Off hides the badge everywhere; a card can still opt out individually
@@ -155,7 +118,6 @@ export interface StrataBoardSettings {
   toolbarPosition: ToolbarPosition;
   toolbarOffsetX: number;
   toolbarOffsetY: number;
-  toolbarCollapsed: boolean;
   // One-shot UI hints, persisted once shown so they never reappear.
   toolbarHintShown: boolean;
   chartModeHintShown: boolean;
@@ -220,7 +182,6 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   toolbarPosition: "bottom-left",
   toolbarOffsetX: 16,
   toolbarOffsetY: 16,
-  toolbarCollapsed: false,
   toolbarHintShown: false,
   chartModeHintShown: false,
   requestIntervalMs: 1000,
@@ -245,7 +206,7 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   chartThemeDefault: "obsidian",
 };
 
-type SettingsTabId = "general" | "data-sources" | "indicators" | "external-ai" | "advanced";
+type SettingsTabId = "general" | "data-sources" | "indicators" | "advanced";
 
 // Optional hasContent lets a tab hide itself when it would render nothing;
 // every tab currently has content, but empty shells never reach the tabbar.
@@ -253,13 +214,11 @@ const SETTINGS_TABS: { id: SettingsTabId; label: string; hasContent?: () => bool
   { id: "general", label: "通用" },
   { id: "data-sources", label: "数据源" },
   { id: "indicators", label: "指标" },
-  { id: "external-ai", label: "AI 助手" },
   { id: "advanced", label: "高级" },
 ];
 
 // Set by openSettingsTab and consumed by the next display() so the settings
-// window opens directly on the requested tab (e.g. AI 助手 from the
-// custom-source modal's AI section).
+// window opens directly on the requested tab.
 let pendingTab: SettingsTabId | null = null;
 
 export function openSettingsTab(app: App, tab: SettingsTabId): void {
@@ -267,13 +226,11 @@ export function openSettingsTab(app: App, tab: SettingsTabId): void {
   openPluginSettings(app, "strataboard");
 }
 
-// Opens the source dialog prefilled with a draft — the single save path for
-// both the settings page's own 添加/编辑 buttons and the AI panel's
-// add-source / fix-source proposals (W08). A draft WITHOUT an id opens as a
-// new source (the dialog mints the id itself); one WITH an id edits that
-// source (upsert replaces by id on save). format "csv" routes to the CSV
-// dialog. The AI never writes settings directly: saving still runs through
-// the dialog's own probe/validation/credential UI.
+// Opens the source dialog for the settings page's 添加/编辑 buttons. A draft
+// WITHOUT an id opens as a new source (the dialog mints the id itself); one
+// WITH an id edits that source (upsert replaces by id on save). format "csv"
+// routes to the CSV dialog. Saving runs through the dialog's own
+// probe/validation/credential UI.
 export function openPrefilledSourceModal(
   app: App,
   plugin: StrataBoardPlugin,
@@ -318,7 +275,6 @@ export function openPrefilledSourceModal(
     app,
     draft,
     onSubmit,
-    () => openSettingsTab(app, "external-ai"),
     plugin.pluginSettings.customSources,
     plugin.credentials,
     plugin.pluginSettings.credentialNames,
@@ -329,8 +285,7 @@ export function openPrefilledSourceModal(
         origin,
       ];
       await plugin.saveSettings();
-    },
-    (task) => void plugin.openAiPanel(task)
+    }
   ).open();
 }
 
@@ -385,9 +340,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         break;
       case "indicators":
         this.renderIndicatorSettings(contentEl);
-        break;
-      case "external-ai":
-        this.renderExternalAiSettings(contentEl);
         break;
       case "advanced":
         this.renderAdvancedSettings(contentEl);
@@ -580,6 +532,8 @@ export class StrataBoardSettingTab extends PluginSettingTab {
 
     // 指标组: named bundles of indicators, applied to a card in one click
     // from the card edit modal (expanded into plain instances on apply).
+    // Editing a group here syncs the new definition to every card that
+    // carries its label; deleting a group leaves cards untouched.
     const groupDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
     groupDetails.createEl("summary", { text: t("指标组") });
 
@@ -726,18 +680,36 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     input.click();
   }
 
-  // 指标组 新建/编辑弹窗; on submit the group is upserted by id.
+  // 指标组 新建/编辑弹窗; on submit the group is upserted by id. Edits are
+  // then synced to every card carrying the group's label (renames included).
   private openIndicatorGroupModal(group: IndicatorGroup | null): void {
     new IndicatorGroupModal(this.app, group, (result) => {
       const groups = this.plugin.pluginSettings.indicatorGroups;
       const index = groups.findIndex((g) => g.id === result.id);
+      const previousName = index >= 0 ? groups[index].name : undefined;
       if (index >= 0) {
         groups[index] = result;
       } else {
         groups.push(result);
       }
       void this.plugin.saveSettings().then(() => this.display());
+      if (index >= 0) {
+        void this.syncGroupToCards(result, previousName);
+      }
     }).open();
+  }
+
+  // Pushes an edited group into every card that carries its label, with a
+  // summary Notice when at least one card file was rewritten.
+  private async syncGroupToCards(group: IndicatorGroup, previousName?: string): Promise<void> {
+    const result = await syncIndicatorGroupToCards(
+      this.app,
+      group,
+      previousName !== group.name ? previousName : undefined
+    );
+    if (result.filesChanged > 0) {
+      new Notice(t("已同步 {n} 张卡片中的指标组「{name}」。", { n: result.filesChanged, name: group.name }));
+    }
   }
 
   // 导入: pick a local .json file of indicator groups; same-name entries
@@ -754,11 +726,19 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       void (async () => {
         try {
           const { groups, warnings } = parseImportedGroups(await file.text());
-          const { updated, added } = mergeImportedGroups(this.plugin.pluginSettings.indicatorGroups, groups);
+          const { updated, added, updatedGroups } = mergeImportedGroups(this.plugin.pluginSettings.indicatorGroups, groups);
           await this.plugin.saveSettings();
           new Notice(t("导入成功：更新 {updated} 个、新增 {added} 个指标组。", { updated, added }));
           for (const warning of warnings.slice(0, 5)) new Notice(warning, 8000);
           if (warnings.length > 5) new Notice(t("另有 {n} 条导入警告未显示。", { n: warnings.length - 5 }));
+          // Name-overwritten groups are edits — sync them to cards too.
+          let filesChanged = 0;
+          for (const group of updatedGroups) {
+            filesChanged += (await syncIndicatorGroupToCards(this.app, group)).filesChanged;
+          }
+          if (filesChanged > 0) {
+            new Notice(t("已同步 {n} 张卡片中被导入覆盖的指标组。", { n: filesChanged }));
+          }
         } catch {
           new Notice(t("导入失败：内容不是有效的指标组配置。"));
         }
@@ -877,260 +857,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       "无担保与责任限制",
       "本插件按\"现状\"提供，作者不作任何明示或默示的担保。在适用法律允许的最大范围内，作者不对因使用或无法使用本插件而产生的任何直接或间接损失承担责任。"
     );
-  }
-
-  // AI 助手 tab layout: first the 插件内 AI（BYOK）block (user-configured
-  // OpenAI-compatible endpoint for the in-plugin assistant, modules/ai/),
-  // then the external-agent material — MCP/CLI connection snippets only.
-  // Task prompts are embedded in the in-plugin assistant and remain available
-  // to MCP guide tools; they are not duplicated in this settings tab.
-  private renderExternalAiSettings(containerEl: HTMLElement): void {
-    this.renderByokSettings(containerEl);
-    // Placeholder standing in for the vault root everywhere a snippet would
-    // otherwise embed the real (private) absolute path. The plugin id itself
-    // is public, so only the vault part is masked.
-    const pluginDir = `<vault路径>/.obsidian/plugins/${this.plugin.manifest.id}`;
-
-    const accessDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    accessDetails.createEl("summary", { text: t("接入 StrataBoard MCP / CLI") });
-    accessDetails.createDiv({
-      cls: "fc-field-hint",
-      text: t("最省事的方式：复制「一键配置提示词」发给你的 AI agent，它会自动定位 vault 路径并完成注册；下方配置片段供手动配置，把 <vault路径> 换成你的 vault 根目录。"),
-    });
-    this.addCodeSnippet(accessDetails, t("一键配置提示词（复制给你的 AI）"), t(MCP_SETUP_PROMPT));
-    this.addCodeSnippet(
-      accessDetails,
-      t("Codex（~/.codex/config.toml）"),
-      `[mcp_servers.strataboard]\ncommand = "node"\nargs = ["${pluginDir}/mcp-server.js", "--vault", "<vault路径>"]`
-    );
-    this.addCodeSnippet(
-      accessDetails,
-      t("其他 agent（Claude Code 等，JSON 配置）"),
-      JSON.stringify(
-        { mcpServers: { strataboard: { command: "node", args: [`${pluginDir}/mcp-server.js`, "--vault", "<vault路径>"] } } },
-        null,
-        2
-      )
-    );
-    this.addCodeSnippet(
-      accessDetails,
-      t("CLI 命令（MCP 不可用时的替代）"),
-      `node ${pluginDir}/cli.js <命令> [--vault <vault路径>]\n\nsearch / sources / validate / probe`
-    );
-    accessDetails.createDiv({
-      cls: "fc-field-hint",
-      text: t("提供工具：search_symbols / list_sources / validate_cards / probe_data / get_card_guide。"),
-    });
-    accessDetails.createDiv({
-      cls: "fc-field-hint",
-      text: t("所有命令输出 JSON，适合脚本与 agent 调用；--vault 缺省时读环境变量 STRATABOARD_VAULT，再从当前目录向上查找含 .obsidian 的目录。"),
-    });
-
-    accessDetails.createDiv({
-      cls: "fc-field-hint",
-      text: t("数据源、卡片、指标和脚本任务的提示词已内置在插件内 AI 助手中；MCP 客户端可按需调用对应 guide 工具获取契约。"),
-    });
-  }
-
-  // 插件内 AI（BYOK）: user-configured OpenAI-compatible endpoint + model for
-  // the in-plugin assistant (modules/ai/client.ts). baseUrl/model save on
-  // change; the API key lives in SecretStorage behind aiAssistant.credentialId
-  // (credential seam) — minted/rotated immediately on edit, never written to
-  // data.json. The URL policy (utils/url-policy.ts) is checked on blur and
-  // before 测试连接; plaintext loopback needs the same per-origin
-  // confirmation as data sources.
-  private renderByokSettings(containerEl: HTMLElement): void {
-    const details = containerEl.createEl("details", { cls: "fc-settings-sub" });
-    details.setAttr("open", "");
-    details.createEl("summary", { text: t("插件内 AI（BYOK）") });
-    details.createDiv({
-      cls: "fc-field-hint",
-      text: t("数据接收方是你填写的服务商地址；API Key 只存系统密钥库（SecretStorage），不写入插件数据文件；费用由服务商决定；清空地址与模型并删除凭据即完全关闭。协议为 OpenAI-compatible Chat Completions，不保证所有服务兼容。"),
-    });
-
-    const aiAssistant = () => (this.plugin.pluginSettings.aiAssistant ??= { baseUrl: "", model: "" });
-
-    new Setting(details)
-      .setName(t("接口地址（Base URL）"))
-      .setDesc(t("OpenAI-compatible 服务的根地址，请求发往其 /chat/completions；留空即关闭插件内 AI。"))
-      .addText((text) => {
-        text
-          .setPlaceholder("https://api.example.com/v1")
-          .setValue(aiAssistant().baseUrl)
-          .onChange(async (value) => {
-            aiAssistant().baseUrl = value.trim();
-            await this.plugin.saveSettings();
-          });
-        text.inputEl.addClass("fc-mono");
-        text.inputEl.addEventListener("blur", () => {
-          const url = aiAssistant().baseUrl;
-          if (!url) return;
-          const verdict = evaluateUrl(url, this.plugin.pluginSettings.allowedLoopbackHttpOrigins);
-          if (verdict.kind === "reject") {
-            new Notice(verdict.reason, 10000);
-            aiAssistant().baseUrl = "";
-            text.setValue("");
-            void this.plugin.saveSettings();
-            return;
-          }
-          if (verdict.kind === "warn-private") {
-            new Notice(t("高风险：目标地址 {host} 指向私网/链路本地地址，请确认这是你有权访问的自有服务。", { host: verdict.host }), 8000);
-            return;
-          }
-          if (verdict.kind === "loopback-http") {
-            const origin = verdict.origin;
-            new ConfirmModal(
-              this.app,
-              t("AI 服务将用明文 http 访问本机地址 {origin}。仅在确认这是你自己的服务时允许；允许后该地址会加入本机明文允许清单。", { origin }),
-              () => void this.allowLoopbackHttpOrigin(origin)
-            ).open();
-          }
-        });
-      });
-
-    new Setting(details)
-      .setName(t("模型名"))
-      .setDesc(t("服务商处的模型名称，如 gpt-4o-mini、deepseek-chat。"))
-      .addText((text) =>
-        text
-          .setPlaceholder("gpt-4o-mini")
-          .setValue(aiAssistant().model)
-          .onChange(async (value) => {
-            aiAssistant().model = value.trim();
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(details)
-      .setName(t("请求超时（秒）"))
-      .setDesc(t("单次模型请求的最长等待时间，范围 10～120 秒。"))
-      .addText((text) => {
-        text.inputEl.type = "number";
-        text.setValue(String(Math.round((aiAssistant().timeoutMs ?? 90_000) / 1000)));
-        text.onChange(async (value) => {
-          const parsed = Number(value);
-          const seconds = Math.min(120, Math.max(10, Number.isFinite(parsed) && value.trim() !== "" ? parsed : 90));
-          aiAssistant().timeoutMs = seconds * 1000;
-          await this.plugin.saveSettings();
-        });
-      });
-
-    new Setting(details)
-      .setName(t("最大响应字符数"))
-      .setDesc(t("超过此大小的模型响应会被拒绝，范围 10,000～200,000。"))
-      .addText((text) => {
-        text.inputEl.type = "number";
-        text.setValue(String(aiAssistant().maxResponseChars ?? 200_000));
-        text.onChange(async (value) => {
-          const parsed = Number(value);
-          const chars = Math.min(200_000, Math.max(10_000, Number.isFinite(parsed) && value.trim() !== "" ? parsed : 200_000));
-          aiAssistant().maxResponseChars = chars;
-          await this.plugin.saveSettings();
-        });
-      });
-
-    new Setting(details)
-      .setName(t("最大修订轮数"))
-      .setDesc(t("同一任务允许的模型修订次数，范围 0～5。"))
-      .addText((text) => {
-        text.inputEl.type = "number";
-        text.setValue(String(aiAssistant().maxRevisionRounds ?? 2));
-        text.onChange(async (value) => {
-          const parsed = Number(value);
-          aiAssistant().maxRevisionRounds = Math.min(5, Math.max(0, Number.isFinite(parsed) && value.trim() !== "" ? parsed : 2));
-          await this.plugin.saveSettings();
-        });
-      });
-
-    // Credential picker shared with the source dialog (ui/credential-field.ts);
-    // unlike the dialog (which persists on 保存), every change here writes
-    // through immediately: 新建凭据… mints an id on the first non-empty
-    // secret, an existing id + new secret rotates it, 不配置凭据 clears the
-    // reference. Name edits land in pluginSettings.credentialNames.
-    let pendingNewCredentialId: string | undefined;
-    const credentialNames = this.plugin.pluginSettings.credentialNames;
-    const applyCredentialName = (id: string | undefined, pendingName: string | undefined) => {
-      if (!id || id === CREDENTIAL_NEW) return;
-      const name = pendingName?.trim() ?? "";
-      if (name) credentialNames[id] = name;
-      else delete credentialNames[id];
-    };
-    renderCredentialField(details, {
-      credentials: this.plugin.credentials,
-      selectedId: this.plugin.pluginSettings.aiAssistant?.credentialId,
-      names: credentialNames,
-      desc: () =>
-        t("密钥保存在 Obsidian SecretStorage，不写入 data.json；仅作为 Authorization 头发送到你配置的服务商地址。"),
-      onChange: (sel) => {
-        const settings = aiAssistant();
-        if (!sel.id) {
-          settings.credentialId = undefined;
-        } else if (sel.id === CREDENTIAL_NEW) {
-          const secret = sel.pendingSecret?.trim() ?? "";
-          if (secret) {
-            pendingNewCredentialId ??= newCredentialId();
-            this.plugin.credentials.set(pendingNewCredentialId, secret);
-            settings.credentialId = pendingNewCredentialId;
-            applyCredentialName(pendingNewCredentialId, sel.pendingName);
-          } else {
-            settings.credentialId = undefined;
-          }
-        } else {
-          settings.credentialId = sel.id;
-          const rotated = sel.pendingSecret?.trim() ?? "";
-          if (rotated) this.plugin.credentials.set(sel.id, rotated);
-          applyCredentialName(sel.id, sel.pendingName);
-        }
-        void this.plugin.saveSettings();
-      },
-    });
-
-    new Setting(details)
-      .setName(t("测试连接"))
-      .setDesc(t("以当前配置发送一条最小请求，验证地址、模型与凭据是否可用；失败信息经脱敏后显示。"))
-      .addButton((btn) =>
-        btn.setButtonText(t("测试连接")).onClick(async () => {
-          const settings = this.plugin.pluginSettings.aiAssistant;
-          if (!settings || !isAiConfigured(settings)) {
-            new Notice(t("请先填写接口地址与模型名。"));
-            return;
-          }
-          btn.setDisabled(true);
-          try {
-            const apiKey = settings.credentialId
-              ? this.plugin.credentials.get(settings.credentialId) ?? undefined
-              : undefined;
-            // The ping message mentions JSON on purpose: providers in strict
-            // json_object mode reject requests whose messages lack the word.
-            await chatCompletion({
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              apiKey,
-              timeoutMs: settings.timeoutMs,
-              maxResponseChars: settings.maxResponseChars,
-            }, [
-              { role: "user", content: t("请用 JSON 回复 {\"ok\":true}") },
-            ]);
-            new Notice(t("连接成功"));
-          } catch (e) {
-            new Notice(t("连接失败：{msg}", { msg: redactError(e) }), 10000);
-          } finally {
-            btn.setDisabled(false);
-          }
-        })
-      );
-  }
-
-  // Monospace snippet block with a copy button (MCP/CLI config fragments).
-  private addCodeSnippet(container: HTMLElement, label: string, code: string): void {
-    const block = container.createDiv("fc-code-snippet");
-    const head = block.createDiv("fc-code-snippet-head");
-    head.createSpan({ text: label });
-    const copyBtn = head.createEl("button", { text: t("复制") });
-    copyBtn.addEventListener("click", () => {
-      new AiCopyPreviewModal(this.app, code).open();
-    });
-    block.createEl("pre", { cls: "fc-mono", text: code });
   }
 
   // 自定义数据源 management: the plugin ships no data sources — each entry
@@ -1469,18 +1195,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
       : t("凭据：已设置");
   }
 
-  // Persist a user-confirmed plaintext-loopback origin (URL policy,
-  // utils/url-policy.ts); shared by the source dialog and the BYOK block.
-  private allowLoopbackHttpOrigin = async (origin: string): Promise<void> => {
-    this.plugin.pluginSettings.allowedLoopbackHttpOrigins = [
-      ...this.plugin.pluginSettings.allowedLoopbackHttpOrigins.filter((o) => o !== origin),
-      origin,
-    ];
-    await this.plugin.saveSettings();
-  };
-
-  // Both entry points delegate to the shared prefilled-modal helper above, so
-  // the settings buttons and the AI panel's proposals share one save path
+  // Both entry points delegate to the shared source-modal helper above
   // (upsert by id) and one probe/credential UI.
   private openCustomSourceModal(def?: CustomSourceDef): void {
     openPrefilledSourceModal(this.app, this.plugin, def, () => this.display());
@@ -2054,7 +1769,6 @@ export class StrataBoardSettingTab extends PluginSettingTab {
         settings.toolbarPosition = "bottom-left";
         settings.toolbarOffsetX = 0;
         settings.toolbarOffsetY = 0;
-        settings.toolbarCollapsed = false;
         await this.plugin.saveSettings();
         this.plugin.toolbar.reload();
       })

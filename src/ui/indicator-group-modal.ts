@@ -7,8 +7,9 @@ import { t } from "../i18n";
 
 // 指标组 edit modal (设置 → 指标 → 指标组 → 新建/编辑): name + Markdown
 // design note (with live preview) + the shared indicator-instance list editor.
-// A group is a settings-level concept only; applying it to a card expands it
-// into plain IndicatorInstance[] in the card YAML.
+// Applying a group to a card expands it into plain IndicatorInstance[] in the
+// card YAML; saving an edit here syncs the group back to those cards (the
+// caller in settings.ts runs modules/indicator-group-sync.ts).
 export class IndicatorGroupModal extends Modal {
   private name: string;
   private note: string;
@@ -175,19 +176,25 @@ export function parseImportedGroups(text: string): { groups: IndicatorGroup[]; w
 // Merges freshly imported groups into the existing list BY NAME: an entry
 // whose name matches an existing group overwrites it (keeping the existing
 // id), anything else appends. Re-importing a corrected config therefore
-// updates in place instead of duplicating every group.
-export function mergeImportedGroups(existing: IndicatorGroup[], groups: IndicatorGroup[]): { updated: number; added: number } {
+// updates in place instead of duplicating every group. updatedGroups carries
+// the overwritten entries so the caller can sync them to cards.
+export function mergeImportedGroups(
+  existing: IndicatorGroup[],
+  groups: IndicatorGroup[]
+): { updated: number; added: number; updatedGroups: IndicatorGroup[] } {
   let updated = 0;
   let added = 0;
+  const updatedGroups: IndicatorGroup[] = [];
   for (const group of groups) {
     const index = existing.findIndex((g) => g.name.trim() === group.name.trim());
     if (index >= 0) {
       existing[index] = { ...group, id: existing[index].id };
       updated++;
+      updatedGroups.push(existing[index]);
     } else {
       existing.push(group);
       added++;
     }
   }
-  return { updated, added };
+  return { updated, added, updatedGroups };
 }

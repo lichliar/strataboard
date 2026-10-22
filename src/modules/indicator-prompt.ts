@@ -1,9 +1,8 @@
-// Prompt the user copies (plus their indicator code / error output) to their
-// own AI. Carries the custom-indicator contract validated by
-// validateIndicatorDef (indicators/contract.ts) plus the compliance rules.
-// Shared by 设置 → AI 助手 and the MCP get_indicator_guide tool — which is
-// why this module must stay obsidian-free (the MCP bundle aliases "obsidian"
-// to a shim without TFile).
+// Indicator-authoring guide for external AI agents. Carries the custom-
+// indicator contract validated by validateIndicatorDef (indicators/contract.ts)
+// plus the compliance rules. Shared by the MCP get_indicator_guide tool and
+// the CLI guide indicator command — which is why this module must stay
+// obsidian-free (the MCP bundle aliases "obsidian" to a shim without TFile).
 export const AI_INDICATOR_PROMPT = `我在用一个 Obsidian 插件（StrataBoard）的「自定义指标」功能：把 .js 指标文件放进指标文件夹（<指标文件夹>），插件自动把它注册为技术指标，可以在 K 线卡片上叠加显示。请帮我写一个指标文件，并把完整文件内容给我。
 
 这个指标要做的事情：【在这里描述你想要的指标；如果是修错，粘贴你的现有文件和设置页「指标」里显示的完整报错；只提供你原创、获授权或许可证允许改编的参考代码】

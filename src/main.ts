@@ -15,7 +15,7 @@ import {
 import { createHash } from "crypto";
 import * as nodePath from "path";
 import { readFile, realpath } from "fs/promises";
-import { DEFAULT_SETTINGS, StrataBoardSettingTab, openSettingsTab, openPrefilledSourceModal, type StrataBoardSettings } from "./settings";
+import { DEFAULT_SETTINGS, StrataBoardSettingTab, openSettingsTab, type StrataBoardSettings } from "./settings";
 import { DEFAULT_CARD_HEIGHT, parseCardSpec, stringifyCardSpec, type ParseResult } from "./modules/card-spec";
 import { DataAdapter, type OhlcvLoadResult } from "./modules/data-adapter";
 import {
@@ -45,7 +45,7 @@ import { CardIndex, newSpreadId } from "./modules/card-index";
 import { ensureSpreadId, hasLegacyCardRefs } from "./modules/card-ref-migration";
 import { formatExpressionTitle } from "./modules/expression";
 import { setRequestInterval, setAllowedLoopbackHttpOrigins } from "./modules/http";
-import { redactSecrets, redactError } from "./modules/redact";
+import { redactSecrets } from "./modules/redact";
 import { SeriesChartRenderer } from "./modules/series-chart-renderer";
 import { buildOverlayLine, computeSeriesCorrelation, normalizeToPctChange, resolveCorrTransform, toZScore } from "./modules/overlay-lines";
 import {
@@ -68,7 +68,7 @@ import { CalendarEditModal } from "./ui/calendar-edit-modal";
 import { OverlayEditModal } from "./ui/overlay-edit-modal";
 import { SpreadEditModal } from "./ui/spread-edit-modal";
 import { cacheAssetKey } from "./types";
-import type { AssetType, CustomSourceDef, Freq, OverlaySpec, ParsedCardSpec, ReferenceableCard, ResolvedCustomSourceDef, SeriesRef, SpreadSpec, SymbolItem } from "./types";
+import type { AssetType, CustomSourceDef, Freq, OverlaySpec, ParsedCardSpec, ReferenceableCard, SeriesRef, SpreadSpec, SymbolItem } from "./types";
 import { resolveDateRange, formatIsoDate, parseDateYmd, formatDateTime } from "./utils/date";
 import { detectNativeFreq, maxFreq } from "./utils/frequency";
 import { normalizePath, sanitizeFileNamePart } from "./utils/slug";
@@ -84,23 +84,9 @@ import { parseCsvKline } from "./modules/csv-quote-client";
 import { ScriptManagerModal } from "./ui/script-manager-modal";
 import { SetupGuideModal } from "./ui/setup-guide-modal";
 import { detachTooltipManager } from "./ui/tooltip";
-import { ConfirmModal } from "./ui/confirm-modal";
 import { ScriptRunConfirmModal } from "./ui/script-run-confirm-modal";
 import { IndicatorConfirmModal } from "./ui/indicator-confirm-modal";
 import { IndicatorDescriptionModal } from "./ui/indicator-description-modal";
-import { AiPanelView, VIEW_TYPE_STRATABOARD_AI, type AiPanelHost } from "./ui/ai-panel-view";
-import { isAiConfigured, type AiConnectionConfig } from "./modules/ai/client";
-import type { AiTaskRequest } from "./modules/ai/tasks";
-import type { AiProposal } from "./modules/ai/proposals";
-import { fetchKlineSample } from "./modules/custom-quote-client";
-import {
-  detectBuiltinKlineFormat,
-  detectJsonMapping,
-  parseEastmoneyKline,
-  parseMappedKline,
-  parseTencentKline,
-} from "./modules/quote-format-parsers";
-import { CUSTOM_FORMAT_LABELS } from "./ui/custom-source-modal";
 import { ensureFolder } from "./modules/daily-notes";
 
 // The canvas interaction model (double-click → chart mode, Esc/outside
@@ -967,6 +953,7 @@ export default class StrataBoardPlugin extends Plugin {
   private indicatorTimers = new Map<string, number>();
 
   async onload() {
+    this.credentials = createPluginCredentialStore(this.app);
     await this.loadSettings();
 
     const dataCachePath = this.pluginSettings.dataCachePath;
@@ -978,7 +965,6 @@ export default class StrataBoardPlugin extends Plugin {
       symbolsDbPath: `${symbolCachePath}/symbols.db`,
     });
 
-    this.credentials = createPluginCredentialStore(this.app);
     this.resolveApiKey = createPluginApiKeyResolver(this.credentials);
     registerStoreForRedaction(this.credentials);
 
@@ -1018,13 +1004,9 @@ export default class StrataBoardPlugin extends Plugin {
       resolveSourceName: (sourceId) => this.pluginSettings.customSources.find((s) => s.id === sourceId)?.name,
     });
 
-    this.toolbar = new CanvasToolbar(this, () => void this.openAiPanel());
+    this.toolbar = new CanvasToolbar(this);
 
     this.addSettingTab(new StrataBoardSettingTab(this.app, this));
-
-    // AI task panel (right sidebar). First registerView/ItemView in the
-    // plugin; the host seam keeps the view out of settings/credentials.
-    this.registerView(VIEW_TYPE_STRATABOARD_AI, (leaf) => new AiPanelView(leaf, this.buildAiPanelHost()));
 
     this.addCommand({
       id: "open-settings",
@@ -1113,12 +1095,6 @@ export default class StrataBoardPlugin extends Plugin {
       id: "open-script-manager",
       name: t("打开本地脚本管理"),
       callback: () => this.openScriptManager(),
-    });
-
-    this.addCommand({
-      id: "open-ai-panel",
-      name: t("打开 AI 助手面板"),
-      callback: () => void this.openAiPanel(),
     });
 
     // The chart-card processors RETURN the initial-render promise: Obsidian
@@ -1283,10 +1259,6 @@ export default class StrataBoardPlugin extends Plugin {
     // Register custom indicators that already exist (first run / reload).
     void syncIndicatorFiles(this);
 
-    // Legacy cleanup: the AI card-authoring guide used to be written into
-    // the card library on every load; it now lives in 设置 → AI 助手.
-    void this.removeLegacyAiGuide();
-
     // One-time legacy card-ref detection: cardPath refs predate the cardId
     // format. Clean vaults are flagged off silently; affected vaults get a
     // Notice pointing at the one-click upgrade (设置 → 高级 →
@@ -1311,7 +1283,6 @@ export default class StrataBoardPlugin extends Plugin {
   }
 
   onunload() {
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_STRATABOARD_AI);
     this.toolbar.detach();
     detachTooltipManager();
     this.sqliteCache?.save().then(() => this.sqliteCache?.close()).catch((e) => {
@@ -1322,10 +1293,16 @@ export default class StrataBoardPlugin extends Plugin {
 
   async loadSettings() {
     const stored = (await this.loadData()) as Partial<StrataBoardSettings> | null;
-    // Drop leftover keys from the removed built-in data sources (Tushare/FRED
-    // connectors, per-source toggles) and the symbol-index refresh setting.
+    let removedAiCredentialId: string | undefined;
+    // Drop leftover keys from removed built-in sources and the in-plugin AI.
     if (stored) {
       const legacy = stored as Record<string, unknown>;
+      const aiConfig = legacy.aiAssistant;
+      if (typeof aiConfig === "object" && aiConfig !== null) {
+        const credentialId = (aiConfig as Record<string, unknown>).credentialId;
+        if (typeof credentialId === "string") removedAiCredentialId = credentialId;
+      }
+      delete legacy.aiAssistant;
       delete legacy.tushareToken;
       delete legacy.fredApiKey;
       delete legacy.dataSources;
@@ -1372,9 +1349,12 @@ export default class StrataBoardPlugin extends Plugin {
     this.pluginSettings.indicatorGroups = [...(stored?.indicatorGroups ?? [])];
     this.pluginSettings.searchHistory = [...(stored?.searchHistory ?? [])];
     this.pluginSettings.allowedLoopbackHttpOrigins = [...(stored?.allowedLoopbackHttpOrigins ?? [])];
-    // Fresh object (BYOK 插件内 AI config): never share a reference with the
-    // loaded snapshot.
-    if (stored?.aiAssistant) this.pluginSettings.aiAssistant = { ...stored.aiAssistant };
+    // The old AI credential may also be referenced by a data source; only
+    // remove it when the source configuration does not share it.
+    if (removedAiCredentialId && !this.pluginSettings.customSources.some((source) => source.credentialId === removedAiCredentialId)) {
+      this.credentials.remove(removedAiCredentialId);
+      delete this.pluginSettings.credentialNames[removedAiCredentialId];
+    }
     // Corner anchors; old "left" | "right" values (and anything unknown) map
     // to the bottom corner on the same side. Idempotent for valid values.
     const pos = this.pluginSettings.toolbarPosition as string;
@@ -1431,263 +1411,8 @@ export default class StrataBoardPlugin extends Plugin {
     void this.saveSettings();
   }
 
-  // Trashes the pre-refactor copy of the AI guide in the card library (the
-  // guide moved into 设置 → AI 助手). No-op once the file is gone.
-  private async removeLegacyAiGuide() {
-    try {
-      const file = this.app.vault.getAbstractFileByPath(
-        `${normalizePath(this.pluginSettings.cardLibraryPath)}/StrataBoard卡片编写指南.md`
-      );
-      if (file instanceof TFile) await this.app.fileManager.trashFile(file);
-    } catch (e) {
-      console.error("StrataBoard: failed to remove legacy AI guide", e);
-    }
-  }
-
-  // ==================== 插件内 AI（BYOK 任务面板） ====================
-
-  // Reveals the right-sidebar AI task panel (creating its leaf on first
-  // use). With a task argument the panel starts it immediately — fix-source
-  // entries carry their current-config/error context inside the request.
-  async openAiPanel(task?: AiTaskRequest): Promise<void> {
-    let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_STRATABOARD_AI)[0];
-    if (!leaf) {
-      const rightLeaf = this.app.workspace.getRightLeaf(false);
-      if (!rightLeaf) return;
-      leaf = rightLeaf;
-      await leaf.setViewState({ type: VIEW_TYPE_STRATABOARD_AI, active: true });
-    }
-    await this.app.workspace.revealLeaf(leaf);
-    if (task) (leaf.view as AiPanelView).startTask(task);
-  }
-
-  // Host seam for the panel: BYOK config + credential resolution, the
-  // proposal-validator context (same enabled-source filter as the pickers),
-  // and the settings shortcut — the view never touches pluginSettings or
-  // the credential store directly. Source proposals (stage 4): applyProposal
-  // opens the prefilled source form (the AI never writes settings; saving
-  // runs through the form's own probe/validation/credential UI), and
-  // probeSourceDraft re-runs the form's detection chain read-only. Card /
-  // indicator / script proposals are wired by stages 5-6.
-  private buildAiPanelHost(): AiPanelHost {
-    return {
-      getAiConfig: () => {
-        const settings = this.pluginSettings.aiAssistant;
-        const cfg: AiConnectionConfig = {
-          baseUrl: settings?.baseUrl ?? "",
-          model: settings?.model ?? "",
-          timeoutMs: settings?.timeoutMs,
-          maxResponseChars: settings?.maxResponseChars,
-          maxRevisionRounds: settings?.maxRevisionRounds,
-          apiKey: settings?.credentialId
-            ? this.credentials.get(settings.credentialId) ?? undefined
-            : undefined,
-        };
-        return { cfg, configured: isAiConfigured(settings) };
-      },
-      getProposalContext: () => ({
-        allowedLoopbackHttpOrigins: this.pluginSettings.allowedLoopbackHttpOrigins,
-        existingSourceIds: this.enabledCustomSources().map((s) => s.id),
-        sourceAliases: Object.fromEntries(this.enabledCustomSources().map((s, i) => [`源${String.fromCharCode(65 + i)}`, s.id])),
-        existingIndicatorIds: indicatorRegistry.list().map((def) => def.id),
-        indicatorAliases: Object.fromEntries(indicatorRegistry.list().map((def, i) => [`指标${i + 1}`, def.id])),
-      }),
-      getTaskContext: () => ({
-        existingSources: this.enabledCustomSources().map((s, i) => ({ id: s.id, alias: `源${String.fromCharCode(65 + i)}`, name: s.name, format: s.format })),
-        existingIndicators: indicatorRegistry.list().map((def, i) => ({
-          id: def.id,
-          alias: `指标${i + 1}`,
-          name: def.name,
-          overlay: def.metadata.overlay,
-          ...(def.description ? { description: def.description } : {}),
-        })),
-      }),
-      openAiSettings: () => openSettingsTab(this.app, "external-ai"),
-      applyProposal: (proposal) => this.applyAiProposal(proposal),
-      probeSourceDraft: (draft, sourceId) => this.probeSourceDraft(draft, sourceId),
-    };
-  }
-
-  // Stage-4 proposal execution: source kinds open the source form prefilled
-  // with the AI's draft / patch and count as applied the moment the form
-  // opens — the user still confirms and saves inside the form. fix-source
-  // merges the patch over the existing def so untouched fields survive.
-  private async applyAiProposal(proposal: AiProposal): Promise<void> {
-    if (proposal.kind === "add-source") {
-      openPrefilledSourceModal(this.app, this, proposal.draft);
-      new Notice(t("草稿已填入表单，请在表单中确认并保存。"));
-      return;
-    }
-    if (proposal.kind === "fix-source") {
-      const existing = this.pluginSettings.customSources.find((s) => s.id === proposal.sourceId);
-      if (!existing) {
-        new Notice(t("数据源「{id}」不存在或已删除，无法应用修复。", { id: proposal.sourceId }));
-        return;
-      }
-      openPrefilledSourceModal(this.app, this, { ...existing, ...proposal.patch, id: existing.id });
-      new Notice(t("草稿已填入表单，请在表单中确认并保存。"));
-    }
-    if (proposal.kind === "quote-card") {
-      new ConfirmModal(this.app, t("创建数据卡「{name}」？", { name: proposal.spec.title ?? proposal.spec.symbol }), () => {
-        void this.cardService.createOrReuse(proposal.spec, undefined, proposal.spec.title ?? proposal.spec.symbol)
-          .then((file) => { this.toolbar.placeFileNode(file); new Notice(t("数据卡已创建：{name}", { name: file.basename })); })
-          .catch((e) => new Notice(t("创建数据卡失败：{msg}", { msg: e instanceof Error ? e.message : String(e) })));
-      }).open();
-      return;
-    }
-    if (proposal.kind === "overlay-card") {
-      new ConfirmModal(this.app, t("创建对比卡？"), () => void this.createOverlayCard(proposal.spec)).open();
-      return;
-    }
-    if (proposal.kind === "spread-card") {
-      new ConfirmModal(this.app, t("创建计算卡？"), () => void this.createSpreadCard(proposal.spec)).open();
-      return;
-    }
-    if (proposal.kind === "indicator") {
-      const folder = normalizePath(this.pluginSettings.indicatorFolderPath);
-      const filename = `${proposal.title.replace(/[^a-zA-Z0-9一-龥_-]/g, "-").replace(/^-+|-+$/g, "") || "indicator"}.js`;
-      await ensureFolder(this.app, folder);
-      const path = `${folder}/${filename}`;
-      const existing = this.app.vault.getAbstractFileByPath(path);
-      new ConfirmModal(this.app, t("保存指标文件「{name}」？保存后仍需通过指标审批才会运行。", { name: filename }), () => {
-        void (async () => {
-          if (existing instanceof TFile) await this.app.vault.modify(existing, proposal.code);
-          else await this.app.vault.create(path, proposal.code);
-          await syncIndicatorFiles(this);
-          new Notice(t("指标草稿已保存：{name}", { name: filename }));
-        })().catch((e) => new Notice(t("保存指标失败：{msg}", { msg: e instanceof Error ? e.message : String(e) })));
-      }).open();
-      return;
-    }
-    if (proposal.kind === "indicator-doc") {
-      const indicator = indicatorRegistry.resolve(proposal.indicatorId);
-      if (!indicator) {
-        new Notice(t("指标「{id}」不存在或尚未通过审批。", { id: proposal.indicatorId }));
-        return;
-      }
-      const folder = `${normalizePath(this.pluginSettings.indicatorFolderPath)}/说明`;
-      const assets = `${folder}/assets`;
-      await ensureFolder(this.app, assets);
-      const plotScriptFolder = `${normalizePath(this.pluginSettings.scriptFolderPath)}/ai-indicator-docs`;
-      await ensureFolder(this.app, plotScriptFolder);
-      const slug = sanitizeFileNamePart(proposal.indicatorId) || "indicator";
-      const mdPath = `${folder}/${slug}.md`;
-      const plotPath = `${assets}/${slug}.py`;
-      const runnerPlotPath = `${plotScriptFolder}/${slug}.py`;
-      const imageRef = `assets/${slug}.png`;
-      const markdown = proposal.markdown.includes(imageRef)
-        ? proposal.markdown
-        : `${proposal.markdown.trim()}\n\n## Matplotlib 示意图\n\n![${proposal.title}](${imageRef})\n`;
-      new ConfirmModal(this.app, t("保存指标说明「{name}」？将同时保存 Matplotlib 绘图脚本。", { name: proposal.title }), () => {
-        void (async () => {
-          const md = this.app.vault.getAbstractFileByPath(mdPath);
-          const py = this.app.vault.getAbstractFileByPath(plotPath);
-          const runner = this.app.vault.getAbstractFileByPath(runnerPlotPath);
-          if (md instanceof TFile) await this.app.vault.modify(md, markdown);
-          else await this.app.vault.create(mdPath, markdown);
-          if (py instanceof TFile) await this.app.vault.modify(py, proposal.plotCode);
-          else await this.app.vault.create(plotPath, proposal.plotCode);
-          const basePath = (this.app.vault.adapter as unknown as { getBasePath?: () => string }).getBasePath?.() ?? "";
-          const absolutePng = `${basePath}/${folder}/assets/${slug}.png`;
-          const runnerCode = [
-            "from pathlib import Path",
-            `OUTPUT_PATH = ${JSON.stringify(absolutePng)}`,
-            proposal.plotCode,
-            "",
-            "# Best-effort final save for scripts that expose fig or pyplot.",
-            "Path(OUTPUT_PATH).parent.mkdir(parents=True, exist_ok=True)",
-            "if 'fig' in globals(): fig.savefig(OUTPUT_PATH, dpi=160, bbox_inches='tight')",
-            "elif 'plt' in globals(): plt.savefig(OUTPUT_PATH, dpi=160, bbox_inches='tight')",
-            "",
-          ].join("\n");
-          if (runner instanceof TFile) await this.app.vault.modify(runner, runnerCode);
-          else await this.app.vault.create(runnerPlotPath, runnerCode);
-          this.pluginSettings.indicatorOverrides[proposal.indicatorId] = {
-            ...(this.pluginSettings.indicatorOverrides[proposal.indicatorId] ?? {}),
-            description: `[[${mdPath.slice(0, -3)}]]`,
-          };
-          await this.saveSettings();
-          new Notice(t("指标说明已保存：{name}", { name: mdPath }));
-          if (runner instanceof TFile || this.app.vault.getAbstractFileByPath(runnerPlotPath) instanceof TFile) {
-            const plotFile = this.app.vault.getAbstractFileByPath(runnerPlotPath);
-            if (plotFile instanceof TFile) {
-              const result = await this.runScriptFile(plotFile);
-              if (result.code === 0 && !result.cancelled) new Notice(t("Matplotlib 示意图已生成。"));
-            }
-          }
-        })().catch((e) => new Notice(t("保存指标说明失败：{msg}", { msg: e instanceof Error ? e.message : String(e) })));
-      }).open();
-      return;
-    }
-    if (proposal.kind === "script") {
-      const folder = normalizePath(this.pluginSettings.scriptFolderPath);
-      await ensureFolder(this.app, folder);
-      const path = `${folder}/${proposal.filename}`;
-      const existing = this.app.vault.getAbstractFileByPath(path);
-      new ConfirmModal(this.app, t("保存脚本「{name}」？运行脚本时仍需单独确认。", { name: proposal.filename }), () => {
-        void (async () => {
-          if (existing instanceof TFile) await this.app.vault.modify(existing, proposal.code);
-          else await this.app.vault.create(path, proposal.code);
-          new Notice(t("脚本草稿已保存：{name}", { name: proposal.filename }));
-        })().catch((e) => new Notice(t("保存脚本失败：{msg}", { msg: e instanceof Error ? e.message : String(e) })));
-      }).open();
-    }
-  }
-
-  // Read-only probe behind the panel's「测试并预览」: mirrors the source
-  // form's detection chain (fetchKlineSample → builtin format → stored /
-  // guessed JSON mapping → parse). fix-source merges the patch onto the
-  // existing source and resolves its stored credential; add-source probes a
-  // synthetic def with no credential. Never throws, never saves.
-  private async probeSourceDraft(
-    draft: Partial<CustomSourceDef>,
-    sourceId?: string
-  ): Promise<{ ok: true; rows: number; format: string } | { ok: false; error: string }> {
-    const existing = sourceId ? this.pluginSettings.customSources.find((s) => s.id === sourceId) : undefined;
-    const merged: CustomSourceDef = existing
-      ? { ...existing, ...draft, id: existing.id }
-      : ({
-          id: "ai-draft-probe",
-          name: "",
-          enabled: true,
-          format: "tencent",
-          klineUrl: "",
-          ...draft,
-        } as CustomSourceDef);
-    if (merged.format === "csv" || !merged.klineUrl) {
-      return { ok: false, error: t("该草稿没有 K线 URL（CSV 文件源请在表单中验证）。") };
-    }
-    const resolved: ResolvedCustomSourceDef = {
-      ...merged,
-      apiKey: merged.credentialId ? this.credentials.get(merged.credentialId) ?? undefined : undefined,
-    };
-    try {
-      const code = merged.testCode ?? "sh000001";
-      const sample = await fetchKlineSample(resolved, code);
-      const builtin = detectBuiltinKlineFormat(sample.json, code);
-      let format: CustomSourceDef["format"];
-      let rows;
-      if (builtin) {
-        format = builtin;
-        rows = builtin === "tencent" ? parseTencentKline(sample.json, code) : parseEastmoneyKline(sample.json);
-      } else {
-        format = "json";
-        const map = merged.jsonMap ?? detectJsonMapping(sample.json);
-        rows = map ? parseMappedKline(sample.json, map) : [];
-      }
-      if (rows.length === 0) {
-        return { ok: false, error: t("已识别为{format}，但未解析出 K 线数据。", { format: t(CUSTOM_FORMAT_LABELS[format]) }) };
-      }
-      return { ok: true, rows: rows.length, format: t(CUSTOM_FORMAT_LABELS[format]) };
-    } catch (e) {
-      return { ok: false, error: redactError(e) };
-    }
-  }
-
-  // First-run guide (no enabled sources); the「让 AI 帮我配置」button hands
-  // straight into the panel's add-source task.
   private openSetupGuide(): void {
-    new SetupGuideModal(this.app, () => void this.openAiPanel({ kind: "add-source", goal: "", context: { existingSources: [] } })).open();
+    new SetupGuideModal(this.app).open();
   }
 
   // ==================== 本地脚本 (user Python scripts → CSV sources) ====================

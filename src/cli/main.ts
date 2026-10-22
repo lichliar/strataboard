@@ -9,8 +9,10 @@
 import * as fs from "fs";
 import * as path from "path";
 import {
+  AGENT_GUIDE_TOPICS,
   CliError,
   createVaultContext,
+  getAgentGuide,
   listIndicatorGroups,
   listSources,
   probeData,
@@ -68,6 +70,8 @@ const USAGE = `StrataBoard CLI — 供外部 AI 在不启动 Obsidian 的情况�
   --vault <路径>   vault 根目录；缺省读环境变量 STRATABOARD_VAULT，再从当前目录向上查找含 .obsidian 的目录。
 
 命令:
+  guide <source|card|script|indicator>
+      获取面向 AI agent 的数据源、卡片、本地脚本或自定义指标指南。
   search <关键词> [--type <资产类型>] [--limit N=20]
       搜索符号代码（本地代码库 + 各自定义数据源的静态代码表）。
       资产类型: ${ASSET_TYPES.join(" | ")}
@@ -119,6 +123,17 @@ async function main(): Promise<void> {
   const needVault = () => createVaultContext(flagString(args.flags, "vault") ?? process.env.STRATABOARD_VAULT);
 
   switch (command) {
+    case "guide": {
+      const topic = args._[1] ?? "";
+      if (!AGENT_GUIDE_TOPICS.includes(topic as (typeof AGENT_GUIDE_TOPICS)[number])) {
+        throw new CliError("guide 需要主题：source | card | script | indicator。");
+      }
+      out({
+        ok: true,
+        ...getAgentGuide(needVault(), topic as (typeof AGENT_GUIDE_TOPICS)[number], __dirname),
+      });
+      break;
+    }
     case "search": {
       const result = await searchSymbols(needVault(), {
         query: args._[1] ?? "",

@@ -16,3 +16,7 @@ app.js
 .tools/
 AGENTS.md
 docs/dev/
+# graphify knowledge graph outputs (regenerable, per-machine)
+graphify-out/
+# Kimi Code session data, local-only
+.kimi/

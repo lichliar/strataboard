@@ -1,9 +1,8 @@
-// Prompt the user copies (plus their script / error output) to their own AI.
-// Carries the CSV contract validated by buildScriptSourceDef (script-sources)
-// plus the compliance rules, and names no concrete endpoints. Shared by
-// 设置 → AI 助手 and the MCP get_script_guide tool — which is why this module
-// must stay obsidian-free (the MCP bundle aliases "obsidian" to a shim
-// without TFile).
+// Script-authoring guide for external AI agents. Carries the CSV contract
+// validated by buildScriptSourceDef (script-sources) plus the compliance
+// rules, and names no concrete endpoints. Shared by the MCP get_script_guide
+// tool and the CLI guide script command — which is why this module must stay
+// obsidian-free (the MCP bundle aliases "obsidian" to a shim without TFile).
 export const AI_SCRIPT_PROMPT = `我在用一个 Obsidian 插件（StrataBoard）的「本地脚本」功能：自己写 Python 脚本做数据处理，脚本把结果写成 CSV，插件自动把 CSV 注册为数据源并画成图表卡。请帮我写一个 python3 脚本，并把完整脚本内容给我。
 
 这个脚本要做的事情：【在这里描述你想要的数据或计算；如果是修错，粘贴你的现有脚本和完整报错】

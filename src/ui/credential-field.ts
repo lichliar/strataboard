@@ -13,9 +13,8 @@ import { applyInfoDescs } from "./info-desc";
 // label is shown in place of / ahead of the describeId fallback. The
 // component owns no persistence: every edit is reported through onChange and
 // the caller decides when to store via the credential seam
-// (custom-source-modal saves on 保存; the AI 助手 BYOK block saves
-// immediately). pendingSecret is unsaved input — callers must include it in
-// redactSecretsWith extras while unsaved.
+// (custom-source-modal saves on 保存). pendingSecret is unsaved input —
+// callers must include it in redactSecretsWith extras while unsaved.
 
 // Dropdown sentinel for "create a new credential" — real ids always carry the
 // strataboard-cred- prefix (credentials.ts), so this can never collide. An

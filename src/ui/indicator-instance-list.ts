@@ -25,8 +25,10 @@ export function describeIndicatorInputs(instance: IndicatorInstance, def: Indica
 // Shared indicator-instance list editor: the 添加 button opens the searchable
 // IndicatorPickerModal (new instances unshift to the top of the list and stay
 // expanded) plus one collapsible row per instance (drag handle + 上移/下移/
-// 隐藏/删除 + the auto-generated parameter form). Used by
-// UnifiedCardEditModal (per-card list) and IndicatorGroupModal.
+// 隐藏/删除 + the auto-generated parameter form). Instances carrying a `group`
+// label get a group header row with 隐藏整组/显示整组 and 删除整组 batch
+// controls. Used by UnifiedCardEditModal (per-card list) and
+// IndicatorGroupModal.
 export class IndicatorListEditor {
   // Expanded state of the collapsible instances, tracked by object identity
   // so it survives the full re-render on every structural change (and follows
@@ -75,7 +77,8 @@ export class IndicatorListEditor {
     row.createSpan({ cls: "fc-indicator-group-name", text: group });
     const members = instances.filter((instance) => instance.group === group);
     const allHidden = members.length > 0 && members.every((instance) => instance.hidden === true);
-    const button = row.createEl("button", {
+    const actions = row.createDiv({ cls: "fc-indicator-group-actions" });
+    const button = actions.createEl("button", {
       cls: "fc-indicator-group-toggle",
       text: allHidden ? t("显示整组") : t("隐藏整组"),
     });
@@ -85,6 +88,18 @@ export class IndicatorListEditor {
       for (const instance of members) {
         if (allHidden) delete instance.hidden;
         else instance.hidden = true;
+      }
+      this.opts.onChanged();
+    });
+    const deleteButton = actions.createEl("button", {
+      cls: "fc-indicator-group-toggle",
+      text: t("删除整组"),
+    });
+    deleteButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      for (let i = instances.length - 1; i >= 0; i--) {
+        if (instances[i].group === group) instances.splice(i, 1);
       }
       this.opts.onChanged();
     });

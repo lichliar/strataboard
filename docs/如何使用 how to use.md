@@ -46,14 +46,14 @@
 
 插件不内置技术指标。把你原创、获授权或许可证允许使用的 `.js` 指标放进指标文件夹，再在数据卡中选择。指标只获得行情、参数与 `oak` 计算 API，并受执行时间和输出数量限制；不提供网络、文件、DOM、Obsidian API 或 `require`。插件不生成、审核、验证或背书指标中的买卖标记。
 
-## 用 AI Agent 操作本插件（MCP / CLI）
+## 用外部 AI Agent 操作本插件（MCP / CLI）
 
-本插件不内置 AI 助手，但为你自己的 AI agent（Codex、Claude Code 等）提供两个入口，AI 可以直接查符号、列数据源、校验卡片、探测数据：
+本插件不内置 AI 助手，也不发送模型请求。首次按下面方式接入自己的外部 AI agent（Codex、Claude Code 等）后，Agent 即可查符号、列数据源、校验卡片、探测数据、获取指南和渲染图片：
 
 `cli.js` 和 `mcp-server.js` 是可选文件，插件不会自行下载或更新。从与插件版本号完全一致的 [GitHub Release](../../releases) 手动下载后，放入 `<vault 路径>/.obsidian/plugins/strataboard/`。
 
-- **MCP server（推荐）**：以 stdio 方式在你的 AI agent 中注册 `node <插件目录>/mcp-server.js --vault <vault 路径>`。提供工具：`search_symbols` / `list_sources` / `validate_cards` / `probe_data` / `get_card_guide`。
-- **CLI**：`node <插件目录>/cli.js <命令> [--vault <vault 路径>]`，命令有 `search` / `sources` / `validate` / `probe`，全部输出 JSON，适合脚本调用。
+- **MCP server（推荐）**：以 stdio 方式在你的 AI agent 中注册 `node <插件目录>/mcp-server.js --vault <vault 路径>`。提供 11 个工具：`search_symbols` / `list_sources` / `list_indicator_groups` / `validate_cards` / `probe_data` / `get_card_guide` / `get_script_guide` / `get_indicator_guide` / `get_source_guide` / `render_card_png` / `render_doc_images`。
+- **CLI**：`node <插件目录>/cli.js <命令> [--vault <vault 路径>]`，提供 8 个命令：`guide` / `search` / `sources` / `groups` / `validate` / `probe` / `render-card` / `render-doc`，全部输出 JSON，适合脚本与 Agent 调用。
 
 Codex 配置示例（`~/.codex/config.toml`）：
 
@@ -73,4 +73,8 @@ args = ["<插件目录>/mcp-server.js", "--vault", "<vault 路径>"]
 }
 ```
 
-插件目录即 `<vault 路径>/.obsidian/plugins/strataboard`；`--vault` 缺省时读环境变量 `STRATABOARD_VAULT`，再从当前目录向上查找含 `.obsidian` 的目录。设置页「AI 助手」tab 里有接入配置片段（路径用 `<vault路径>` 占位符表示，需自行替换）、「一键配置提示词」（发给你的 AI agent，它会自动定位 vault 并完成 MCP 注册），以及按场景分类的提示词：添加数据源、编写/修改卡片（《StrataBoard 卡片编写指南》全文，可展开查看、一键复制；MCP 客户端可直接调用 `get_card_guide` 工具获取）、编写数据处理脚本。
+插件目录即 `<vault 路径>/.obsidian/plugins/strataboard`；`--vault` 缺省时读环境变量 `STRATABOARD_VAULT`，再从当前目录向上查找含 `.obsidian` 的目录。
+
+首次接入后，Agent 会按任务自动读取指南：MCP 使用 `get_source_guide` / `get_card_guide` / `get_script_guide` / `get_indicator_guide`，CLI 使用 `guide source` / `guide card` / `guide script` / `guide indicator`，无需你复制、粘贴提示词。如果 Agent 没有自动读取，先检查 MCP 是否连接成功；也可让它直接运行上述 CLI `guide` 命令作为备用入口。
+
+数据源只能由你在设置页逐项确认并保存，外部 AI 不能导入配置或直接修改插件的 `data.json`。API Key 只由你填入数据源弹窗的「凭据」字段，不要发给 AI；密钥不会进入 AI 上下文。

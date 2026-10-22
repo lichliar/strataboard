@@ -85,8 +85,6 @@ const EN: Record<string, string> = {
   "打开更多工具": "More tools",
   "刷新全部卡片": "Refresh all cards",
   "打开设置": "Open settings",
-  "展开工具栏": "Expand toolbar",
-  "折叠工具栏": "Collapse toolbar",
   "工具栏图标可悬停查看说明": "Hover a toolbar icon to see what it does",
   "拖拽移动工具栏": "Drag to move the toolbar",
   "当前画布上没有 StrataBoard 卡片。": "No StrataBoard cards on the current canvas.",
@@ -97,13 +95,11 @@ const EN: Record<string, string> = {
 
   // ===== Commands / menus (main.ts) =====
   "打开 StrataBoard 设置": "Open StrataBoard settings",
-  "打开 AI 助手面板": "Open AI Assistant Panel",
   "插入数据卡": "Insert data card",
   "插入 HTML / TradingView 小组件": "Insert HTML / TradingView widget",
   "插入日历卡片": "Insert calendar card",
   "创建对比卡": "Create compare card",
   "创建计算卡": "Create calc card",
-  "AI 创建": "AI Create",
   "保存卡片设置失败：{msg}": "Failed to save card settings: {msg}",
   "无效的卡片配置。": "Invalid card configuration.",
   "卡片配置包含未知或已删除的字段：{keys}": "The card spec contains unknown or removed fields: {keys}",
@@ -310,7 +306,6 @@ const EN: Record<string, string> = {
   "语言 / Language": "Language / 语言",
   "切换界面语言，即时生效；命令面板中的命令名在插件加载时注册，需重载插件后更新。": "Switches the UI language, effective immediately; command names are registered at load time and update after a plugin reload.",
   "通用": "General",
-  "AI 助手": "AI Assistant",
   "高级": "Advanced",
   "高级网络设置": "Advanced Network Settings",
   "诊断与运行环境": "Diagnostics & Runtime",
@@ -496,9 +491,8 @@ const EN: Record<string, string> = {
 
   // ===== Setup guide modal (no enabled data source) =====
   "先配置数据源": "Set Up a Data Source First",
-  "本插件不内置任何数据源。使用前需要先自行配置数据接口（REST/JSON）或 vault 内的 CSV 文件；也可以复制 AI 引导提示词，让你的 AI 辅助生成配置。": "This plugin ships no data sources. Before inserting data, configure a data endpoint (REST/JSON) or a CSV file inside the vault yourself — or copy the AI guided prompt and let your AI generate the config for you.",
+  "本插件不内置任何数据源。使用前需要先自行配置数据接口（REST/JSON）或 vault 内的 CSV 文件。": "This plugin ships no data sources. Before inserting data, configure a data endpoint (REST/JSON) or a CSV file inside the vault yourself.",
   "打开数据源设置": "Open Data Source Settings",
-  "复制 AI 引导提示词": "Copy AI Guided Prompt",
   "暂无可引用的卡片": "No referenceable cards yet",
   "数据卡": "Data cards",
   "搜索文件夹…": "Search folders…",
@@ -553,15 +547,6 @@ const EN: Record<string, string> = {
   "识别为{format}，共 {n} 条 K 线。请核对下方数据是否正确：": "Detected {format}, {n} K-line rows. Verify the data below:",
   "已识别为{format}，但未解析出 K 线数据。": "Detected {format}, but no K-line rows could be parsed.",
   "已识别为通用 JSON，但未解析出数据，请先调整字段映射。": "Detected generic JSON, but no rows were parsed — adjust the field mapping first.",
-  "检测失败？让 AI 帮你修": "Test failed? Let your AI fix it",
-  "复制调试提示词发给你的 AI（如 ChatGPT / Kimi / DeepSeek），它会返回一段映射 JSON；粘贴到下方并点「应用映射」。": "Copy the debug prompt to your AI (e.g. ChatGPT / Kimi / DeepSeek); it returns a mapping JSON — paste it below and click \"Apply Mapping\".",
-  "复制调试提示词": "Copy Debug Prompt",
-  "粘贴 AI 返回的映射 JSON…": "Paste the mapping JSON your AI returned…",
-  "应用映射": "Apply Mapping",
-  "映射已应用，共解析出 {n} 条。": "Mapping applied; {n} rows parsed.",
-  "映射已应用，但仍未解析出数据，请在字段映射中检查。": "Mapping applied, but still no rows parsed — check the field mapping.",
-  "无法解析映射 JSON，请确认粘贴的是 AI 返回的完整 JSON。": "Cannot parse the mapping JSON — paste the complete JSON your AI returned.",
-  "映射 JSON 不完整：需要 rowsPath、rowKind，以及 cols.date、cols.close。": "Incomplete mapping JSON: rowsPath, rowKind, cols.date and cols.close are required.",
   "（无代码）": "(no code)",
   "调整字段映射": "Adjust Field Mapping",
   "响应中未找到可用的数据列表，请检查 URL 与示例代码。": "No usable data list found in the response; check the URL and the sample code.",
@@ -612,16 +597,7 @@ const EN: Record<string, string> = {
   "另有 {n} 条导入警告未显示。": "{n} more import warnings not shown.",
   "导出失败：无法访问剪贴板。": "Export failed: clipboard unavailable.",
   "检测到疑似明文凭据：{fields}。请把密钥只填入「凭据」字段，并在这些位置改用 {apiKey} 占位符。": "Possible hard-coded credentials were found in: {fields}. Put the secret only in the credential field and use the {apiKey} placeholder in these locations.",
-  "不想手动配置？让 AI 代劳：在「AI 助手」设置里完成一键接入（MCP / CLI），再把「添加数据源」引导提示词发给它——AI 会一步步引导你完成配置、自己验证接口，插件不支持时会明确告知。": "Don't want to configure it by hand? Let your AI do it: finish the one-click setup (MCP / CLI) under the AI Assistant settings tab, then send it the \"Add Data Source\" guided prompt — the AI will walk you through the configuration, verify the endpoint itself, and tell you plainly when the plugin cannot support it.",
-  "打开「AI 助手」设置": "Open \"AI Assistant\" Settings",
-  "复制提示词": "Copy Prompt",
-  "提示词已复制到剪贴板，去发给你的 AI 吧。": "Prompt copied — send it to your AI.",
-  "AI 助手设置": "AI Assistant Setup",
-  "复制失败，请手动选中提示词复制。": "Copy failed; select and copy the prompt manually.",
-  "我在给一个 Obsidian 插件配置自定义行情数据源，接口的响应格式插件没能自动识别，请帮我生成字段映射配置。\n\n接口 URL 模板：{url}\n其中 {code} 会被替换为证券代码，{start}/{end} 为 YYYYMMDD 起止日期，{startIso}/{endIso} 为 YYYY-MM-DD 起止日期。\n用示例代码 {sample} 实际请求后，响应内容（有截断）如下：\n": "I am configuring a custom quote data source for an Obsidian plugin, and the plugin could not auto-detect the endpoint's response format. Please generate the field mapping config for me.\n\nEndpoint URL template: {url}\nHere {code} is replaced with the security code, {start}/{end} are YYYYMMDD start/end dates, and {startIso}/{endIso} are YYYY-MM-DD start/end dates.\nAfter an actual request with the sample code {sample}, the response (truncated) is:\n",
-  "\n请只返回一个 JSON 对象（不要任何其他文字、不要 Markdown 代码块以外的内容），格式如下：\n{\n  \"rowsPath\": \"数据行数组在 JSON 中的点号路径，如 data.list；响应顶层就是数组时填空字符串\",\n  \"rowKind\": \"object、array 或 fields（每行数据是对象 / 数组 / 数组且按列名寻址）\",\n  \"fieldsPath\": \"仅 rowKind 为 fields 时必填：列名数组的点号路径，如 data.fields\",\n  \"cols\": {\n    \"date\": \"日期列：object 行填字段名，array 行填从 0 开始的列序号（字符串），fields 行填列名\",\n    \"close\": \"收盘价/数值列\",\n    \"open\": \"开盘价列，没有则填空字符串\",\n    \"high\": \"最高价列，没有则填空字符串\",\n    \"low\": \"最低价列，没有则填空字符串\",\n    \"vol\": \"成交量列，没有则填空字符串\",\n    \"amount\": \"成交额列，没有则填空字符串\"\n  },\n  \"errorPath\": \"可选：业务错误指示字段的点号路径，值非 0/空/null 视为错误\",\n  \"errorMessagePath\": \"可选：错误消息字段的点号路径\"\n}\ndate 和 close 必填；单值序列（收益率、宏观指标等）把数值列填给 close 即可。日期可以是 ISO 日期时间、YYYYMMDD 或时间戳。": "\nReturn exactly one JSON object (no other text, nothing outside the JSON), in this shape:\n{\n  \"rowsPath\": \"dot-separated path of the data-row array in the JSON, e.g. data.list; empty string if the response top level is the array itself\",\n  \"rowKind\": \"object, array or fields (each row is an object / an array / an array addressed by column name)\",\n  \"fieldsPath\": \"required only when rowKind is fields: dot-separated path of the column-name array, e.g. data.fields\",\n  \"cols\": {\n    \"date\": \"date column: field name for object rows, zero-based column index (string) for array rows, column name for fields rows\",\n    \"close\": \"close/value column\",\n    \"open\": \"open column, empty string if absent\",\n    \"high\": \"high column, empty string if absent\",\n    \"low\": \"low column, empty string if absent\",\n    \"vol\": \"volume column, empty string if absent\",\n    \"amount\": \"amount column, empty string if absent\"\n  },\n  \"errorPath\": \"optional: dot path of the business-error indicator field; a value other than 0/empty/null means the response is an error\",\n  \"errorMessagePath\": \"optional: dot path of the error message field\"\n}\ndate and close are required; for single-value series (yields, macro indicators, etc.) put the value column in close. Dates may be ISO date/datetime, YYYYMMDD, or timestamps.",
   "我在给一个 Obsidian 插件配置自定义行情数据源，接口请求失败，请帮我分析原因并修正配置。\n\n接口 URL 模板：{url}\n其中 {code} 会被替换为证券代码，{start}/{end} 为 YYYYMMDD 起止日期，{startIso}/{endIso} 为 YYYY-MM-DD 起止日期，{apiKey} 为密钥占位符。请求方式：{method}。\n用示例代码 {sample} 实际请求时报错：{error}\n\n请分析报错原因，给出修正建议（URL 模板、请求方式、请求体模板、占位符、鉴权方式；个别站点在 Obsidian 默认网络栈下连接失败时，可开启兼容模式 transport: \"node\" 改用 Node https 发送），并告诉我修改后的配置。用我使用的语言与我交流。": "I am configuring a custom quote data source for an Obsidian plugin and the endpoint request failed — please analyze the cause and fix the config for me.\n\nEndpoint URL template: {url}\nHere {code} is replaced with the security code, {start}/{end} are YYYYMMDD start/end dates, {startIso}/{endIso} are YYYY-MM-DD start/end dates, and {apiKey} is the key placeholder. Request method: {method}.\nAn actual request with the sample code {sample} failed with: {error}\n\nPlease analyze the error and suggest fixes (URL template, request method, body template, placeholders, auth; for hosts that fail to connect under Obsidian's default network stack, compatibility mode transport: \"node\" sends the request via Node https instead), and tell me the corrected config. Respond in the language I use.",
-  "你将帮我为 Obsidian 插件 StrataBoard 配置一个「自定义数据源」。插件不内置数据源，所有接口都由用户在设置页手工配置。你已通过 MCP server 或 CLI 接入插件，可使用 list_sources、search_symbols、probe_data、validate_cards。请按以下流程协助我：\n\n1. 先确认数据平台、标的、频率和所需字段。优先使用官方、有公开文档且用户有权访问的 REST/JSON 接口，不使用需要登录 Cookie 或未公开的抓取端点。\n2. 先用 list_sources 和 search_symbols 检查现有配置；已有数据源能满足需求时不要重复添加。\n3. 需要新数据源时，给出设置页各字段应填写的内容。简单 GET 接口优先给出一个包含真实示例代码和日期的完整 URL，让我粘贴到「添加数据源」弹窗，由插件生成模板并检测格式。POST、鉴权 Header、搜索接口或通用 JSON 映射则逐项说明应填写的值。\n4. API 密钥不要让我发到对话中，也不要写进 URL、请求体、Header、参数、JSON 文件或脚本。密钥只由我直接填写到插件的「API Key」字段；其它配置需要引用密钥时只能写 {apiKey} 占位符。\n5. 插件不提供数据源配置导入或导出，不要生成待导入的配置 JSON，也不要直接修改 .obsidian/plugins/strataboard/data.json。所有配置由我在设置页确认并保存。\n6. 插件支持 GET/POST、JSON 响应、URL/请求体占位符、可选搜索接口和本地 CSV。接口需要登录态、Cookie、HTML/XML、多阶段请求或设置页无法表达的复杂参数时，明确告诉我不支持，并建议使用「本地脚本」输出 CSV。\n7. 我保存后，用 list_sources 找到数据源 id，再用 probe_data 对示例代码做端到端验证，并根据返回的 hint 或 dropped 信息协助修正。\n\n用我使用的语言交流；不要索取、复述或保存我的 API 密钥。": "Help me configure a custom data source for the Obsidian plugin StrataBoard. The plugin ships no data sources; every endpoint is configured manually by the user in Settings. You are connected through the MCP server or CLI and may use list_sources, search_symbols, probe_data, and validate_cards. Follow this workflow:\n\n1. First confirm the data platform, instruments, frequency, and required fields. Prefer official, publicly documented REST/JSON APIs that I am authorized to access. Do not use undocumented scraping endpoints or services that require login cookies.\n2. Use list_sources and search_symbols first. Do not add another source when an existing one already meets the need.\n3. When a new source is required, tell me exactly what to enter in each Settings field. For a simple GET API, prefer a complete URL containing a real sample code and date range so I can paste it into Add Data Source and let the plugin build the template and detect the format. For POST, auth headers, search endpoints, or generic JSON mappings, describe each field value separately.\n4. Never ask me to send an API key in the conversation, and never put one in a URL, request body, header, parameter, JSON file, or script. I enter the secret directly into the plugin's API Key field. Every other field must reference it only with the {apiKey} placeholder.\n5. The plugin does not import or export data-source configurations. Do not generate an importable config JSON and do not edit .obsidian/plugins/strataboard/data.json directly. I must review and save every source in Settings.\n6. The plugin supports GET/POST, JSON responses, URL/body placeholders, optional search endpoints, and local CSV. If an API needs login state, cookies, HTML/XML, multiple request stages, or parameters the Settings UI cannot express, say that it is unsupported and recommend a local script that outputs CSV.\n7. After I save, use list_sources to find the source id, then use probe_data with the sample code for an end-to-end check and help diagnose any hint or dropped fields.\n\nReply in my language. Do not request, repeat, or retain my API key.",
 
   // ===== Card edit modals =====
   "编辑数据卡": "Edit Data Card",
@@ -804,6 +780,7 @@ const EN: Record<string, string> = {
   "添加": "Add",
   "显示整组": "Show group",
   "隐藏整组": "Hide group",
+  "删除整组": "Delete group",
   "（失效）": " (inactive)",
   "默认": "Default",
   "已改：{list}": "Modified: {list}",
@@ -853,6 +830,8 @@ const EN: Record<string, string> = {
   "本卡已有 {n} 个指标，应用指标组「{name}」时如何处理？":
     "This card already has {n} indicators. How should group \"{name}\" be applied?",
   "导入成功：更新 {updated} 个、新增 {added} 个指标组。": "Import succeeded: {updated} groups updated, {added} added.",
+  "已同步 {n} 张卡片中的指标组「{name}」。": "Synced indicator group \"{name}\" in {n} card(s).",
+  "已同步 {n} 张卡片中被导入覆盖的指标组。": "Synced imported indicator groups in {n} card(s).",
   "没有可导出的指标组。": "No indicator groups to export.",
   "已导出 {n} 个指标组到剪贴板。": "Exported {n} indicator groups to the clipboard.",
   "导入失败：内容不是有效的指标组配置。": "Import failed: the content is not a valid indicator-group config.",
@@ -886,51 +865,11 @@ const EN: Record<string, string> = {
   "已修理（{n} 张卡片）": "Repaired ({n} cards)",
   "已移除字段：{keys}": "Removed fields: {keys}",
   "保持原样（{n} 张卡片）": "Left unchanged ({n} cards)",
-  // ===== AI 助手 (settings tab: MCP / CLI for external agents) =====
-  "接入 StrataBoard MCP / CLI": "Connect StrataBoard MCP / CLI",
-  "最省事的方式：复制「一键配置提示词」发给你的 AI agent，它会自动定位 vault 路径并完成注册；下方配置片段供手动配置，把 <vault路径> 换成你的 vault 根目录。":
-    "Easiest way: copy the \"one-click setup prompt\" below and send it to your AI agent — it locates the vault path itself and finishes the registration; the config snippets below are for manual setup (replace <vault路径> with your vault root).",
-  "一键配置提示词（复制给你的 AI）": "One-click setup prompt (copy for your AI)",
-  "请帮我把 Obsidian 插件 StrataBoard 的 MCP server 配置好，之后你就可以直接调用它的工具了。\n\n背景：StrataBoard 是一个 Obsidian 数据卡片插件，附带一个 MCP stdio server（需要 Node 18+），入口文件是 <vault根目录>/.obsidian/plugins/strataboard/mcp-server.js。它提供这些工具：search_symbols / list_sources / validate_cards / probe_data / get_card_guide。\n\n请按以下步骤操作：\n1. 确定我的 vault 根目录：如果当前工作目录在某个 Obsidian vault 内（向上查找包含 .obsidian 目录的位置）就直接用它；找不到就问我，不要猜。\n2. 确认 mcp-server.js 已就位：检查 <vault根目录>/.obsidian/plugins/strataboard/ 下是否存在 mcp-server.js 和 cli.js。它们是可选文件，插件不会自行下载或更新；文件不存在时，打开 https://github.com/lichliar/strataboard/releases ，找到与插件版本号完全一致的 release（版本号见 Obsidian 设置 → StrataBoard → 高级 →「诊断与运行环境」中的「插件版本」），下载 mcp-server.js 和 cli.js，手动放进插件目录。\n   两个文件确认就位之前不要继续下一步。\n3. 按你的客户端注册名为 strataboard 的 MCP server：command 为 node，args 为 [\"<vault根目录>/.obsidian/plugins/strataboard/mcp-server.js\", \"--vault\", \"<vault根目录>\"]（也可以用环境变量 STRATABOARD_VAULT 传 vault 路径）。\n   - Codex：写入 ~/.codex/config.toml 的 [mcp_servers.strataboard]；\n   - Claude Code：执行 claude mcp add，或编辑对应的配置文件；\n   - 其它客户端：用它自己的 MCP 配置方式写入等价的 JSON。\n4. 写完后把最终配置内容给我看一遍，并告诉我是否需要重启或重载客户端才能生效。\n5. 如果 MCP 始终不可用，改用插件附带的 CLI：node \"<vault根目录>/.obsidian/plugins/strataboard/cli.js\" <命令> --vault \"<vault根目录>\"，命令有 search / sources / validate / probe。\n\n用我使用的语言与我交流，遇到拿不准的地方先问我再动手。":
-    "Please set up the MCP server of the Obsidian plugin StrataBoard for me, so you can call its tools directly from now on.\n\nBackground: StrataBoard is an Obsidian data-card plugin that ships an MCP stdio server (requires Node 18+); the entry file is <vault root>/.obsidian/plugins/strataboard/mcp-server.js. It provides these tools: search_symbols / list_sources / validate_cards / probe_data / get_card_guide.\n\nPlease follow these steps:\n1. Determine my vault root: if the current working directory is inside an Obsidian vault (walk up until you find a directory containing .obsidian), use it directly; if you can't find one, ask me — do not guess.\n2. Make sure mcp-server.js is in place: check whether mcp-server.js and cli.js exist under <vault root>/.obsidian/plugins/strataboard/. They are optional files and the plugin never downloads or updates them. If they are missing, open https://github.com/lichliar/strataboard/releases , find the release whose tag exactly matches the plugin version (shown under Obsidian Settings → StrataBoard → Advanced → \"Diagnostics & Runtime\" as \"Plugin Version\"), download mcp-server.js and cli.js, and place them into the plugin directory manually.\n   Do not proceed to the next step until both files are confirmed in place.\n3. Register an MCP server named strataboard in your client: command is node, args are [\"<vault root>/.obsidian/plugins/strataboard/mcp-server.js\", \"--vault\", \"<vault root>\"] (you may also pass the vault path via the STRATABOARD_VAULT environment variable).\n   - Codex: write the [mcp_servers.strataboard] section of ~/.codex/config.toml;\n   - Claude Code: run claude mcp add, or edit the corresponding config file;\n   - other clients: write the equivalent JSON using their own MCP configuration mechanism.\n4. When done, show me the final config content and tell me whether the client needs a restart or reload for it to take effect.\n5. If MCP never works, fall back to the bundled CLI: node \"<vault root>/.obsidian/plugins/strataboard/cli.js\" <command> --vault \"<vault root>\", with commands search / sources / validate / probe.\n\nCommunicate in the language I use, and ask me before acting whenever you are unsure.",
-  "Codex（~/.codex/config.toml）": "Codex (~/.codex/config.toml)",
-  "其他 agent（Claude Code 等，JSON 配置）": "Other agents (Claude Code etc., JSON config)",
-  "提供工具：search_symbols / list_sources / validate_cards / probe_data / get_card_guide。":
-    "Tools: search_symbols / list_sources / validate_cards / probe_data / get_card_guide.",
-  "CLI 命令（MCP 不可用时的替代）": "CLI commands (fallback when MCP is unavailable)",
-  "所有命令输出 JSON，适合脚本与 agent 调用；--vault 缺省时读环境变量 STRATABOARD_VAULT，再从当前目录向上查找含 .obsidian 的目录。":
-    "Every command prints JSON, suitable for scripts and agents; without --vault it reads the STRATABOARD_VAULT env var, then walks up from the cwd looking for a directory containing .obsidian.",
-  "提示词：添加数据源": "Prompt: Add a Data Source",
-  "想让 AI 帮你找接口并指导填写设置页时使用（需先完成上方接入）。AI 会先检查已有数据源，再给出可粘贴的 URL 和各字段填写方式；API Key 不发送给 AI，只由你亲自填入插件。保存后可用 probe_data 验证；插件不支持的接口形态建议改用本地脚本。":
-    "Use this when you want your AI to find an endpoint and guide you through the settings UI (finish the setup above first). The AI first checks existing sources, then provides a paste-ready URL and field-by-field instructions. Never send the API key to the AI; enter it directly in the plugin yourself. After saving, use probe_data to verify the source. Use a local script for endpoint shapes the plugin cannot support.",
-  "引导提示词（复制给你的 AI）": "Guided prompt (copy for your AI)",
-  "提示词：编写 / 修改卡片": "Prompt: Author / Edit Cards",
-  "想让 AI 直接创建或修改卡片文件时使用：完整的卡片块 YAML 规范与示例，复制全文交给 AI 先读再写。MCP 客户端可直接调用 get_card_guide 工具获取，无需手动复制。":
-    "Use this when you want your AI to create or edit card files directly: the full card-block YAML spec with examples — copy it for your AI to read before writing cards. MCP clients can fetch it via the get_card_guide tool, no manual copying needed.",
-  "指南全文（Markdown）": "Full guide (Markdown)",
-  "提示词：编写数据处理脚本": "Prompt: Write a Data-Processing Script",
-  "接口形态插件不支持（需要登录、返回 HTML/XML 等）、或想自己抓取 / 加工数据时使用。在「{folder}」中放置 Python 脚本，脚本把结果 CSV 写入其 output/ 子目录，插件会自动把它注册为自定义数据源（之后可建数据卡、对比卡、计算卡）；画布工具栏「更多 → 本地脚本」（或命令「打开本地脚本管理」）里可立即运行、查看日志。复制下方提示词（已附产物契约与合规规则），连同你的需求或报错一起发给你的 AI。":
-    "Use this when the endpoint shape is unsupported by the plugin (login required, HTML/XML responses, etc.) or you want to fetch / process data yourself. Put Python scripts in \"{folder}\"; a script writes its result CSV into the output/ subfolder and the plugin auto-registers it as a custom data source (usable in data, compare, and calc cards). The canvas toolbar's 更多 → 本地脚本 (or the 打开本地脚本管理 command) offers manual runs and logs. Copy the prompt below (the output contract and compliance rules are attached) and send it together with your requirement or error output.",
-  "脚本编写提示词（复制给你的 AI）": "Script-writing prompt (copy for your AI)",
-  "提示词：编写技术指标": "Prompt: Write a Technical Indicator",
-  "想在 K 线卡上加自定义技术指标时使用。把 .js 指标文件放进「{folder}」，插件会自动注册进指标系统（管理见设置页「指标」tab：逐行启用/编辑/删除/从文件导入，加载失败会红字列出原因）。复制下方提示词（已附文件契约、注入的 oak API 与合规红线），连同你的需求或报错一起发给你的 AI。":
-    "Use this when you want a custom technical indicator on K-line cards. Drop a .js indicator file into \"{folder}\" and the plugin registers it into the indicator system automatically (managed under the Settings → Indicators tab: per-file enable/edit/delete/import; load failures are listed in red). Copy the prompt below (with the file contract, the injected oak API and the compliance rules attached) and send it together with your requirement or error output.",
-  "指标编写提示词（复制给你的 AI）": "Indicator-writing prompt (copy for your AI)",
   "复制": "Copy",
   "已复制到剪贴板。": "Copied to clipboard.",
   "复制失败，请手动选中复制。": "Copy failed; select and copy manually.",
 
-  // ===== 插件内 AI（BYOK）+ shared credential picker =====
-  "插件内 AI（BYOK）": "In-Plugin AI (BYOK)",
-  "数据接收方是你填写的服务商地址；API Key 只存系统密钥库（SecretStorage），不写入插件数据文件；费用由服务商决定；清空地址与模型并删除凭据即完全关闭。协议为 OpenAI-compatible Chat Completions，不保证所有服务兼容。":
-    "Data goes only to the provider URL you enter; the API key is stored solely in the system keychain (SecretStorage), never in the plugin's data file; usage fees are set by your provider; clearing the URL and model and deleting the credential turns the feature off completely. The protocol is OpenAI-compatible Chat Completions — compatibility with every provider is not guaranteed.",
-  "接口地址（Base URL）": "Endpoint (Base URL)",
-  "OpenAI-compatible 服务的根地址，请求发往其 /chat/completions；留空即关闭插件内 AI。":
-    "Root URL of an OpenAI-compatible API; requests go to its /chat/completions. Leave empty to disable the in-plugin AI.",
-  "模型名": "Model",
-  "服务商处的模型名称，如 gpt-4o-mini、deepseek-chat。": "Model name at your provider, e.g. gpt-4o-mini or deepseek-chat.",
-  "密钥保存在 Obsidian SecretStorage，不写入 data.json；仅作为 Authorization 头发送到你配置的服务商地址。":
-    "The key is stored in Obsidian SecretStorage, not in data.json; it is sent only as an Authorization header to the provider URL you configured.",
+  // ===== Shared credential picker and settings labels =====
   "凭据（API Key）": "Credential (API Key)",
   "不配置凭据": "No credential",
   "新建凭据…": "New credential…",
@@ -942,65 +881,7 @@ const EN: Record<string, string> = {
   "{name}（{desc}）": "{name} ({desc})",
   "输入新密钥（保存时存入 SecretStorage）": "Enter new key (stored in SecretStorage on save)",
   "留空保持不变；填写则更新该凭据的密钥": "Leave empty to keep; fill to rotate this credential's key",
-  "测试连接": "Test Connection",
-  "以当前配置发送一条最小请求，验证地址、模型与凭据是否可用；失败信息经脱敏后显示。":
-    "Sends a minimal request with the current configuration to verify the URL, model and credential; failures are shown redacted.",
-  "请先填写接口地址与模型名。": "Fill in the endpoint URL and model name first.",
-  "请用 JSON 回复 {\"ok\":true}": "Reply with JSON {\"ok\":true}",
-  "连接成功": "Connection succeeded.",
-  "连接失败：{msg}": "Connection failed: {msg}",
-  "AI 服务将用明文 http 访问本机地址 {origin}。仅在确认这是你自己的服务时允许；允许后该地址会加入本机明文允许清单。":
-    "The AI service will use plaintext http to reach the local address {origin}. Allow this only if it is your own service; allowing adds the address to the plaintext loopback allowlist.",
-  "凭据无效或被拒绝": "Credential invalid or rejected",
-  "端点地址或模型不存在": "Endpoint URL or model not found",
-  "服务商限流，请稍后重试": "Provider rate limit; please retry later",
-  "服务商异常（{status}）": "Provider error ({status})",
-  "服务商返回了无法识别的响应": "The provider returned an unrecognized response",
-
-  // ===== AI 任务面板 (ui/ai-panel-view.ts — right sidebar ItemView) =====
-  "配置数据源": "Configure Data Source",
-  "修复数据源": "Fix Data Source",
-  "创建数据卡": "Create Data Card",
-  "创建指标": "Create Indicator",
-  "创建指标说明": "Create Indicator Guide",
   "指标": "Indicators",
-  "创建脚本": "Create Script",
-  "描述接口地址与返回的数据形态，AI 会生成数据源配置草稿提案。": "Describe the endpoint URL and the shape of its response; the AI will produce a data-source draft proposal.",
-  "已带入当前配置与报错信息，可直接发送，也可补充说明。": "The current config and the error are already attached — send directly or add notes.",
-  "基于已有数据源生成数据卡配置提案。": "Generates a data-card config proposal based on your existing sources.",
-  "基于已有数据源生成多序列对比卡配置提案。": "Generates a multi-series compare-card config proposal based on your existing sources.",
-  "基于已有数据源生成计算卡（公式）配置提案。": "Generates a calc-card (expression) config proposal based on your existing sources.",
-  "生成自定义技术指标（.js）代码提案。": "Generates a custom technical indicator (.js) code proposal.",
-  "为已有指标生成中文 Markdown 说明和 Matplotlib 示意图脚本。": "Generates a Chinese Markdown guide and Matplotlib illustration script for an existing indicator.",
-  "生成数据处理 Python 脚本提案。": "Generates a data-processing Python script proposal.",
-  "尚未配置插件内 AI：请在设置页「AI 助手」中填写服务商接口地址、模型名与凭据，再回到这里使用。": "The in-plugin AI is not configured yet: fill in the provider URL, model and credential under Settings → AI Assistant, then come back here.",
-  "打开 AI 设置": "Open AI Settings",
-  "保存指标草稿": "Save Indicator Draft",
-  "保存指标说明": "Save Indicator Guide",
-  "保存指标文件「{name}」？保存后仍需通过指标审批才会运行。": "Save indicator file \"{name}\"? It still requires indicator approval before running.",
-  "保存指标说明「{name}」？将同时保存 Matplotlib 绘图脚本。": "Save indicator guide \"{name}\"? The Matplotlib plotting script will be saved too.",
-  "Matplotlib 示意图已生成。": "Matplotlib illustration generated.",
-  "指标说明已保存：{name}": "Indicator guide saved: {name}",
-  "保存指标说明失败：{msg}": "Failed to save indicator guide: {msg}",
-  "描述你的需求…": "Describe what you need…",
-  "发送": "Send",
-  "正在等待服务商响应…": "Waiting for the provider's response…",
-  "查看详情": "View Details",
-  "查看发送内容": "View Outgoing Content",
-  "输入修改意见…": "Describe the changes you want…",
-  "提交修改意见": "Submit Feedback",
-  "打开手动设置": "Open Manual Setup",
-  "让 AI 诊断": "Let AI Diagnose",
-  "让 AI 帮我配置": "Let AI Set It Up",
-  "打开表单完成保存": "Open Form to Save",
-  "草稿详情": "Draft Details",
-  "将修改的字段": "Fields to Change",
-  "识别为 {format}，共 {n} 行。": "Recognized as {format}, {n} rows.",
-  "探测失败：{msg}": "Probe failed: {msg}",
-  "草稿已填入表单，请在表单中确认并保存。": "The draft is in the form — review and save it there.",
-  "数据源「{id}」不存在或已删除，无法应用修复。": "Source \"{id}\" no longer exists; the fix cannot be applied.",
-  "该草稿没有 K线 URL（CSV 文件源请在表单中验证）。":
-    "This draft has no kline URL (verify CSV file sources inside the form).",
 
   // ===== 本地脚本 (script manager) =====
   "本地脚本": "Local Scripts",
@@ -1010,8 +891,8 @@ const EN: Record<string, string> = {
     "Folder for your Python scripts; a script writes its result CSVs into the output/ subfolder and the plugin registers them as data sources automatically.",
   "{folder}（在设置页「高级」中修改）": "{folder} (change it under Settings → Advanced)",
   "打开文件夹": "Open Folder",
-  "脚本文件夹中还没有 Python 脚本：自行编写或用 AI 编写（提示词在设置页「AI 助手」）后放入该文件夹即可，支持用子文件夹归类；脚本把结果 CSV 写入 output/ 子目录即可在卡片中使用。":
-    "No Python scripts in the script folder yet — write one yourself or with AI (the prompt lives under Settings → AI Assistant) and drop it into the folder; subfolders are supported for organization. A script that writes its result CSV into the output/ subfolder becomes available to cards.",
+  "脚本文件夹中还没有 Python 脚本：自行编写或用 AI 编写后放入该文件夹即可，支持用子文件夹归类；脚本把结果 CSV 写入 output/ 子目录即可在卡片中使用。":
+    "No Python scripts in the script folder yet — write one yourself or with AI and drop it into the folder; subfolders are supported for organization. A script that writes its result CSV into the output/ subfolder becomes available to cards.",
   "产物：output/{name}.csv": "Output: output/{name}.csv",
   "产物：output/{name}.csv（未注册为数据源）": "Output: output/{name}.csv (not registered as a data source)",
   "产物：尚无（运行后写入 output/{name}.csv）": "Output: none yet (a run writes output/{name}.csv)",
@@ -1027,9 +908,6 @@ const EN: Record<string, string> = {
   "运行完成（退出码 0）": "Run finished (exit code 0)",
   "运行失败（退出码 {code}）": "Run failed (exit code {code})",
   "无法打开文件夹：当前环境不支持。": "Cannot open the folder: not supported in this environment.",
-  "编写/修改脚本的提示词（含产物契约与合规规则）在设置页「AI 助手」tab。":
-    "The prompt for writing/editing scripts (with the output contract and compliance rules) lives under Settings → AI Assistant.",
-  "前往 AI 助手": "Go to AI Assistant",
 
   // ===== 本地脚本 provenance / run (chart cards + settings section) =====
   "未找到与产物同名的脚本（{name}.py），无法运行。": "No script named after the output ({name}.py) was found; cannot run.",

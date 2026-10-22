@@ -11,6 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   createVaultContext,
+  getAgentGuide,
   listIndicatorGroups,
   listSources,
   probeData,
@@ -20,9 +21,6 @@ import {
   validateCards,
   type VaultContext,
 } from "../cli/commands";
-import { renderAiGuide } from "../modules/ai-guide";
-import { AI_SCRIPT_PROMPT } from "../modules/script-prompt";
-import { AI_INDICATOR_PROMPT } from "../modules/indicator-prompt";
 import { ASSET_TYPES, type AssetType } from "../types";
 import { redactSecrets } from "../modules/redact";
 
@@ -81,7 +79,16 @@ async function main(): Promise<void> {
   // Resolved once at startup and injected into every handler.
   const ctx: VaultContext = createVaultContext(vaultOverrideFromArgv() ?? process.env.STRATABOARD_VAULT);
 
-  const server = new McpServer({ name: "strataboard", version: readPluginVersion() });
+  const instructions = [
+    "你正在通过 StrataBoard 的 MCP 工具协助用户操作 Obsidian 金融卡片。按任务先读取对应指南：数据源用 get_source_guide，卡片用 get_card_guide，本地脚本用 get_script_guide，自定义指标用 get_indicator_guide。",
+    "写卡片前用 list_sources / search_symbols 确认数据源和代码，不要凭记忆猜；写完或改完后必须调用 validate_cards。需要确认真实数据可用时调用 probe_data。",
+    "数据源只能由用户在设置页逐项确认并保存；不得直接修改 data.json，不得生成配置导入文件。API 密钥只能由用户填入插件的凭据字段，不得索取、复述或写入 AI 上下文。",
+    `MCP 不可用时可使用 CLI 备用入口：node "${__dirname}/cli.js" guide <source|card|script|indicator> --vault "${ctx.vault}"；其余命令可通过 node "${__dirname}/cli.js" --help 查看。`,
+  ].join("\n");
+  const server = new McpServer(
+    { name: "strataboard", version: readPluginVersion() },
+    { instructions }
+  );
 
   server.registerTool(
     "search_symbols",
@@ -150,7 +157,7 @@ async function main(): Promise<void> {
       content: [
         {
           type: "text" as const,
-          text: renderAiGuide(__dirname),
+          text: getAgentGuide(ctx, "card", __dirname).guide,
         },
       ],
     })
@@ -162,12 +169,7 @@ async function main(): Promise<void> {
       description:
         "返回 StrataBoard「本地脚本」功能的编写指南：CSV 产物契约（宽表 / 单序列 OHLCV）、系统权限提示与合规规则。用户要写数据处理脚本时先读它；脚本放进 scriptFolderPath，产物写到其 output/ 子目录、文件名与脚本同名，插件会自动注册为数据源。",
     },
-    async () =>
-      jsonResult({
-        vault: ctx.vault,
-        scriptFolderPath: ctx.settings.scriptFolderPath ?? "金融卡片/脚本",
-        guide: AI_SCRIPT_PROMPT,
-      })
+    async () => jsonResult(getAgentGuide(ctx, "script", __dirname))
   );
 
   server.registerTool(
@@ -176,12 +178,16 @@ async function main(): Promise<void> {
       description:
         "返回 StrataBoard「自定义指标」功能的编写指南：指标文件的 module.exports 契约（metadata/inputConfig/defaultInputs/plotConfig/calculate）、注入的 oak API（oakscriptjs 精选表面）与合规红线（纯计算，禁 require/网络/DOM）。用户要写或修改有权使用的技术指标代码时先读它；指标文件放进 indicatorFolderPath，文件名 slug 即指标 id，插件自动注册进指标系统。插件不内置指标。",
     },
-    async () =>
-      jsonResult({
-        vault: ctx.vault,
-        indicatorFolderPath: ctx.settings.indicatorFolderPath ?? "指标",
-        guide: AI_INDICATOR_PROMPT,
-      })
+    async () => jsonResult(getAgentGuide(ctx, "indicator", __dirname))
+  );
+
+  server.registerTool(
+    "get_source_guide",
+    {
+      description:
+        "返回 StrataBoard「自定义数据源」配置指南。需要添加或修复数据源时先读它；数据源只能由用户在设置页逐项填写、确认并保存，不支持配置导入/导出。API 密钥只能由用户填入数据源弹窗的「凭据」字段，不进入 AI 上下文。",
+    },
+    async () => jsonResult(getAgentGuide(ctx, "source", __dirname))
   );
 
   server.registerTool(

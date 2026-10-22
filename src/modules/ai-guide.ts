@@ -1,25 +1,23 @@
-// The card-authoring guide for external AI agents. Rendered copy-ready in
-// 设置 → AI 助手 and served by the MCP get_card_guide tool — it is NOT
-// written into the vault. renderAiGuide fills the CLI path placeholder: the
-// MCP server passes its own deployed dir, while the settings tab passes a
-// placeholder so no machine-local path is shown. The example blocks below
-// are REAL card fences: if the guide is pasted into a vault note, the plugin
-// renders them as live demo cards.
+// The card-authoring guide for external AI agents, served by the MCP
+// get_card_guide tool and the CLI guide card command — it is NOT written into
+// the vault. renderAiGuide fills the CLI path placeholder with the deployed
+// plugin dir. The example blocks below are REAL card fences: if the guide is
+// pasted into a vault note, the plugin renders them as live demo cards.
 
-// Used by settings.ts (AI 助手 tab) and the MCP get_card_guide tool.
+// Shared by the MCP get_card_guide tool and the CLI guide card command.
 export function renderAiGuide(pluginDir: string): string {
   return AI_GUIDE_MARKDOWN.replaceAll("{{CLI_PATH}}", `${pluginDir}/cli.js`);
 }
 
-export const AI_GUIDE_MARKDOWN = `# StrataBoard 卡片编写指南（供 AI 使用）
+export const AI_GUIDE_MARKDOWN = `# StrataBoard 卡片编写指南（MCP get_card_guide / CLI guide card）
 
-> 本指南由 StrataBoard 插件生成（设置 → AI 助手 / MCP get_card_guide 工具）。
+> 本指南供已接入 StrataBoard 的外部 AI agent 使用。
 
 这个 vault 安装了 **StrataBoard** 插件：在 Markdown 笔记里写特定语言的围栏代码块（fenced code block），插件就把它渲染成数据卡片（K 线/折线、叠加对比、计算序列、TradingView 小组件、日历）。块内容是 YAML。
 
-卡片数据全部来自用户在设置页配置的「自定义数据源」（卡片的资产类型恒为 \`custom\`）。写卡片前先用 \`sources\` 确认已有哪些源；一个都没有时，让用户先配置数据源（插件设置 → AI 助手 →「提示词：添加数据源」），不要凭空写卡片。
+卡片数据全部来自用户在设置页配置的「自定义数据源」（卡片的资产类型恒为 \`custom\`）。写卡片前先用 MCP \`list_sources\` 或 CLI \`sources\` 确认已有哪些源；一个都没有时，先读取 MCP \`get_source_guide\` 或 CLI \`guide source\`，再指导用户配置数据源，不要凭空写卡片。
 
-## 一、先查再写：CLI 工具
+## 一、先查再写：MCP / CLI 工具
 
 插件目录里有纯 Node 命令行工具（Node 18+，无需启动 Obsidian）：
 
@@ -31,14 +29,16 @@ node "{{CLI_PATH}}" <命令>
 
 | 命令 | 用途 | 示例 |
 | --- | --- | --- |
+| \`guide <source\\|card\\|script\\|indicator>\` | 获取数据源、卡片、本地脚本或自定义指标指南 | \`node "{{CLI_PATH}}" guide card\` |
 | \`sources\` | 列出全部自定义数据源（id/名称/格式/是否启用） | \`node "{{CLI_PATH}}" sources\` |
 | \`search <关键词> [--type 类型] [--limit N]\` | 搜索符号代码（本地代码库 + 源的静态代码表），按相关度排序 | \`node "{{CLI_PATH}}" search 茅台\` |
+| \`groups\` | 列出用户在设置页定义的指标组 | \`node "{{CLI_PATH}}" groups\` |
 | \`probe <代码> [--source 数据源id] [--days N]\` | 真实调用数据接口，确认某代码最近 N 天是否真有数据 | \`node "{{CLI_PATH}}" probe 600519.SH --source src-xxx\` |
 | \`validate <文件\\|->\` | 校验一篇 Markdown 里的全部卡片块，任一失败退出码 1 | \`node "{{CLI_PATH}}" validate 笔记.md\` |
 | \`render-card <文件\\|-> [--out png路径] [--width N] [--height N]\` | 把第一个卡片块（quote/overlay/spread）渲染成 PNG 图片 | \`node "{{CLI_PATH}}" render-card 卡片.md --out 图.png\` |
 | \`render-doc <文章.md> [--out-dir 目录] [--out-md 路径]\` | 把文章里全部卡片渲染成 PNG（默认输出到 \`<文章名>.assets/\`），并生成图片链接版 Markdown（默认 \`<文章名>.images.md\`）——发布到飞书等不支持本插件的平台时用这条 | \`node "{{CLI_PATH}}" render-doc 文章.md\` |
 
-MCP 客户端用等价工具：\`list_sources\` / \`search_symbols\` / \`probe_data\` / \`validate_cards\` / \`render_card_png\`（直接返回图片内容）/ \`render_doc_images\`（入参语义相同）。
+MCP 共 11 个工具：与上述数据命令对应的是 \`list_sources\` / \`search_symbols\` / \`list_indicator_groups\` / \`probe_data\` / \`validate_cards\` / \`render_card_png\`（直接返回图片内容）/ \`render_doc_images\`（入参语义相同）；四份指南分别经 \`get_card_guide\` / \`get_script_guide\` / \`get_indicator_guide\` / \`get_source_guide\` 获取。
 
 渲染只支持 quote/overlay/spread 卡片（financial-widget/calendar 不支持，render-doc 会保留原文并注明原因）；渲染的是当前真实数据，与 Obsidian 里看到的图表一致。
 
@@ -55,13 +55,15 @@ MCP 客户端用等价工具：\`list_sources\` / \`search_symbols\` / \`probe_d
 
 字段（中文键，**白名单严格校验**：写任何此处未列出的键都会报解析错误）：
 
-- \`代码\`（必填）、\`数据源\`（必填，自定义源 id，用 \`sources\` 命令查看）
+- \`代码\`（必填）、\`数据源\`（必填，自定义源 id，用 \`sources\` 命令查看）；\`版本\`（可选数字，默认 1）
 - \`周期\`：\`D\`|\`W\`|\`M\`|\`Q\`|\`Y\`，默认 D。只支持小级别向大级别聚合：插件按数据自动检测源的原始粒度（标题栏有 日频/周频/月频/季频/年频 徽标），原始粒度更粗时更小的周期无效——卡片底部对应按钮冻结，手写的更小 \`周期\` 按原始粒度展示；\`范围\`：\`1y\`|\`3y\`|\`5y\`|\`ytd\`|\`max\` 或 \`yyyy-mm-dd~yyyy-mm-dd\`，默认 1y
-- \`图表类型\`：\`candlestick\`|\`line\`（单值序列用 line）；图表高度固定 400px，涨/跌色由插件全局设置决定，均不是卡片字段
+- \`图表类型\`：\`candlestick\`|\`line\`（单值序列用 line）；涨/跌色由插件全局设置决定，不是卡片字段
+- \`高度\`（可选）：200–1600 px 的固定图表高度，数值取整并限制在该范围。不写时，Canvas 中的卡片跟随节点高度，普通笔记使用 400px 基线
 - \`主题\`：\`auto\`|\`dark\`|\`light\`
 - \`显示标题\`/\`显示成交量\`/\`对数坐标\`：true/false
 - \`title\`（英文键，可选）：整体标题覆盖——写了即替代默认的「名称 ?? 代码」，作用于图表标题栏、水印、导出 PNG 的文件名与图内标题（导出副标题只留周期徽标）
-- \`indicators\`：用户自定义技术指标实例列表（英文键），每项 \`{id: 指标id, inputs: {参数: 值}}\`，\`inputs\` 可省略（使用指标文件声明的默认参数）；\`hidden: true\` 可隐藏某个指标。插件不内置指标；可用 id 来自指标文件夹中的 .js 文件，id 即文件名 slug。不写或写 \`indicators: []\` 均表示本卡不显示指标。完整契约见 MCP \`get_indicator_guide\`（或插件设置 → AI 助手 →「提示词：编写技术指标」）。用户可能在设置页定义了「指标组」：用 CLI \`groups\` 或 MCP \`list_indicator_groups\` 查看，写卡时把组展开为 \`indicators\` 实例列表即可。
+- \`indicators\`：用户自定义技术指标实例列表（英文键），每项 \`{id: 指标id, inputs: {参数: 值}}\`，\`inputs\` 可省略（使用指标文件声明的默认参数）；\`hidden: true\` 可隐藏某个指标，\`group\` 可记录卡片本地应用的指标组名。插件不内置指标；可用 id 来自指标文件夹中的 .js 文件，id 即文件名 slug。不写或写 \`indicators: []\` 均表示本卡不显示指标。完整契约见 MCP \`get_indicator_guide\` 或 CLI \`guide indicator\`。用户可能在设置页定义了「指标组」：用 CLI \`groups\` 或 MCP \`list_indicator_groups\` 查看，写卡时把组展开为 \`indicators\` 实例列表即可。
+- \`价位线\`：水平参考线列表；每项是有限数值，或 \`{价格: 数值, 名称: 可选文本, 颜色: 可选颜色}\`
 - \`可见起点\`/\`可见终点\`：YYYY-MM-DD（插件在用户缩放后自动维护，手写时可省略）
 
 示例（\`数据源\` 换成 \`sources\` 命令返回的真实 id）：
@@ -80,16 +82,18 @@ indicators:
 
 ### 2. \`\`\`overlay — 对比卡（多系列对比）
 
-字段（英文键，**白名单严格校验**：未列出的键会报解析错误；图表高度固定 400px，不可配置）：
+字段（英文键，**白名单严格校验**：未列出的键会报解析错误）：
 
 - \`series\`（必填，1–10 条），每条：
   - \`source\`：\`quote\`|\`card\`
   - quote：\`tsCode\` + \`assetType: custom\` + \`sourceId\`（自定义源 id）+ 可选 \`profile\`（数据源已定义的口径名；优先于符号表和源默认口径）
   - card：\`cardId\`（引用卡片库中已有**计算卡**的稳定 id，即其 YAML 里的 \`id\` 字段；改名/移动卡片文件不影响引用。引用数据卡请直接用 quote 系列——读取该数据卡的 代码/数据源 写成 quote 条目即可）
-  - \`label\`：显示名覆盖（可选）；\`scale\`：视觉缩放系数（仅对比卡可用，可选）
+  - \`label\`：显示名覆盖（可选）；\`scale\`：视觉缩放系数（仅对比卡可用，可选非零数字）
   - \`kind\`：值语义（可选）：\`price\`（默认，价格/指数）|\`yield\`（收益率/利率）|\`spread\`（价差/利差）|\`level\`（可跨零的一般水平值）|\`change\`（已是环比/同比/百分比变化）。**收益率、利差、同比等非价格序列必须声明**，否则两系列卡片的相关系数会按价格误算收益率。缺省顺序：series \`kind\` > 数据源 \`seriesKind\` > \`price\`；不要从口径名或代码猜测
   - \`corr\`：相关变换覆盖（可选）：\`return\`（简单收益率）|\`diff\`（一阶差分）|\`bond\`（债券收益方向 −Δ）|\`raw\`（原值参与）|\`none\`（该系列不参与相关）。默认按 kind 推导：price→return，yield/spread/level→diff，change→raw
-- \`range\`（默认 10y）、\`period\`（\`D\`|\`M\`|\`Q\`|\`Y\` 重采样粒度，默认 D）、\`theme\`
+- \`range\`（默认 10y）、\`period\`（\`D\`|\`W\`|\`M\`|\`Q\`|\`Y\` 重采样粒度，默认 D）、\`theme\`（\`auto\`|\`dark\`|\`light\`）
+- \`lineType\`：\`simple\`（默认，直线段）|\`curved\`（平滑曲线）|\`steps\`（阶梯线）
+- \`viewStart\`/\`viewEnd\`：YYYY-MM-DD 可见范围（插件在用户缩放后自动维护，手写时可省略）
 - \`normalize\`：\`percent\`（默认，各线按首点归一为涨跌幅）|\`zscore\`（标准化）|\`axis\`（各自独立纵轴）|\`none\`（原始值同轴）
 - \`correlation\`：\`false\` 可关闭副标题的两系列相关系数徽标（默认显示；统计的是逐期变动的相关，与图上水平线形状不同）
 - \`title\`（可选）：整体标题覆盖——写了即替代默认的「对比（名1+名2）」（及归一化等模式后缀），作用于图表标题栏、水印、导出 PNG 的文件名与图内标题
@@ -111,7 +115,7 @@ normalize: percent
 
 ### 3. \`\`\`spread — 计算卡（四则运算）
 
-对字母标记的系列做算术：series[0] 是 A，series[1] 是 B……支持 \`+\` \`-\` \`*\` \`/\` \`()\` 和数字。字段同 overlay（含 \`title\` 整体标题覆盖，默认是表达式展开标题），但**不支持** \`normalize\` 和 \`scale\`，另有 \`expression\`（必填）、\`lineWidth\`（1–4）、\`lineColor\`（\`#rrggbb\`）。\`id\` 字段是卡片的稳定身份（其他卡通过 \`cardId\` 引用它）：新建时不写（插件自动生成），编辑已有卡片时**必须原样保留**。
+对字母标记的系列做算术：series[0] 是 A，series[1] 是 B……支持 \`+\` \`-\` \`*\` \`/\` \`()\` 和数字。\`series\` 条目字段与 overlay 相同，但不支持 \`scale\`；卡片级沿用 overlay 的 \`range\`、\`period\`、\`theme\`、\`lineType\`、\`viewStart\`、\`viewEnd\`、\`title\` 与第四节的显示覆盖，不支持 \`normalize\` 和 \`correlation\`。\`title\` 默认是表达式展开标题。另有 \`expression\`（必填）、\`lineWidth\`（1–4 的整数）、\`lineColor\`（\`#rrggbb\`）、\`style\`（\`line\` 默认 |\`baseline\` 零轴上下着色 |\`area\` 线下渐变填充）。\`id\` 字段是卡片的稳定身份（其他卡通过 \`cardId\` 引用它）：新建时不写（插件自动生成），编辑已有卡片时**必须原样保留**。
 
 \`\`\`spread
 series:

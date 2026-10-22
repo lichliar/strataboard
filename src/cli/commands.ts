@@ -30,6 +30,10 @@ import {
 } from "../types";
 import { envVarNameForSource } from "../modules/credentials";
 import { cliApiKeyResolver } from "./runtime-credentials";
+import { renderAiGuide } from "../modules/ai-guide";
+import { AI_SOURCE_PROMPT } from "../modules/source-prompt";
+import { AI_SCRIPT_PROMPT } from "../modules/script-prompt";
+import { AI_INDICATOR_PROMPT } from "../modules/indicator-prompt";
 
 const PLUGIN_ID = "strataboard";
 
@@ -66,6 +70,31 @@ export interface CliSettings {
 export interface VaultContext {
   vault: string;
   settings: CliSettings;
+}
+
+export const AGENT_GUIDE_TOPICS = ["source", "card", "script", "indicator"] as const;
+export type AgentGuideTopic = (typeof AGENT_GUIDE_TOPICS)[number];
+
+export function getAgentGuide(ctx: VaultContext, topic: AgentGuideTopic, pluginDir: string) {
+  const base = { topic, vault: ctx.vault };
+  switch (topic) {
+    case "source":
+      return { ...base, guide: AI_SOURCE_PROMPT };
+    case "card":
+      return { ...base, guide: renderAiGuide(pluginDir) };
+    case "script":
+      return {
+        ...base,
+        scriptFolderPath: ctx.settings.scriptFolderPath ?? "金融卡片/脚本",
+        guide: AI_SCRIPT_PROMPT,
+      };
+    case "indicator":
+      return {
+        ...base,
+        indicatorFolderPath: ctx.settings.indicatorFolderPath ?? "指标",
+        guide: AI_INDICATOR_PROMPT,
+      };
+  }
 }
 
 export class CliError extends Error {}

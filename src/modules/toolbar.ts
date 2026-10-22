@@ -1,7 +1,6 @@
 import { Menu, Notice, TFile, addIcon, type WorkspaceLeaf } from "obsidian";
 import { setTooltip } from "../ui/tooltip";
 import { TB_ICONS, TB_MENU_ICONS } from "./toolbar-icons";
-import { LOGO_SVG } from "./logo";
 import { SERIES_LINE_COLORS } from "./overlay-lines";
 import { appendSvg } from "../utils/dom";
 import {
@@ -43,14 +42,11 @@ interface ToolbarEntryDef {
 
 export class CanvasToolbar {
   private plugin: StrataBoardPlugin;
-  private onOpenAi: () => void;
   private toolbarEl: HTMLElement | null = null;
-  private logoEl: HTMLButtonElement | null = null;
   private activeLeaf: WorkspaceLeaf | null = null;
 
-  constructor(plugin: StrataBoardPlugin, onOpenAi: () => void) {
+  constructor(plugin: StrataBoardPlugin) {
     this.plugin = plugin;
-    this.onOpenAi = onOpenAi;
   }
 
   attach(leaf: WorkspaceLeaf) {
@@ -69,13 +65,6 @@ export class CanvasToolbar {
     // non-Lucide glyphs (overwrite-safe on re-register).
     for (const [name, svg] of Object.entries(TB_MENU_ICONS)) addIcon(name, svg);
 
-    // Logo: brand mark from logo.ts; a real <button> so collapse/expand is
-    // keyboard-reachable (state persists in settings).
-    this.logoEl = this.toolbarEl.createEl("button", { cls: "fc-tb-logo" });
-    appendSvg(this.logoEl, LOGO_SVG);
-    this.updateLogoTooltip();
-    this.logoEl.addEventListener("click", () => this.toggleCollapsed());
-
     // Drag handle: drag moves the bar in 2D, offset persists. Not keyboard
     // operable, so tooltip only.
     const drag = this.toolbarEl.createDiv("fc-tb-drag");
@@ -92,7 +81,6 @@ export class CanvasToolbar {
     this.createButton("refresh", "刷新全部卡片", () => void this.refreshAll());
     this.createButton("settings", "打开设置", () => this.openSettings());
 
-    this.applyCollapsed();
     this.applyPosition();
     this.maybeShowFirstHint();
   }
@@ -110,9 +98,6 @@ export class CanvasToolbar {
       },
       { label: "创建对比卡", icon: "layers", onClick: () => this.insertOverlay() },
       { label: "创建计算卡", icon: "calculator", onClick: () => this.insertSpread() },
-      // AI workbench: always visible (W08 plan §3.2); the panel itself shows
-      // the unconfigured state when BYOK is not set up.
-      { label: "AI 创建", icon: "ai", onClick: () => this.onOpenAi() },
       {
         label: "打开更多工具",
         icon: "more",
@@ -159,7 +144,6 @@ export class CanvasToolbar {
       this.toolbarEl.remove();
       this.toolbarEl = null;
     }
-    this.logoEl = null;
     this.activeLeaf = null;
   }
 
@@ -173,27 +157,6 @@ export class CanvasToolbar {
     const leaf = this.activeLeaf;
     this.detach();
     if (leaf) this.attach(leaf);
-  }
-
-  private toggleCollapsed() {
-    this.plugin.pluginSettings.toolbarCollapsed = !this.plugin.pluginSettings.toolbarCollapsed;
-    void this.plugin.saveSettings();
-    this.applyCollapsed();
-    this.updateLogoTooltip();
-    this.applyPosition();
-  }
-
-  private applyCollapsed() {
-    this.toolbarEl?.classList.toggle("is-collapsed", this.plugin.pluginSettings.toolbarCollapsed);
-  }
-
-  // Logo tooltip/aria follow the collapse state: a collapsed bar offers
-  // 「展开工具栏」, an expanded one 「折叠工具栏」.
-  private updateLogoTooltip() {
-    if (!this.logoEl) return;
-    const label = t(this.plugin.pluginSettings.toolbarCollapsed ? "展开工具栏" : "折叠工具栏");
-    setTooltip(this.logoEl, label);
-    this.logoEl.setAttribute("aria-label", label);
   }
 
   // One-shot hint bubble next to the bar (settings.toolbarHintShown gates

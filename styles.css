@@ -684,12 +684,6 @@ body.theme-dark {
   margin-top: 8px;
 }
 
-/* AI-assist block in the custom-source wizard (copyable endpoint-finding
-   prompt). */
-.fc-ai-help {
-  margin-bottom: 12px;
-}
-
 .fc-prompt-area {
   width: 100%;
   min-height: 120px;
@@ -883,6 +877,11 @@ body.theme-dark {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 600;
+}
+
+.fc-indicator-group-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .fc-indicator-group-toggle {
@@ -2156,9 +2155,8 @@ body.theme-dark {
 
 /* Canvas toolbar (wireframe #screen-toolbar): compact vertical icon bar
    anchored to a canvas corner (default bottom-left, so it never covers the
-   canvas back button), strata-layers logo mark on top (click to collapse),
-   drag handle (moves the bar in 2D, offset persists), entry buttons, then
-   refresh + settings. */
+   canvas back button), drag handle on top (moves the bar in 2D, offset
+   persists), entry buttons, then refresh + settings. */
 .strataboard-toolbar {
   position: absolute;
   display: flex;
@@ -2172,36 +2170,6 @@ body.theme-dark {
   border: 1px solid var(--fc-border);
   border-radius: var(--fc-radius-md);
   box-shadow: var(--fc-shadow-md);
-}
-
-/* The logo is a real <button> (keyboard-reachable collapse toggle); reset
-   the button chrome and keep its larger 32×32 footprint over the generic
-   34×34 icon-button rules below. */
-.strataboard-toolbar button.fc-tb-logo {
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  box-shadow: none;
-  cursor: pointer;
-  flex-shrink: 0;
-  margin-bottom: 4px;
-  color: var(--fc-accent);
-}
-
-.strataboard-toolbar button.fc-tb-logo svg {
-  width: 24px;
-  height: 24px;
-}
-
-.strataboard-toolbar button.fc-tb-logo:hover {
-  background: var(--fc-empty);
-  color: var(--fc-accent);
 }
 
 .fc-tb-drag {
@@ -2246,25 +2214,10 @@ body.theme-dark {
   color: var(--fc-fg);
 }
 
-/* Keyboard focus ring on every toolbar button (logo included). */
+/* Keyboard focus ring on every toolbar button. */
 .strataboard-toolbar button:focus-visible {
   outline: 2px solid var(--fc-accent);
   outline-offset: 2px;
-}
-
-/* Collapsed: shrink to the logo + drag handle (wireframe 折叠状态). */
-.strataboard-toolbar.is-collapsed {
-  width: auto;
-  min-width: 44px;
-  padding: 6px 5px;
-}
-
-.strataboard-toolbar.is-collapsed > button:not(.fc-tb-logo) {
-  display: none;
-}
-
-.strataboard-toolbar.is-collapsed .fc-tb-logo {
-  margin-bottom: 0;
 }
 
 /* One-shot first-run hint bubble beside the bar (toolbar.ts
@@ -2787,45 +2740,6 @@ body.theme-dark {
   margin-bottom: 8px;
 }
 
-/* ==========================================================================
-   Copyable code snippets in the AI 辅助 settings tab
-   (src/settings.ts renderExternalAiSettings).
-   ========================================================================== */
-.fc-code-snippet {
-  border: 1px solid var(--fc-border);
-  border-radius: var(--fc-radius-md);
-  overflow: hidden;
-  margin: 8px 0;
-  background: var(--fc-empty);
-}
-
-.fc-code-snippet-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--fc-border);
-  color: var(--fc-muted);
-  font-size: 12px;
-}
-
-.fc-code-snippet-head button {
-  font-size: 12px;
-  padding: 2px 10px;
-}
-
-.fc-code-snippet pre {
-  margin: 0;
-  padding: 8px 10px;
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  user-select: text;
-  max-height: 360px;
-  overflow: auto;
-}
-
 /* 指标组编辑弹窗: 设计说明的 Markdown 预览（indicator-group-modal.ts）。 */
 .fc-group-note-preview {
   border: 1px solid var(--fc-border);
@@ -3105,170 +3019,4 @@ body.theme-dark {
   border-top: 1px solid var(--background-modifier-border);
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
-}
-
-/* ===== AI 任务面板 (ui/ai-panel-view.ts — right sidebar ItemView) ===== */
-/* Follows the Obsidian theme via the body-scope --fc-* tokens (both light
-   and dark); the hermes palette is NOT applied here — this is sidebar UI,
-   not a card surface. */
-.fc-ai-panel {
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  font-size: var(--font-ui-small);
-  color: var(--fc-fg);
-}
-.fc-ai-title {
-  font-weight: 600;
-  font-size: var(--font-ui-medium);
-}
-.fc-ai-context {
-  font-size: 11px;
-  color: var(--fc-muted);
-  line-height: 1.5;
-}
-.fc-ai-quick {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.fc-ai-task-group {
-  flex-basis: 100%;
-  color: var(--fc-fg);
-  font-size: 11px;
-  font-weight: 600;
-  margin-top: 4px;
-}
-.fc-ai-quick-btn {
-  padding: 3px 10px;
-  font-size: 12px;
-  border-radius: 999px;
-  border: 1px solid var(--fc-border);
-  background: transparent;
-  color: var(--fc-muted);
-  cursor: pointer;
-  box-shadow: none;
-}
-.fc-ai-quick-btn:hover {
-  color: var(--fc-fg);
-  background: var(--fc-empty);
-}
-.fc-ai-quick-btn.is-active {
-  border-color: var(--fc-accent);
-  color: var(--fc-accent);
-}
-.fc-ai-input textarea {
-  width: 100%;
-  min-height: 64px;
-  resize: vertical;
-}
-.fc-ai-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.fc-ai-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--fc-muted);
-}
-.fc-ai-status button {
-  margin-left: auto;
-}
-.fc-ai-spinner {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  border: 2px solid var(--fc-border);
-  border-top-color: var(--fc-accent);
-  border-radius: 50%;
-  animation: fc-ai-spin 0.8s linear infinite;
-}
-@keyframes fc-ai-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-.fc-ai-proposal {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--fc-border);
-  border-radius: var(--fc-radius-md);
-  background: var(--fc-surface);
-}
-.fc-ai-proposal-summary {
-  line-height: 1.5;
-}
-.fc-ai-details {
-  max-height: 260px;
-  overflow: auto;
-  margin: 0;
-  padding: 8px;
-  background: var(--fc-empty);
-  border-radius: var(--fc-radius-sm);
-  font-size: 11px;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-.fc-ai-error {
-  padding: 10px;
-  border: 1px solid var(--fc-error-border);
-  border-radius: var(--fc-radius-md);
-  color: var(--fc-error-text);
-  line-height: 1.5;
-}
-/* Source-proposal field diff (add-source: whole draft; fix-source: patch
-   fields only) and the read-only probe outcome on the proposal card. */
-.fc-ai-diff {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px;
-  background: var(--fc-empty);
-  border-radius: var(--fc-radius-sm);
-  font-size: 11px;
-  word-break: break-all;
-}
-.fc-ai-diff-title {
-  color: var(--fc-muted);
-  margin-bottom: 2px;
-}
-.fc-ai-diff-row {
-  display: flex;
-  gap: 6px;
-  line-height: 1.5;
-}
-.fc-ai-diff-key {
-  color: var(--fc-muted);
-  flex: none;
-}
-.fc-ai-evidence,
-.fc-ai-clarifications {
-  margin: 8px 0;
-  padding: 6px 8px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--fc-radius-sm);
-}
-.fc-ai-evidence summary {
-  cursor: pointer;
-  color: var(--fc-muted);
-}
-.fc-ai-clarification {
-  display: flex;
-  gap: 8px;
-  padding: 4px 0;
-  line-height: 1.5;
-}
-.fc-ai-probe-result {
-  font-size: 11px;
-  color: var(--fc-muted);
-}
-.fc-ai-probe-result.is-error {
-  color: var(--fc-error-text);
 }

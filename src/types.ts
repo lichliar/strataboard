@@ -274,10 +274,11 @@ export interface IndicatorInstance {
   group?: string;                       // card-local applied group name
 }
 
-// A named bundle of indicator instances (设置 → 指标 → 指标组). Settings-
-// Settings-level groups are copied into cards as instances carrying a local
-// group label, so cards can batch-toggle visibility without tracking future
-// edits to the settings group.
+// A named bundle of indicator instances (设置 → 指标 → 指标组). Applying a
+// group to a card copies its instances into the card YAML with a card-local
+// group label; saving an edit (or a name-matched import overwrite) syncs the
+// group's definition back into every card carrying that label (see
+// modules/indicator-group-sync.ts).
 export interface IndicatorGroup {
   id: string;                    // stable id (grp-<timestamp36>-<index>); referenced only inside settings
   name: string;

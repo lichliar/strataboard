@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
- 在Obsidian里插入金融数据，数据源完全自定义。Agent-Native，内置 AI 助手与 MCP/CLI，建议搭配Agent使用。<br>
+ 在Obsidian里插入金融数据，数据源完全自定义。Agent-Native，提供 MCP/CLI 与外部 Agent 指南，建议搭配 Codex/Claude 等 Agent 使用。<br>
   
 </p>
 
@@ -39,7 +39,7 @@
 - **导出图片**：把卡片渲染成 PNG，可手动导出，也可经 MCP/CLI 调用；
 - **自定义技术指标**：不内置指标，支持用户自行提供的 .js 指标文件，可让 AI 辅助编写，或从 [lightweight-charts-indicators](https://github.com/deepentropy/lightweight-charts-indicators)（基于 lightweight-charts 的常用技术指标库）改写而来；插件不提供买卖信号，指标自行返回的标记仅作为展示结果。
 - **自定义脚本计算**：对数据序列做更复杂的运算；支持csv数据表，通过脚本计算得出的csv数据表可直接注册为数据源；
-- **Agent-Native**：内置 **AI 助手面板**（BYOK），可辅助配置数据源、创建卡片、编写指标与脚本，产出均为提案、需你确认后生效；内置 MCP/CLI，可搭配 [claudian](https://github.com/yishentu/claudian)、[hermes](https://github.com/NousResearch/hermes-agent)、[openclaw](https://github.com/openclaw/openclaw) 等 Agent 使用，也可使用自己的 AI Agent。
+- **Agent-Native**：不内置 AI 助手，也不发送模型请求；提供带初始化工作指令的 MCP 与 CLI `guide`，外部 Agent 可自助获取数据源、卡片、脚本、指标四份指南，可搭配 Codex、Claude Code、[claudian](https://github.com/yishentu/claudian)、[hermes](https://github.com/NousResearch/hermes-agent)、[openclaw](https://github.com/openclaw/openclaw) 等外部 Agent 使用。
 
 
 ## 演示
@@ -72,7 +72,7 @@
 ## 免责声明
 
 - 本插件是金融数据汇总、统计与图表展示工具，不提供投资咨询、选股、择时或买卖点建议，不生成或推荐买卖信号；展示内容**不构成任何投资建议**。
-- 插件仅在你使用对应功能时，向你自行配置的数据接口、AI 接口和 TradingView 发起请求，不会向作者或其他服务器发送数据。
+- 插件仅在你使用对应功能时，向你自行配置的数据接口和 TradingView 发起请求，不会向作者或其他服务器发送数据；插件不内置 AI 助手，也不发送模型请求。
 - 插件代码以 MIT 许可证发布；第三方数据与组件的使用范围，以相应提供方的许可证、服务条款及你取得的授权为准。
 - 完整条款见[免责声明](docs/免责声明.md)。
 

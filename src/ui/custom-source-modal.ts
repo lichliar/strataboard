@@ -4,8 +4,6 @@ import { sourceNeedsApiKey } from "../types";
 import { newCredentialId, type CredentialStore } from "../modules/credentials";
 import { CREDENTIAL_NEW, renderCredentialField, type CredentialFieldHandle } from "./credential-field";
 import { redactError, redactSecretsWith } from "../modules/redact";
-import type { AiTaskContext, AiTaskRequest } from "../modules/ai/tasks";
-import { outlineSample } from "../utils/sample-outline";
 import { evaluateUrl } from "../utils/url-policy";
 import { ConfirmModal } from "./confirm-modal";
 import { AiCopyPreviewModal } from "./ai-copy-preview-modal";
@@ -31,34 +29,24 @@ import { t } from "../i18n";
 import { findEmbeddedCredentialFields } from "../utils/source-credentials";
 import { reportSourceHealth } from "../modules/source-health";
 
-// AI_SOURCE_PROMPT lives in modules/source-prompt.ts (shared with the
-// in-plugin AI assistant's tasks); re-exported here for existing UI
-// importers (setup-guide-modal.ts, settings.ts).
-export { AI_SOURCE_PROMPT } from "../modules/source-prompt";
-
 // Setup dialog for one user-defined custom data source (设置页 → 数据源 →
 // 添加数据源 → 远程接口).
 // The plugin ships no endpoint URLs — the user pastes a working URL and the
 // dialog templates it (autoTemplateUrl), probes it inline as they type, and
 // auto-detects the response format (腾讯/东方财富 presets or a guessed
-// generic-JSON mapping). While ADDING a source the layout is two sections
-// on one page; editing an existing source shows only the first one:
-//   1. 配置 — 名称 first, then K线接口地址 (pasting one auto-fills name /
-//      sample code / credential), 示例代码 and 凭据, then the probe status
-//      with its 测试并预览 button; rarely-touched inputs (请求方式 / 请求体 /
-//      鉴权 Header / 兼容模式 / 搜索 URL / 代码表) live under 高级选项, the
-//      manual field mapping under 字段映射（可选）(auto-opens when a
-//      generic-JSON source parses nothing). A failed probe offers 复制报错 — a copyable
-//      error report for the user's AI — in edit mode too. Field descriptions
-//      render as hover-only info icons (applyInfoDescs), not text under the
-//      field name.
-//   2. AI 助手设置 — a jump into the plugin's task assistant when available;
-//      MCP/CLI remains available from the settings tab for advanced users.
+// generic-JSON mapping). The 配置 section contains 名称, K线接口地址 (pasting
+// one auto-fills name / sample code / credential), 示例代码 and 凭据, then the
+// probe status with its 测试并预览 button; rarely-touched inputs (请求方式 /
+// 请求体 / 鉴权 Header / 兼容模式 / 搜索 URL / 代码表) live under 高级选项, and
+// manual field mapping under 字段映射（可选）(auto-opens when a generic-JSON
+// source parses nothing). A failed probe offers 复制报错 — a copyable error
+// report for the user's AI. Field descriptions render as hover-only info
+// icons (applyInfoDescs), not text under the field name.
 // Placeholders: klineUrl / bodyTemplate {code} {start} {end} {startIso}
 // {endIso} {apiKey}, searchUrl / searchBodyTemplate {query}.
 
 // Credential picker (sentinel values, dropdown, password input) lives in
-// ui/credential-field.ts, shared with the AI 助手 BYOK settings block.
+// ui/credential-field.ts.
 
 export const CUSTOM_FORMAT_LABELS: Record<CustomSourceDef["format"], string> = {
   tencent: "腾讯格式",
@@ -66,41 +54,6 @@ export const CUSTOM_FORMAT_LABELS: Record<CustomSourceDef["format"], string> = {
   json: "通用 JSON",
   csv: "CSV 文件",
 };
-
-// Guided prompt for adding a data source with AI help: moved to
-// modules/source-prompt.ts and re-exported above (see that file's comment).
-
-// Debug prompt for the「让 AI 帮你修」block: head carries the URL
-// template and sample code via t() vars, then the truncated raw response is
-// concatenated, then the tail specifies the exact mapping JSON shape the
-// dialog can apply. The {code}/{start}/... placeholders inside the head are
-// literal text, not t() vars — t() only replaces the vars it is given.
-const AI_DEBUG_PROMPT_HEAD = `我在给一个 Obsidian 插件配置自定义行情数据源，接口的响应格式插件没能自动识别，请帮我生成字段映射配置。
-
-接口 URL 模板：{url}
-其中 {code} 会被替换为证券代码，{start}/{end} 为 YYYYMMDD 起止日期，{startIso}/{endIso} 为 YYYY-MM-DD 起止日期。
-用示例代码 {sample} 实际请求后，响应内容（有截断）如下：
-`;
-
-const AI_DEBUG_PROMPT_TAIL = `
-请只返回一个 JSON 对象（不要任何其他文字、不要 Markdown 代码块以外的内容），格式如下：
-{
-  "rowsPath": "数据行数组在 JSON 中的点号路径，如 data.list；响应顶层就是数组时填空字符串",
-  "rowKind": "object、array 或 fields（每行数据是对象 / 数组 / 数组且按列名寻址）",
-  "fieldsPath": "仅 rowKind 为 fields 时必填：列名数组的点号路径，如 data.fields",
-  "cols": {
-    "date": "日期列：object 行填字段名，array 行填从 0 开始的列序号（字符串），fields 行填列名",
-    "close": "收盘价/数值列",
-    "open": "开盘价列，没有则填空字符串",
-    "high": "最高价列，没有则填空字符串",
-    "low": "最低价列，没有则填空字符串",
-    "vol": "成交量列，没有则填空字符串",
-    "amount": "成交额列，没有则填空字符串"
-  },
-  "errorPath": "可选：业务错误指示字段的点号路径，值非 0/空/null 视为错误",
-  "errorMessagePath": "可选：错误消息字段的点号路径"
-}
-date 和 close 必填；单值序列（收益率、宏观指标等）把数值列填给 close 即可。日期可以是 ISO 日期时间、YYYYMMDD 或时间戳。`;
 
 // Error report behind「复制报错（发给 AI）」(shown on a failed probe, in edit
 // mode too): the AI is asked to fix the request itself — URL template,
@@ -116,41 +69,6 @@ const AI_ERROR_PROMPT = `我在给一个 Obsidian 插件配置自定义行情数
 
 // How long after the last edit the inline auto-detection fires.
 const DETECT_DEBOUNCE_MS = 800;
-
-// Shape of the mapping JSON an AI assistant returns for 应用映射; validated
-// structurally before any of it touches the source definition.
-interface AiMappingPayload {
-  rowsPath: string;
-  rowKind: "object" | "array" | "fields";
-  fieldsPath?: string;
-  cols: {
-    date: string;
-    close: string;
-    open?: string;
-    high?: string;
-    low?: string;
-    vol?: string;
-    amount?: string;
-  };
-  errorPath?: string;
-  errorMessagePath?: string;
-}
-
-function isAiMappingPayload(value: unknown): value is AiMappingPayload {
-  if (typeof value !== "object" || value === null) return false;
-  const payload = value as Record<string, unknown>;
-  const cols = payload.cols as Record<string, unknown> | null | undefined;
-  return (
-    typeof payload.rowsPath === "string" &&
-    (payload.rowKind === "object" || payload.rowKind === "array" || payload.rowKind === "fields") &&
-    (payload.rowKind !== "fields" || typeof payload.fieldsPath === "string") &&
-    !!cols &&
-    typeof cols.date === "string" &&
-    cols.date !== "" &&
-    typeof cols.close === "string" &&
-    cols.close !== ""
-  );
-}
 
 export class CustomSourceModal extends Modal {
   private def: CustomSourceDef;
@@ -201,12 +119,10 @@ export class CustomSourceModal extends Modal {
 
   constructor(
     app: App,
-    // Full def = edit; a Partial without id = AI-drafted prefill (new-source
-    // semantics, defaults fill the gaps). No arg = blank new source.
+    // Full def = edit; a Partial without id = prefilled new source. No arg =
+    // blank new source.
     def: Partial<CustomSourceDef> | undefined,
     onSubmit: (def: CustomSourceDef) => void | Promise<void>,
-    // Opens the settings window on the AI 助手 tab (AI section step 1).
-    private onOpenAiSettings: () => void,
     // Existing sources, for labeling shared credentials in the picker.
     private allSources: CustomSourceDef[] = [],
     // Central credential seam (modules/credentials.ts).
@@ -217,10 +133,7 @@ export class CustomSourceModal extends Modal {
     // URL policy plumbing: confirmed loopback-http origins + the callback
     // that persists a freshly confirmed one (settings.ts wires both).
     private allowedLoopbackHttpOrigins: string[],
-    private onAllowLoopbackHttp: (origin: string) => Promise<void>,
-    // In-plugin AI assistant (W08): hands a failed probe over to the AI
-    // panel as an add-source / fix-source task. Absent = no「让 AI 诊断」button.
-    private onOpenAiPanel?: (task: AiTaskRequest) => void
+    private onAllowLoopbackHttp: (origin: string) => Promise<void>
   ) {
     super(app);
     this.isNew = !def?.id;
@@ -230,8 +143,7 @@ export class CustomSourceModal extends Modal {
         jsonMap: def.jsonMap ? { ...def.jsonMap, cols: { ...def.jsonMap.cols }, searchCols: def.jsonMap.searchCols ? { ...def.jsonMap.searchCols } : undefined } : undefined,
       };
     } else {
-      // AI drafts never carry id (whitelist), but drop it defensively so a
-      // stray empty id can't blank the generated one.
+      // New-source semantics always mint a fresh id, even for a prefilled draft.
       const prefill = { ...(def ?? {}) };
       delete prefill.id;
       this.def = {
@@ -290,15 +202,6 @@ export class CustomSourceModal extends Modal {
     configSection.setAttr("open", "");
     configSection.createEl("summary", { text: this.isNew ? `1. ${t("配置")}` : t("配置") });
     this.renderConfigSection(configSection);
-
-    // AI 助手设置 is an add-flow feature only — editing an existing source
-    // never shows it.
-    if (this.isNew) {
-      const aiSection = contentEl.createEl("details", { cls: "fc-settings-sub" });
-      aiSection.setAttr("open", "");
-      aiSection.createEl("summary", { text: `2. ${t("AI 助手设置")}` });
-      this.renderAiSection(aiSection);
-    }
 
     const footer = contentEl.createDiv("fc-modal-footer");
     const cancelBtn = footer.createEl("button", { text: t("取消") });
@@ -706,29 +609,10 @@ export class CustomSourceModal extends Modal {
     return pending ? [pending] : [];
   }
 
-  // ===== 2. AI 助手设置 =====
-  // Open the in-plugin task assistant when this modal has a host callback;
-  // otherwise keep the settings shortcut for configuring BYOK.
-  private renderAiSection(container: HTMLElement) {
-    container.createDiv({
-      cls: "fc-field-hint",
-      text: t("不想手动配置？让插件内 AI 助手根据当前任务生成数据源草稿，并在确认后打开表单完成保存。"),
-    });
-    const openBtn = container.createEl("button", { text: t(this.onOpenAiPanel ? "让 AI 帮我配置" : "打开 AI 设置") });
-    openBtn.addEventListener("click", () => {
-      if (this.onOpenAiPanel) this.openAiDiagnosis();
-      else this.onOpenAiSettings();
-    });
-
-    // The debug loop only makes sense once a probe produced a real response.
-    if (this.sampleText) this.renderAiFixBlock(container);
-  }
-
-  // Probe status block inside「1. 配置」: detecting / error / preview. The
+  // Probe status block inside「配置」: detecting / error / preview. The
   // 测试并预览 button re-probes immediately, bypassing the edit debounce (the
   // paste-triggered auto probe still runs on its own). A failed probe also
-  // offers 复制报错 — a ready-to-send AI error report — in edit mode too,
-  // which has no AI section.
+  // offers 复制报错 — a ready-to-send AI error report.
   private renderDetectStatus(statusEl: HTMLElement) {
     const testBtn = () => {
       const btn = statusEl.createEl("button", { text: t("测试并预览") });
@@ -751,10 +635,6 @@ export class CustomSourceModal extends Modal {
       copyBtn.addEventListener("click", () => {
         new AiCopyPreviewModal(this.app, this.buildErrorPrompt()).open();
       });
-      if (this.onOpenAiPanel) {
-        const aiBtn = statusEl.createEl("button", { text: t("让 AI 诊断") });
-        aiBtn.addEventListener("click", () => this.openAiDiagnosis());
-      }
       return;
     }
     if (this.detectedRows.length === 0) {
@@ -763,8 +643,6 @@ export class CustomSourceModal extends Modal {
         text: t("已识别为{format}，但未解析出 K 线数据。", { format: t(CUSTOM_FORMAT_LABELS[this.def.format]) }),
       });
       testBtn();
-      // The mapping section only exists for generic JSON; other formats fall
-      // back to the AI section below.
       if (this.def.format === "json") {
         const mappingBtn = statusEl.createEl("button", { text: t("调整字段映射") });
         mappingBtn.addEventListener("click", () => this.openMappingSection());
@@ -948,20 +826,6 @@ export class CustomSourceModal extends Modal {
     await this.save();
   }
 
-  // ===== AI debug prompt =====
-  // The user copies a prompt that carries the URL template plus a truncated
-  // real response; their AI returns a mapping JSON which is pasted back and
-  // applied here. The prompt names no endpoints — it only describes the
-  // response the user's own URL produced.
-
-  private buildDebugPrompt(): string {
-    return (
-      t(AI_DEBUG_PROMPT_HEAD, { url: this.def.klineUrl ?? "", sample: this.sampleCode || t("（无代码）") }) +
-      outlineSample(redactSecretsWith(this.sampleText, this.extraSecrets())) +
-      t(AI_DEBUG_PROMPT_TAIL)
-    );
-  }
-
   // Error report behind「复制报错（发给 AI）」: URL template, method and the
   // (already redacted) thrown error. The credential never leaves the dialog.
   private buildErrorPrompt(): string {
@@ -971,110 +835,6 @@ export class CustomSourceModal extends Modal {
       sample: this.sampleCode || t("（无代码）"),
       error: redactSecretsWith(this.detectError, this.extraSecrets()),
     });
-  }
-
-  // Current config as AI-task context: the credential reference and the
-  // enabled flag never leave the dialog; id stays so a fix-source proposal
-  // can align its sourceId with this source.
-  private aiContextDraft(): Partial<CustomSourceDef> {
-    const draft: Partial<CustomSourceDef> & { apiKey?: string } = { ...this.def };
-    delete draft.id;
-    delete draft.name;
-    delete draft.filePath;
-    delete draft.credentialId;
-    delete draft.apiKey;
-    delete draft.enabled;
-    return draft;
-  }
-
-  // Hands a failed probe to the in-plugin AI panel: add-source while adding,
-  // fix-source while editing. The panel runs the task and proposes a draft /
-  // patch, which comes back here as a prefilled form (never a direct write).
-  private openAiDiagnosis() {
-    if (!this.onOpenAiPanel) return;
-    const context: AiTaskContext = {
-      existingSources: this.allSources.filter((s) => s.enabled !== false).map((s, i) => ({ id: s.id, alias: `源${String.fromCharCode(65 + i)}`, name: s.name, format: s.format })),
-      sourceDraft: this.aiContextDraft(),
-      errorText: redactSecretsWith(this.detectError, this.extraSecrets()),
-    };
-    if (this.sampleText) {
-      context.sampleText = redactSecretsWith(this.sampleText, this.extraSecrets());
-    }
-    this.close();
-    this.onOpenAiPanel({ kind: this.isNew ? "add-source" : "fix-source", goal: "", context });
-  }
-
-  private renderAiFixBlock(containerEl: HTMLElement) {
-    const fix = containerEl.createEl("details", { cls: "fc-settings-sub fc-ai-help" });
-    fix.createEl("summary", { text: t("检测失败？让 AI 帮你修") });
-    fix.createDiv({
-      cls: "fc-field-hint",
-      text: t("复制调试提示词发给你的 AI（如 ChatGPT / Kimi / DeepSeek），它会返回一段映射 JSON；粘贴到下方并点「应用映射」。"),
-    });
-    const copyBtn = fix.createEl("button", { text: t("复制调试提示词") });
-    copyBtn.addEventListener("click", () => {
-      new AiCopyPreviewModal(this.app, this.buildDebugPrompt()).open();
-    });
-    const area = fix.createEl("textarea", { cls: "fc-mono", attr: { rows: "4" } });
-    area.placeholder = t("粘贴 AI 返回的映射 JSON…");
-    const applyBtn = fix.createEl("button", { text: t("应用映射"), cls: "mod-cta" });
-    applyBtn.addEventListener("click", () => this.applyAiMapping(area.value));
-  }
-
-  // Parses and applies the AI-returned mapping JSON. Tolerates a Markdown
-  // code fence around the payload. Accepts rowKind "fields" (with fieldsPath)
-  // and the optional errorPath/errorMessagePath business-error contract.
-  private applyAiMapping(raw: string) {
-    let parsed: unknown;
-    try {
-      const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
-      parsed = JSON.parse(cleaned);
-    } catch {
-      new Notice(t("无法解析映射 JSON，请确认粘贴的是 AI 返回的完整 JSON。"));
-      return;
-    }
-    if (!isAiMappingPayload(parsed)) {
-      new Notice(t("映射 JSON 不完整：需要 rowsPath、rowKind，以及 cols.date、cols.close。"));
-      return;
-    }
-    const cols = parsed.cols;
-    const rowKind = parsed.rowKind;
-    this.def.format = "json";
-    this.def.jsonMap = {
-      ...this.def.jsonMap,
-      rowsPath: parsed.rowsPath,
-      rowKind,
-      fieldsPath: rowKind === "fields" ? parsed.fieldsPath : undefined,
-      cols: {
-        date: cols.date,
-        close: cols.close,
-        open: typeof cols.open === "string" ? cols.open : "",
-        high: typeof cols.high === "string" ? cols.high : "",
-        low: typeof cols.low === "string" ? cols.low : "",
-        vol: typeof cols.vol === "string" ? cols.vol : "",
-        amount: typeof cols.amount === "string" && cols.amount ? cols.amount : undefined,
-      },
-      errorPath: typeof parsed.errorPath === "string" && parsed.errorPath.trim() ? parsed.errorPath.trim() : undefined,
-      errorMessagePath:
-        typeof parsed.errorMessagePath === "string" && parsed.errorMessagePath.trim() ? parsed.errorMessagePath.trim() : undefined,
-    };
-    let rows: OhlcvRow[] = [];
-    if (this.sampleJson) {
-      rows = parseMappedKline(
-        this.sampleJson,
-        resolveMapCode(this.def.jsonMap, splitCompositeCode(this.sampleCode).mapCode, resolveSymbolParams(this.def, this.sampleCode))
-      );
-      this.detectedRows = rows;
-      this.detectError = "";
-    }
-    if (rows.length > 0) {
-      new Notice(t("映射已应用，共解析出 {n} 条。", { n: rows.length }));
-    } else {
-      new Notice(t("映射已应用，但仍未解析出数据，请在字段映射中检查。"));
-      // Nothing parsed — open the mapping section for a manual fix.
-      this.mappingOpen = true;
-    }
-    this.render();
   }
 
   // 字段映射（可选）: generic-JSON mapping picked from real response values —
@@ -1095,8 +855,8 @@ export class CustomSourceModal extends Modal {
 
     // Fields-mode mappings (rows addressed by column NAME — a fields+items
     // response) are offered next to the plain row lists the heuristic found.
-    // A stored/AI-pasted fields mapping the heuristic missed gets synthesized
-    // from the sample so the dropdown can still select and preview it.
+    // A stored fields mapping the heuristic missed gets synthesized from the
+    // sample so the dropdown can still select and preview it.
     const fieldsMappings = this.sampleJson ? findFieldsMappings(this.sampleJson) : [];
     if (def.jsonMap?.rowKind === "fields" && this.sampleJson && !fieldsMappings.some((m) => m.rowsPath === def.jsonMap!.rowsPath)) {
       const fields = digPathValue(this.sampleJson, def.jsonMap.fieldsPath ?? "");
