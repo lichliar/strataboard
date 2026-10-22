@@ -1,6 +1,6 @@
 {
   "name": "strataboard",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Insert financial data cards into Obsidian Canvas",
   "main": "main.js",
   "scripts": {
