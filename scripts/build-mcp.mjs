@@ -24,9 +24,9 @@ await esbuild.build({
   alias: {
     obsidian: path.join(repoRoot, "src/cli/obsidian-shim.ts"),
   },
-  // canvas is a native module — runtime require() from
-  // <pluginDir>/node_modules/canvas (deployed by copy-assets.mjs).
-  external: ["canvas"],
+  // The napi canvas backend is native — runtime require() from
+  // <pluginDir>/node_modules (deployed by copy-assets.mjs).
+  external: ["@napi-rs/canvas"],
   plugins: [jsdomStylesheetFix],
   banner: {
     js: legalBanner("globalThis.window = globalThis;"),

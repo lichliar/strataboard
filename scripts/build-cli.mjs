@@ -13,7 +13,7 @@ import { legalBanner } from "./legal-banner.mjs";
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 await esbuild.build({
-  entryPoints: [path.join(repoRoot, "src/cli/main.ts")],
+  entryPoints: [path.join(repoRoot, "src/cli/bootstrap.ts")],
   bundle: true,
   platform: "node",
   format: "cjs",
@@ -23,10 +23,9 @@ await esbuild.build({
   alias: {
     obsidian: path.join(repoRoot, "src/cli/obsidian-shim.ts"),
   },
-  // canvas is a native module — it must stay a runtime require() resolved
-  // from <pluginDir>/node_modules/canvas (deployed by copy-assets.mjs).
-  // jsdom is bundled; its lazy internal require("canvas") passes through.
-  external: ["canvas"],
+  // The napi canvas backend is native — it must stay a runtime require()
+  // resolved from <pluginDir>/node_modules (deployed by copy-assets.mjs).
+  external: ["@napi-rs/canvas"],
   plugins: [jsdomStylesheetFix],
   banner: {
     js: legalBanner("globalThis.window = globalThis;"),

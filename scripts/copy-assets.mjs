@@ -27,18 +27,23 @@ for (const file of files) {
   }
 }
 
-// The headless PNG renderer (cli.js/mcp-server.js render commands) needs the
-// canvas native module at runtime; it is esbuild-external, so deploy it next
-// to the bundles. The package is self-contained (prebuilt binary under
-// build/Release) for the current platform — a cross-platform install must
-// rebuild/deploy on the target machine.
-const canvasSrc = path.join(projectDir, "node_modules/canvas");
-const canvasDest = path.join(pluginDir, "node_modules", "canvas");
-if (fs.existsSync(canvasSrc)) {
-  fs.cpSync(canvasSrc, canvasDest, { recursive: true });
-  console.log(`Copied canvas -> ${canvasDest}`);
-} else {
-  console.warn(`Missing ${canvasSrc}, render commands will be unavailable`);
+// The headless PNG renderer needs the napi native backend at runtime. Copy
+// every installed platform package, but never remove other platforms already
+// deployed: building once on each target leaves a shared vault usable on both.
+fs.rmSync(path.join(pluginDir, "node_modules", "canvas"), { recursive: true, force: true });
+const canvasScopeSrc = path.join(projectDir, "node_modules", "@napi-rs");
+const canvasScopeDest = path.join(pluginDir, "node_modules", "@napi-rs");
+const canvasPackages = fs.existsSync(canvasScopeSrc)
+  ? fs.readdirSync(canvasScopeSrc).filter((name) => name === "canvas" || name.startsWith("canvas-"))
+  : [];
+if (canvasPackages.length === 0) {
+  console.warn(`Missing ${canvasScopeSrc}/canvas, render commands will be unavailable`);
+}
+for (const name of canvasPackages) {
+  const src = path.join(canvasScopeSrc, name);
+  const dest = path.join(canvasScopeDest, name);
+  fs.cpSync(src, dest, { recursive: true });
+  console.log(`Copied @napi-rs/${name} -> ${dest}`);
 }
 
 // jsdom's default stylesheet, read at load time from jsdom-assets/ (the path

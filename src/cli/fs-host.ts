@@ -161,7 +161,7 @@ async function listIndicatorFiles(vaultRoot: string, folder: string): Promise<Fs
 // different vault waits for the previous sync and then replaces the registry.
 let indicatorSyncState: { vault: string; promise: Promise<void> } | null = null;
 
-async function syncCliIndicators(vaultRoot: string, settings: CliSettings): Promise<void> {
+export async function syncCliIndicators(vaultRoot: string, settings: CliSettings): Promise<void> {
   if (indicatorSyncState?.vault === vaultRoot) {
     await indicatorSyncState.promise;
     return;

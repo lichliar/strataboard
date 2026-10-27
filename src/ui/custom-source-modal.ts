@@ -329,8 +329,8 @@ export class CustomSourceModal extends Modal {
           }
           // A pasted URL carrying its credential inline seeds the
           // new-credential input; the template keeps only the {apiKey}
-          // placeholder and the secret goes to SecretStorage on save. The
-          // field itself decides whether the current selection allows this
+          // placeholder and the credential seam persists the secret on save.
+          // The field itself decides whether the current selection allows this
           // (an explicitly chosen existing credential is never hijacked).
           const extracted = extractApiKey(this.rawKlineUrl);
           if (extracted) this.credentialField?.seedNewSecret(extracted);
@@ -547,12 +547,9 @@ export class CustomSourceModal extends Modal {
   }
 
   // ===== 凭据 =====
-  // The secret lives in Obsidian SecretStorage behind def.credentialId; the
-  // dialog never stores it on the def. Selecting an existing credential id
-  // shares it (e.g. across a source group); filling the password box while an
-  // existing id is selected ROTATES the stored secret on save. Picker UI is
-  // the shared component (ui/credential-field.ts); this dialog persists on
-  // 保存, so onChange only mirrors the selection into dialog state.
+  // The dialog never stores a secret on the def. The credential seam persists
+  // it to SecretStorage and, when enabled, authenticated vault ciphertext.
+  // Selecting an existing id shares it; entering a secret rotates it on save.
   private renderCredentialSection(container: HTMLElement) {
     const def = this.def;
     const needs = sourceNeedsApiKey(def);
@@ -571,8 +568,11 @@ export class CustomSourceModal extends Modal {
       },
       desc: (sel) => {
         const desc: string[] = [
-          t("密钥保存在 Obsidian SecretStorage，不写入 data.json；请求时仅按 {apiKey} 占位符发送到你配置的接口。多个数据源可引用同一凭据。"),
+          t("密钥默认保存在本机 Obsidian SecretStorage；开启同步后，vault 只保存加密凭证。请求时仅按 {apiKey} 占位符发送到你配置的接口，多个数据源可引用同一凭据。"),
         ];
+        if (sel.id && sel.id !== CREDENTIAL_NEW && !this.credentials.get(sel.id) && this.credentials.isSyncLocked()) {
+          desc.unshift(t("该凭据的同步数据尚未解锁；请先在数据源设置页解锁，再探测或轮换。"));
+        }
         if (needs && !sel.id) {
           desc.unshift(t("该源的模板包含 {apiKey} 占位符：不配置凭据将无法取数。"));
         }
@@ -694,6 +694,9 @@ export class CustomSourceModal extends Modal {
     // matching how the saved source will fetch at runtime.
     const probeDef: ResolvedCustomSourceDef = { ...this.def, apiKey: this.probeApiKey() };
     try {
+      if (sourceNeedsApiKey(this.def) && !probeDef.apiKey && this.credentials.isSyncLocked()) {
+        throw new Error(t("同步凭据尚未解锁，请先在数据源设置页解锁。"));
+      }
       const sample = await fetchKlineSample(probeDef, this.sampleCode);
       if (key !== this.probeKey()) {
         // Inputs changed mid-flight — discard the stale sample and re-probe.
@@ -1163,35 +1166,33 @@ export class CustomSourceModal extends Modal {
         return;
       }
     }
-    // Persist the credential through the credential seam — never on the def.
-    if (this.credentialChoice === CREDENTIAL_NEW) {
-      const secret = this.pendingSecret.trim();
-      if (!secret) {
-        if (sourceNeedsApiKey(def)) {
-          new Notice(t("该源的模板包含 {apiKey} 占位符：请输入新密钥，或选择「不配置凭据」。"));
-          return;
+    try {
+      // Await ciphertext persistence before reporting the source as saved.
+      if (this.credentialChoice === CREDENTIAL_NEW) {
+        const secret = this.pendingSecret.trim();
+        if (!secret) {
+          if (sourceNeedsApiKey(def)) {
+            new Notice(t("该源的模板包含 {apiKey} 占位符：请输入新密钥，或选择「不配置凭据」。"));
+            return;
+          }
+          def.credentialId = undefined;
+        } else {
+          const id = newCredentialId();
+          await this.credentials.set(id, secret);
+          def.credentialId = id;
+          const name = this.pendingCredentialName.trim();
+          if (name) this.credentialNames[id] = name;
         }
+      } else if (!this.credentialChoice) {
         def.credentialId = undefined;
       } else {
-        const id = newCredentialId();
-        this.credentials.set(id, secret);
-        def.credentialId = id;
+        def.credentialId = this.credentialChoice;
+        const rotated = this.pendingSecret.trim();
+        if (rotated) await this.credentials.set(this.credentialChoice, rotated);
         const name = this.pendingCredentialName.trim();
-        if (name) this.credentialNames[id] = name;
+        if (name) this.credentialNames[this.credentialChoice] = name;
+        else delete this.credentialNames[this.credentialChoice];
       }
-    } else if (!this.credentialChoice) {
-      def.credentialId = undefined;
-    } else {
-      def.credentialId = this.credentialChoice;
-      const rotated = this.pendingSecret.trim();
-      if (rotated) this.credentials.set(this.credentialChoice, rotated);
-      // Rename (or un-name) the selected credential; the label is shared by
-      // every source referencing this id.
-      const name = this.pendingCredentialName.trim();
-      if (name) this.credentialNames[this.credentialChoice] = name;
-      else delete this.credentialNames[this.credentialChoice];
-    }
-    try {
       await this.onSubmit(def);
       this.close();
     } catch (error) {

@@ -518,18 +518,19 @@ export class IndicatorRenderer {
 
   // ─── hlines and fills ─────────────────────────────────────────────────────
 
-  /** hlines: the entry's hlineConfig, else the hlines of the result; then the fills between hlines */
+  /** Static and dynamic hlines share one id namespace; dynamic values follow the current inputs and win conflicts. */
   private drawHLines(entry: RenderableIndicator, r: Record<string, any>, pane: number, bars: Bar[]): void {
-    const hlines: HLineConfig[] = entry.hlineConfig?.length
-      ? entry.hlineConfig
-      : (r.hlines ?? []).map((h: any, i: number) => ({
-        id: `hline${i}`,
-        price: h.value,
-        title: h.options?.title,
-        color: h.options?.color,
-        linestyle: h.options?.linestyle,
-        linewidth: h.options?.linewidth,
-      }));
+    const dynamicHlines: HLineConfig[] = (r.hlines ?? []).map((h: any, i: number) => ({
+      id: `hline${i}`,
+      price: h.value,
+      title: h.options?.title,
+      color: h.options?.color,
+      linestyle: h.options?.linestyle,
+      linewidth: h.options?.linewidth,
+    }));
+    const dynamicIds = new Set(dynamicHlines.map((h) => h.id));
+    const hlines = [...(entry.hlineConfig ?? []).filter((h) => !dynamicIds.has(h.id)), ...dynamicHlines];
+    if (!hlines.length) return;
     const first = bars[0].time as unknown as Time;
     const last = bars[bars.length - 1].time as unknown as Time;
     for (const h of hlines) {
@@ -548,8 +549,7 @@ export class IndicatorRenderer {
     }
 
     // fills between hlines: the ones of the result (they follow the inputs), else the entry's fillConfig
-    if (!entry.hlineConfig?.length) return;
-    const ids = new Set(entry.hlineConfig.map((h) => h.id));
+    const ids = new Set(hlines.map((h) => h.id));
     const fromResult: FillConfig[] = (r.fills ?? [])
       .filter((f: any) => ids.has(f.plot1) && ids.has(f.plot2))
       .map((f: any, k: number) => ({
@@ -562,7 +562,7 @@ export class IndicatorRenderer {
         title: f.options?.title,
       }));
     const fills = fromResult.length ? fromResult : entry.fillConfig ?? [];
-    if (fills.length) this.drawHLineFills(fills, entry.hlineConfig, pane, bars);
+    if (fills.length) this.drawHLineFills(fills, hlines, pane, bars);
   }
 
   /**

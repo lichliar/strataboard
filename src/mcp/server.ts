@@ -18,7 +18,7 @@ import {
   renderCardPngBase64,
   renderDoc,
   searchSymbols,
-  validateCards,
+  validateCardsInVault,
   type VaultContext,
 } from "../cli/commands";
 import { ASSET_TYPES, type AssetType } from "../types";
@@ -125,12 +125,12 @@ async function main(): Promise<void> {
     "validate_cards",
     {
       description:
-        "校验一段 Markdown 文本里的全部 StrataBoard 卡片块（quote/overlay/spread/financial-widget/calendar）。写完或改完卡片后调用，逐块返回行号与错误原因。",
+        "校验一段 Markdown 文本里的全部 StrataBoard 卡片块及 quote 卡指标。检查卡片字段、指标存在性、审批/加载状态和参数键；写完或改完卡片后调用，逐块返回行号与错误原因。",
       inputSchema: {
         markdown: z.string().describe("完整的 Markdown 文本（直接传内容，不是文件路径）"),
       },
     },
-    wrap(({ markdown }) => validateCards({ markdown, label: "mcp" }))
+    wrap(({ markdown }) => validateCardsInVault(ctx, { markdown, label: "mcp" }))
   );
 
   server.registerTool(

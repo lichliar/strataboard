@@ -17,8 +17,11 @@ import { CsvQuoteClient } from "../modules/csv-quote-client";
 import type { KlineParseStats } from "../modules/quote-format-parsers";
 import { hasCodeSpecificParams, compileDeadCodes } from "../utils/symbol-list";
 import { formatDate } from "../utils/date";
-import { renderCardBlockPng } from "../modules/render-headless";
-import { createRenderRuntime } from "./fs-host";
+import { assertHeadlessRendererReady, getHeadlessRendererDiagnostics, renderCardBlockPng } from "../modules/render-headless";
+import { assertSupportedNodeVersion, SUPPORTED_NODE_RANGE } from "./node-version";
+import { createRenderRuntime, syncCliIndicators } from "./fs-host";
+import { getIndicatorLoadErrors, getUnapprovedIndicators, indicatorRegistry } from "../modules/indicators";
+import { sanitizeFileNamePart } from "../utils/slug";
 import {
   ASSET_TYPES,
   sourceNeedsApiKey,
@@ -396,6 +399,104 @@ export function validateCards(opts: { markdown: string; label?: string }): {
   return { ok, ...(opts.label ? { label: opts.label } : {}), blocks: checks };
 }
 
+function indicatorIdFromPath(filePath: string): string {
+  return sanitizeFileNamePart(path.basename(filePath, path.extname(filePath)));
+}
+
+// Full validation uses the same approved-indicator registry as rendering. A
+// syntactically valid card is not ready when one of its indicators cannot load.
+export async function validateCardsInVault(
+  ctx: VaultContext,
+  opts: { markdown: string; label?: string }
+): Promise<{
+  ok: boolean;
+  schemaOk: boolean;
+  indicatorsOk: boolean;
+  label?: string;
+  blocks: BlockCheck[];
+}> {
+  const schema = validateCards(opts);
+  const { blocks } = findCardBlocks(opts.markdown);
+  await syncCliIndicators(ctx.vault, ctx.settings);
+
+  const problems = new Map<string, string>();
+  const { errors, conflicts } = getIndicatorLoadErrors();
+  for (const item of [...errors, ...conflicts]) {
+    problems.set(indicatorIdFromPath(item.path), `指标加载失败（${item.path}: ${item.error}）`);
+  }
+  for (const item of getUnapprovedIndicators()) {
+    problems.set(
+      indicatorIdFromPath(item.path),
+      `指标未审批（${item.path}${item.changed ? "，内容已变化，需重新审批" : ""}）`
+    );
+  }
+
+  const checks = schema.blocks.map((check, blockIndex) => {
+    if (!check.ok || blocks[blockIndex].lang !== "quote") return check;
+    const parsed = parseCardSpec(blocks[blockIndex].body);
+    if (!parsed.ok) return check;
+    const indicatorErrors: string[] = [];
+    for (const instance of parsed.spec.indicators ?? []) {
+      const def = indicatorRegistry.resolve(instance.id);
+      if (!def) {
+        indicatorErrors.push(problems.get(instance.id) ?? `未找到指标「${instance.id}」`);
+        continue;
+      }
+      const knownInputs = new Set(def.inputConfig.map((input) => input.id));
+      const unknownInputs = Object.keys(instance.inputs ?? {}).filter((key) => !knownInputs.has(key));
+      if (unknownInputs.length > 0) {
+        indicatorErrors.push(`指标「${instance.id}」包含未知参数：${unknownInputs.join(", ")}`);
+      }
+    }
+    return indicatorErrors.length > 0
+      ? { ...check, ok: false, error: indicatorErrors.join("；") }
+      : check;
+  });
+  const schemaOk = schema.ok;
+  const indicatorsOk = checks.every((check, i) => !schema.blocks[i].ok || check.ok);
+  return { ...schema, ok: schemaOk && indicatorsOk, schemaOk, indicatorsOk, blocks: checks };
+}
+
+// ---------------------------------------------------------------------------
+// doctor
+// ---------------------------------------------------------------------------
+
+export async function runDoctor(ctx: VaultContext) {
+  let nodeOk = true;
+  let nodeError: string | undefined;
+  try {
+    assertSupportedNodeVersion();
+  } catch (error) {
+    nodeOk = false;
+    nodeError = error instanceof Error ? error.message : String(error);
+  }
+
+  await syncCliIndicators(ctx.vault, ctx.settings);
+  const renderer = getHeadlessRendererDiagnostics();
+  const { errors, conflicts } = getIndicatorLoadErrors();
+  const unapproved = getUnapprovedIndicators();
+  const approved = indicatorRegistry.list().length;
+  const loadErrors = errors.length + conflicts.length;
+  return {
+    ok: nodeOk && renderer.canvas.ok,
+    node: {
+      version: process.versions.node,
+      supportedRange: SUPPORTED_NODE_RANGE,
+      ok: nodeOk,
+      ...(nodeError ? { error: nodeError } : {}),
+    },
+    platform: `${process.platform}-${process.arch}`,
+    vault: ctx.vault,
+    ...renderer,
+    indicators: {
+      total: approved + unapproved.length + loadErrors,
+      approved,
+      unapproved: unapproved.length,
+      loadErrors,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // probe
 // ---------------------------------------------------------------------------
@@ -625,6 +726,7 @@ export async function renderCardPngBase64(
   if (!block) fail("没有找到 StrataBoard 卡片块（```quote/overlay/spread 围栏块）。");
   if (block.endLine < 0) fail(`第 ${block.line} 行的卡片块未闭合。`);
   if (!RENDERABLE_BLOCK_TYPES.has(block.lang)) fail(UNSUPPORTED_RENDER_MESSAGE(block.lang));
+  assertHeadlessRendererReady();
   const runtime = await createRenderRuntime(ctx.vault, ctx.settings);
   try {
     const rendered = await renderCardBlockPng(block.lang, block.body, runtime.deps, {
@@ -696,6 +798,7 @@ export async function renderDoc(
   const base = path.basename(absFile).replace(/\.md$/i, "");
   const outDir = opts.outDir ? path.resolve(opts.outDir) : path.join(dir, `${base}.assets`);
   const outMd = opts.outMd ? path.resolve(opts.outMd) : path.join(dir, `${base}.images.md`);
+  assertHeadlessRendererReady();
   await fs.promises.mkdir(outDir, { recursive: true });
 
   const runtime = await createRenderRuntime(ctx.vault, ctx.settings);

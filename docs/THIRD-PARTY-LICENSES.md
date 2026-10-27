@@ -2,7 +2,7 @@
 
 This file is generated from the dependency graphs of the distributed `main.js`, `cli.js`, and `mcp-server.js` bundles.
 Run `node scripts/check-third-party-licenses.mjs --write` after changing bundled dependencies, and commit the result.
-Packages marked external by the build (currently `obsidian`, Electron/Node built-ins, CodeMirror/Lezer, and optional `canvas`) are not included in these bundles and are not listed here.
+Packages marked external by the build (currently `obsidian`, Electron/Node built-ins, CodeMirror/Lezer, and optional `@napi-rs/canvas`) are not included in these bundles and are not listed here. The napi canvas license and platform packages are deployed separately under `node_modules`.
 
 ## Bundled package inventory
 

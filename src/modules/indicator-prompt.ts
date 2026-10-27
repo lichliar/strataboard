@@ -14,7 +14,11 @@ export const AI_INDICATOR_PROMPT = `我在用一个 Obsidian 插件（StrataBoar
 - defaultInputs: { 参数id: 默认值 }，与 inputConfig 一一对应；
 - calculate(bars, inputs) 是唯一的计算入口：bars 是 K 线数组，每根 { time（秒级 Unix 时间戳）, open, high, low, close, volume }；inputs 是用户参数（已与 defaultInputs 合并）。返回 { metadata: { title, shorttitle, overlay }（注意返回值里 shorttitle 全小写）, plots: { plot0: [{ time, value }, ...] } }；
 - plots 的每个键对应 plotConfig 里同 id 的一条线（{ id: "plot0", title, color: "#2962FF", lineWidth }）；每条线的数组必须逐 bar 对齐：每个元素 { time: bars[i].time, value }，预热期（窗口未满）用 NaN 占位，不要缺元素、不要用 null、不要自己造时间；
-- 可选：hlineConfig（水平参考线，[{ id, price, title?, color?, linestyle? }]）、fillConfig（两条线之间填充）、markers（由本指标代码自行定义的图表标记）。插件不生成、审核、验证或背书 markers 的含义。更多输出形态（plotCandles/plotBars/lines/boxes 等）插件已支持透传，但优先用最简单的 plots；
+- 可选静态水平线：hlineConfig: [{ id, price, title?, color?, linestyle?, linewidth? }]；动态水平线由 calculate 返回 hlines: [{ value, options: { title?, color?, linestyle?, linewidth? } }]，依次得到 id hline0、hline1……。静态与动态线会合并，动态同 id 覆盖静态；fillConfig 或动态 fills 可引用这些 id；
+- 两条 plot 之间填充：fillConfig 或 calculate 返回 fills: [{ plot1: "plot0", plot2: "plot1", options: { color }, colors?: [...] }]；colors 可逐 bar 变色；
+- 逐 bar 背景色与 K 线着色：calculate 分别返回 bgColors: [{ time, color }]、barColors: [{ time, color }]，time 必须来自对应 bar；
+- markers 是指标代码自行定义的图表标记，插件不生成、审核、验证或背书其含义。aboveBar/belowBar/inBar 依附主图 K 线；副图数值标记使用 { time, position: "atPriceMiddle", price, shape: "circle", color }，price 取该副图的数值，不能用 aboveBar/belowBar 代替；
+- 更多输出形态（plotCandles/plotBars/lines/boxes 等）插件已支持透传，但优先用最简单的 plots；
 - 文件里注入了一个名为 oak 的全局对象（oakscriptjs 库的精选 API），直接用，不要 import：oak.Series（惰性时间序列：const closes = new oak.Series(bars, b => b.close)，.toArray() 取出数组）、oak.ta（指标函数：sma/ema/rma/rsi/macd/highest/lowest/stdev/crossover/crossunder 等，接收 Series 返回 Series）、oak.taCore、oak.math（abs/max/min/round/sqrt 等）、oak.getSourceSeries、oak.compare、oak.color、oak.na/oak.nz/oak.fixnan（缺失值工具）。API 细节可查 oakscriptjs 的文档/源码（npm: oakscriptjs）。
 
 合规红线（必须遵守）：
@@ -56,4 +60,5 @@ module.exports = {
 2. module.exports 含 metadata/inputConfig/defaultInputs/calculate 四个必填字段，plotConfig 的 id 与 plots 的键一一对应；
 3. 返回的每条线长度 == bars.length，time 逐一对齐 bars[i].time，预热段是 NaN 不是 0 或 null；
 4. 全程只用了 oak，没有网络/DOM/Obsidian 调用；
-5. overlay 设置正确：叠在 K 线上的（均线、布林带类）用 true，独立数值轴的（震荡、动量类）用 false。`;
+5. overlay 设置正确：叠在 K 线上的（均线、布林带类）用 true，独立数值轴的（震荡、动量类）用 false；
+6. 已核对数据源成交量单位（A 股通常为股，KVO 等成交量指标数值可能很大），并按所用参考代码许可证保留版权与许可声明。`;

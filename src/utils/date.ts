@@ -87,12 +87,6 @@ export function getDefaultDateRange(): string {
   return `${formatIsoDate(start)}~${formatIsoDate(today)}`;
 }
 
-export function nextTradingDate(ymd: string): string {
-  const date = parseDateYmd(ymd);
-  date.setDate(date.getDate() + 1);
-  return formatDate(date);
-}
-
 export function prevTradingDate(ymd: string): string {
   const date = parseDateYmd(ymd);
   date.setDate(date.getDate() - 1);

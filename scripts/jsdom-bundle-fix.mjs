@@ -22,6 +22,36 @@ export const jsdomStylesheetFix = {
       };
     });
 
+    // jsdom only auto-detects the package named "canvas". Route that integration
+    // point to the deployed napi backend so HTMLCanvasElement and font loading
+    // use the same implementation.
+    build.onLoad({ filter: /jsdom[\\/]lib[\\/]jsdom[\\/]utils\.js$/ }, async (args) => {
+      const source = await fs.promises.readFile(args.path, "utf8");
+      const needle = /require\(["']canvas["']\)/;
+      if (!needle.test(source)) {
+        throw new Error(`jsdom-canvas-backend: pattern not found in ${args.path} — jsdom changed, update the plugin`);
+      }
+      return {
+        contents: source.replace(needle, `require("@napi-rs/canvas")`),
+        loader: "js",
+      };
+    });
+
+    // napi exposes context.canvas through a getter, while jsdom replaces it
+    // with the DOM wrapper. Define an own property instead of assigning through
+    // the getter-only prototype accessor.
+    build.onLoad({ filter: /jsdom[\\/]lib[\\/]jsdom[\\/]living[\\/]nodes[\\/]HTMLCanvasElement-impl\.js$/ }, async (args) => {
+      const source = await fs.promises.readFile(args.path, "utf8");
+      const needle = /this\._context\.canvas = idlUtils\.wrapperForImpl\(this\);/;
+      if (!needle.test(source)) {
+        throw new Error(`jsdom-canvas-wrapper: pattern not found in ${args.path} — jsdom changed, update the plugin`);
+      }
+      return {
+        contents: source.replace(needle, `Object.defineProperty(this._context, "canvas", { value: idlUtils.wrapperForImpl(this), configurable: true });`),
+        loader: "js",
+      };
+    });
+
     // jsdom resolves its sync-XHR worker as an on-disk file at load time; the
     // bundle has no such file (and the worker's own relative requires would
     // not survive bundling either). The render path never performs sync XHR,

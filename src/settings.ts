@@ -9,6 +9,7 @@ import { CleanupConfirmModal } from "./ui/cleanup-modal";
 import { ConfirmModal } from "./ui/confirm-modal";
 import { TextInputModal } from "./ui/text-input-modal";
 import { CustomSourceModal } from "./ui/custom-source-modal";
+import { CredentialSyncPasswordModal } from "./ui/credential-sync-modal";
 import { CsvSourceModal } from "./ui/csv-source-modal";
 import { IndicatorGroupModal, mergeImportedGroups, parseImportedGroups } from "./ui/indicator-group-modal";
 import { IndicatorEditModal } from "./ui/indicator-edit-modal";
@@ -64,9 +65,12 @@ export interface StrataBoardSettings {
   // Unified search pick history: the sensitive minimum (name/code/source id
   // only), newest first.
   searchHistory: { name: string; tsCode: string; sourceId?: string }[];
-  // 凭据命名: user-given labels for SecretStorage credentials, keyed by
-  // credentialId. Not a secret — shown in the credential picker dropdown.
+  // 凭据命名: user-given labels for credentials, keyed by credentialId. Not a
+  // secret — shown in the credential picker dropdown.
   credentialNames: Record<string, string>;
+  // Sync only ciphertext under the plugin's credentials folder. The password
+  // and data key are never persisted in data.json.
+  credentialSyncEnabled: boolean;
   cardLibraryPath: string;
   widgetCardPath: string;
   componentCardPath: string;
@@ -93,9 +97,9 @@ export interface StrataBoardSettings {
   // 指标: indicator file paths (relative to indicatorFolderPath) the user
   // disabled in the 指标 tab.
   disabledIndicators: string[];
-  // SHA-256 of each indicator file whose current contents the user approved,
-  // keyed by vault path. A rename or content change requires approval again;
-  // unapproved files are never loaded or executed.
+  // SHA-256 of each indicator file after stripping a leading BOM and
+  // normalizing line endings, keyed by vault path. A rename or other content
+  // change requires approval again; unapproved files are never executed.
   approvedIndicatorHashes: Record<string, string>;
   indicatorOverrides: Record<string, { name?: string; description?: string; defaultInputs?: Record<string, unknown> }>;
   // 指标 → 指标组: named bundles of indicator instances. Applying a group to
@@ -161,6 +165,7 @@ export const DEFAULT_SETTINGS: StrataBoardSettings = {
   language: "zh",
   searchHistory: [],
   credentialNames: {},
+  credentialSyncEnabled: false,
   cardLibraryPath: "金融卡片",
   widgetCardPath: "金融卡片/TradingView Widgets",
   componentCardPath: "金融卡片/组件",
@@ -429,10 +434,9 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     this.renderDisclaimerSettings(disclaimerDetails);
   }
 
-  // 数据源 tab: the plugin ships no data sources — this tab is the
-  // user-configured custom source list (top level) plus the global request
-  // throttle.
+  // 数据源 tab: credential sync, user-configured sources, and network policy.
   private renderDataSourceSettings(containerEl: HTMLElement): void {
+    this.renderCredentialSyncSettings(containerEl);
     this.renderCustomSourceSettings(containerEl);
 
     const networkDetails = containerEl.createEl("details", { cls: "fc-settings-sub" });
@@ -450,6 +454,71 @@ export class StrataBoardSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+  }
+
+  private renderCredentialSyncSettings(containerEl: HTMLElement): void {
+    const details = containerEl.createEl("details", { cls: "fc-settings-sub" });
+    details.createEl("summary", { text: t("凭证同步") });
+    const state = this.plugin.credentials.getSyncState();
+    const showError = (error: unknown) => {
+      new Notice(error instanceof Error ? error.message : t("凭证同步操作失败。"), 10000);
+    };
+    const status = !state.enabled
+      ? t("未开启；凭证仅保存在本机 SecretStorage。")
+      : state.status === "unlocked"
+        ? t("已解锁；加密凭证会随 vault 同步。")
+        : state.status === "locked"
+          ? t("待解锁；本机已有凭证仍可使用。")
+          : state.detail ?? t("同步暂不可用；本机已有凭证仍可使用。");
+
+    new Setting(details)
+      .setName(t("多设备加密同步"))
+      .setDesc(t("{status} 密文位于 .obsidian/plugins/strataboard/credentials/；同步软件需包含此目录。明文密钥、解锁密码不会写入 vault。", { status }));
+    const controls = new Setting(details);
+    if (!state.enabled) {
+      controls.addButton((button) => button.setButtonText(t("开启同步")).setCta().onClick(() => {
+        void this.plugin.credentials.hasSyncManifest().then((exists) => {
+          new CredentialSyncPasswordModal(this.app, exists ? "unlock" : "create", async (password, remember) => {
+            if (exists) await this.plugin.credentials.unlockSync(password, remember);
+            else await this.plugin.credentials.enableSync(password, remember);
+            this.plugin.pluginSettings.credentialSyncEnabled = true;
+            await this.plugin.saveSettings();
+            this.display();
+            new Notice(t("凭证同步已开启。"));
+          }).open();
+        }).catch(showError);
+      }));
+    } else {
+      if (state.status !== "unlocked") {
+        controls.addButton((button) => button.setButtonText(t("解锁")).setCta().onClick(() => {
+          new CredentialSyncPasswordModal(this.app, "unlock", async (password, remember) => {
+            await this.plugin.credentials.unlockSync(password, remember);
+            this.display();
+            new Notice(t("凭证同步已解锁。"));
+          }).open();
+        }));
+      } else {
+        controls.addButton((button) => button.setButtonText(t("锁定")).onClick(() => {
+          void this.plugin.credentials.lockSync().then(() => this.display()).catch(showError);
+        }));
+      }
+      controls.addButton((button) => button.setButtonText(t("立即同步")).onClick(() => {
+        void this.plugin.credentials.reloadSync().then(() => {
+          this.display();
+          new Notice(t("凭证同步已完成。"));
+        }).catch(showError);
+      }));
+      controls.addButton((button) => button.setButtonText(t("停用并删除")).setWarning().onClick(() => {
+        new ConfirmModal(this.app, t("停用凭证同步并删除 vault 中的加密凭证？各设备已保存到本机的凭证会保留，但无法再通过同步恢复。"), () => {
+          void (async () => {
+            await this.plugin.credentials.disableSync();
+            this.plugin.pluginSettings.credentialSyncEnabled = false;
+            await this.plugin.saveSettings();
+            this.display();
+          })().catch(showError);
+        }).open();
+      }));
+    }
   }
 
   // 指标 tab: user-provided files only. The loader registers enabled
@@ -820,7 +889,7 @@ export class StrataBoardSettingTab extends PluginSettingTab {
 
     section(
       "凭据存储与传输",
-      "您填写的 API Key 保存在 Obsidian 的 SecretStorage 中；插件的 data.json 只保存凭据引用（credentialId），不包含密钥本身。调用 CLI 或 MCP 时，密钥只通过您显式设置的环境变量（STRATABOARD_API_KEY_<数据源ID>）提供，进程不读取 SecretStorage。插件仅在您主动请求数据时，按 {apiKey} 占位符把密钥发送到您配置的接口。请使用最小权限密钥，限制来源与额度，并在怀疑泄露时及时轮换。"
+      "您填写的 API Key 默认只保存在 Obsidian 的 SecretStorage 中；主动开启多设备同步后，vault 中另存使用独立解锁密码保护的加密凭证，明文密钥与解锁密码均不写入 vault。插件的 data.json 只保存凭据引用（credentialId）和同步开关，不包含密钥本身。调用 CLI 或 MCP 时，密钥只通过您显式设置的环境变量（STRATABOARD_API_KEY_<数据源ID>）提供，进程不读取 SecretStorage 或同步密文。插件仅在您主动请求数据时，按 {apiKey} 占位符把密钥发送到您配置的接口。请使用最小权限密钥，限制来源与额度，并在怀疑泄露时及时轮换。"
     );
 
     section(
@@ -1157,34 +1226,35 @@ export class StrataBoardSettingTab extends PluginSettingTab {
     menu.showAtPosition(at);
   }
 
-  // Row deletion: confirm, then (unchanged behavior) offer to delete the
-  // SecretStorage secret when the source was its last referrer.
+  // Row deletion: confirm, then offer to delete an orphaned credential from
+  // both the synced ciphertext and this device's SecretStorage.
   private confirmDeleteCustomSource(def: CustomSourceDef): void {
     new ConfirmModal(this.app, t("删除自定义数据源「{name}」？引用它的卡片将无法加载。", { name: def.name }), () => {
       const sources = this.plugin.pluginSettings.customSources;
       this.plugin.pluginSettings.customSources = sources.filter((s) => s.id !== def.id);
       clearSourceHealth(def.id);
       void this.plugin.saveSettings().then(() => this.display());
-      // Orphaned credential: offer to delete the secret only when no
-      // remaining source references it (shared credentials survive).
       const credentialId = def.credentialId;
       if (credentialId && !this.plugin.pluginSettings.customSources.some((s) => s.credentialId === credentialId)) {
         new ConfirmModal(this.app, t("数据源已删除。它引用的凭据已没有其他数据源使用，是否一并删除保存的密钥？"), () => {
-          this.plugin.credentials.remove(credentialId);
-          delete this.plugin.pluginSettings.credentialNames[credentialId];
-          void this.plugin.saveSettings();
+          void (async () => {
+            await this.plugin.credentials.remove(credentialId);
+            delete this.plugin.pluginSettings.credentialNames[credentialId];
+            await this.plugin.saveSettings();
+            this.display();
+          })().catch((error) => {
+            new Notice(error instanceof Error ? error.message : t("凭证同步操作失败。"), 10000);
+          });
         }).open();
       }
     }).open();
   }
 
-  // Credential status for the row description: the secret lives in
-  // SecretStorage behind def.credentialId; a missing reference or a missing
-  // stored secret is surfaced so a plaintext-era source cannot silently 401.
   private describeCredentialStatus(def: CustomSourceDef): string | null {
     if (!sourceNeedsApiKey(def)) return null;
     if (!def.credentialId) return t("凭据：未设置（需要重新选择凭据）");
     if (!this.plugin.credentials.get(def.credentialId)) {
+      if (this.plugin.credentials.isSyncLocked()) return t("凭据：待解锁（解锁同步后恢复）");
       return t("凭据：已失效（引用的凭据不存在，请重新选择）");
     }
     const shared = this.plugin.pluginSettings.customSources.filter(

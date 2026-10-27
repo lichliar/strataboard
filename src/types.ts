@@ -71,7 +71,7 @@ export interface CustomSourceDef {
   searchProfile?: string;          // declared profiles tier for codes returned by the PRIMARY search pair (like SearchEndpoint.profile)
   deadCodes?: string[];            // regexes for codes known to be unplottable (the interface serves the class but not these codes, e.g. a delisted family); search results mark (not remove) them
   seriesKind?: SeriesValueKind;     // source-level default value semantics for series cards (SeriesRef.kind outranks it; absent = "price"). Declared by the user — never inferred from the source name or code shape.
-  credentialId?: string;            // reference into Obsidian SecretStorage (see modules/credentials.ts); the secret itself is NEVER persisted in data.json
+  credentialId?: string;            // credential reference (modules/credentials.ts); plaintext and password/key material are NEVER persisted in data.json
   apiKeyHeader?: string;            // optional auth header spec: "Name" or "Name: value-template" where the template may contain {apiKey} (e.g. "Authorization: Bearer {apiKey}")
   headers?: Record<string, string>; // static extra headers (values may contain {apiKey}); applied first, apiKeyHeader wins on a name conflict
   method?: "GET" | "POST";          // default GET; POST sends bodyTemplate as the request body

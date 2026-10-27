@@ -263,7 +263,8 @@ async function syncIndicatorFilesOnce(plugin: IndicatorLoaderHost): Promise<void
     if (disabled.has(relativePath)) continue;
 
     const body = await plugin.app.vault.cachedRead(file);
-    const hash = createHash("sha256").update(body).digest("hex");
+    const approvalBody = body.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+    const hash = createHash("sha256").update(approvalBody).digest("hex");
     if (approvedHashes[file.path] === hash) {
       await loadOne(file, body);
       continue;

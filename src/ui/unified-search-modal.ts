@@ -36,8 +36,9 @@ export interface UnifiedSearchOptions {
     list(): SearchHistoryEntry[];
     clear(): void;
   };
-  // Whether a credentialId still resolves to a stored secret.
+  // Whether a credentialId resolves locally or is waiting for sync unlock.
   hasCredential: (credentialId: string) => boolean;
+  credentialLocked: (credentialId: string) => boolean;
   onSymbol: (item: SymbolItem) => void;
   onManual: (sourceId: string, sourceName: string) => void;
   scope?: CategoryId;
@@ -326,6 +327,8 @@ export class UnifiedSearchModal extends Modal {
       badges.push(badge);
       if (this.credentialMissing(def)) {
         badges.push(createSpan({ cls: "fc-usearch-tag fc-usearch-cred-missing", text: t("未配置凭据") }));
+      } else if (this.credentialLocked(def)) {
+        badges.push(createSpan({ cls: "fc-usearch-tag fc-usearch-cred-missing", text: t("凭据待解锁") }));
       }
       if (!def.enabled) {
         badges.push(createSpan({ cls: "fc-usearch-tag", text: t("已禁用") }));
@@ -340,10 +343,12 @@ export class UnifiedSearchModal extends Modal {
     }
   }
 
-  // The endpoint expects a credential (an {apiKey} placeholder somewhere)
-  // but none is configured or the referenced secret is gone.
   private credentialMissing(def: CustomSourceDef): boolean {
-    return sourceNeedsApiKey(def) && (!def.credentialId || !this.opts.hasCredential(def.credentialId));
+    return sourceNeedsApiKey(def) && (!def.credentialId || (!this.opts.hasCredential(def.credentialId) && !this.credentialLocked(def)));
+  }
+
+  private credentialLocked(def: CustomSourceDef): boolean {
+    return Boolean(sourceNeedsApiKey(def) && def.credentialId && !this.opts.hasCredential(def.credentialId) && this.opts.credentialLocked(def.credentialId));
   }
 
   // ==================== Local search ====================
@@ -676,14 +681,16 @@ export class UnifiedSearchModal extends Modal {
       const rowsEl = section.createDiv("fc-usearch-bucket-rows");
       const bucket: SourceBucket = { def, sectionEl: section, rowsEl, stateEl, state: "loading" };
       this.buckets.set(def.id, bucket);
-      if (this.credentialMissing(def)) {
-        // Never fire a request that can only 401: mark the bucket instead.
+      if (this.credentialMissing(def) || this.credentialLocked(def)) {
+        const locked = this.credentialLocked(def);
         bucket.state = "no-credential";
-        bucket.stateEl.setText(t("未配置凭据"));
+        bucket.stateEl.setText(locked ? t("凭据待解锁") : t("未配置凭据"));
         bucket.stateEl.addClass("fc-usearch-cred-missing");
         rowsEl.createDiv({
           cls: "fc-usearch-empty",
-          text: t("「{name}」未配置凭据，无法在线搜索。", { name: def.name }),
+          text: locked
+            ? t("「{name}」的同步凭据尚未解锁，请先在设置页解锁。", { name: def.name })
+            : t("「{name}」未配置凭据，无法在线搜索。", { name: def.name }),
         });
         this.onlineTotals.done++;
         continue;

@@ -61,9 +61,9 @@ export class SeriesAdapter {
   ): Promise<SeriesPoint[]> {
     switch (ref.source) {
       case "quote":
-        return resamplePoints(await this.loadQuoteSeries(ref, range, meta), period);
+        return resamplePoints(await this.loadQuoteSeries(ref, range, force, meta), period);
       case "card":
-        return this.loadCardSeries(ref, range, period, visited, meta);
+        return this.loadCardSeries(ref, range, period, force, visited, meta);
     }
   }
 
@@ -75,6 +75,7 @@ export class SeriesAdapter {
     ref: SeriesRef,
     range: string,
     period: SeriesPeriod,
+    force: boolean,
     visited: Set<string>,
     meta?: SeriesLoadMeta
   ): Promise<SeriesPoint[]> {
@@ -102,10 +103,10 @@ export class SeriesAdapter {
     if (!result.spec) {
       throw invalid(result.error ?? t("配置无效"));
     }
-    return this.loadSpread(result.spec, range, period, visited, meta);
+    return this.loadSpread(result.spec, range, period, force, visited, meta);
   }
 
-  private async loadQuoteSeries(ref: SeriesRef, range: string, meta?: SeriesLoadMeta): Promise<SeriesPoint[]> {
+  private async loadQuoteSeries(ref: SeriesRef, range: string, force: boolean, meta?: SeriesLoadMeta): Promise<SeriesPoint[]> {
     const spec: ParsedCardSpec = {
       symbol: ref.tsCode!,
       assetType: ref.assetType!,
@@ -116,7 +117,7 @@ export class SeriesAdapter {
       version: 1,
     };
     let result: OhlcvLoadResult;
-    if (!this.autoRefreshOnOpen()) {
+    if (!force && !this.autoRefreshOnOpen()) {
       const cached = await this.dataAdapter.loadCachedOhlcv(spec);
       if (cached.length > 0) {
         // A deliberate cache read (auto-refresh off) is not a fallback.
@@ -143,14 +144,14 @@ export class SeriesAdapter {
   // series and the migrated "A-B" expression this reproduces the legacy
   // two-leg spread exactly. Invalid expressions throw a Chinese error for the
   // card-level error+retry UI (same discipline as loadCardSeries).
-  async loadSpread(spec: SpreadSpec, range: string, period: SeriesPeriod = "D", visited: Set<string> = new Set(), meta?: SeriesLoadMeta): Promise<SeriesPoint[]> {
+  async loadSpread(spec: SpreadSpec, range: string, period: SeriesPeriod = "D", force = false, visited: Set<string> = new Set(), meta?: SeriesLoadMeta): Promise<SeriesPoint[]> {
     const parsed = parseExpression(spec.expression, spec.series.length);
     if (!parsed.ok) {
       throw new Error(t("公式错误：{msg}", { msg: parsed.error }));
     }
     const ast = parsed.ast;
 
-    const allPoints = await Promise.all(spec.series.map((ref) => this.loadSeries(ref, range, period, false, visited, meta)));
+    const allPoints = await Promise.all(spec.series.map((ref) => this.loadSeries(ref, range, period, force, visited, meta)));
 
     if (allPoints.some(isMonthlyish)) {
       return evalMonthly(allPoints, ast);

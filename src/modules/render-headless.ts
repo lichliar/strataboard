@@ -2,9 +2,9 @@
 // bitmap without Obsidian. Used only by the CLI (src/cli) and MCP server
 // (src/mcp) bundles — the Obsidian plugin bundle (main.js) must never import
 // this module. The DOM comes from jsdom; canvas 2d contexts come from the
-// "canvas" native package, which jsdom picks up automatically when it is
-// resolvable (deployed next to cli.js by scripts/copy-assets.mjs). Both are
-// loaded lazily so every non-render CLI command works without them.
+// @napi-rs/canvas native package (deployed next to cli.js by copy-assets.mjs).
+// The build routes jsdom's canvas integration to that backend; the native
+// package loads only when a render command or diagnostics needs it.
 //
 // The rendering sequence mirrors the Obsidian renderers (chart-renderer.ts /
 // series-chart-renderer.ts) minus everything interactive: no DOM legend, no
@@ -57,12 +57,13 @@ import { formatIndicatorLabel } from "./indicators/contract";
 const DEFAULT_WIDTH = 960;
 
 let headlessReady = false;
+export const HEADLESS_CANVAS_BACKEND = "@napi-rs/canvas";
 // Family name the registered CJK font is bound to (see registerCjkFont).
 let cjkFontFamily: string | null = null;
+let cjkFontPath: string | null = null;
 
-// First existing candidate wins. node-canvas only renders glyphs from fonts
-// registered with it (there is no system font fallback), and chart/axis
-// labels include CJK (年/月/日 tick marks, Chinese titles).
+// First existing candidate wins. Explicit registration keeps CJK rendering
+// deterministic across platforms for chart/axis labels and Chinese titles.
 const CJK_FONT_CANDIDATES = [
   "/System/Library/Fonts/PingFang.ttc",
   "/System/Library/Fonts/STHeiti Light.ttc",
@@ -73,11 +74,19 @@ const CJK_FONT_CANDIDATES = [
 ];
 
 function registerCjkFont(createRequireFromHere: NodeRequire): void {
-  let registerFont: ((path: string, options: { family: string }) => void) | null = null;
+  let registerFont: (path: string, options: { family: string }) => void;
   try {
-    registerFont = createRequireFromHere("canvas").registerFont;
-  } catch {
-    throw new Error("渲染图片需要 canvas 原生模块：请用 npm run build 重新构建部署（构建会把 canvas 拷到插件目录的 node_modules）。");
+    const backend = createRequireFromHere(HEADLESS_CANVAS_BACKEND) as {
+      GlobalFonts: { registerFromPath(path: string, family: string): unknown };
+    };
+    registerFont = (path, options) => {
+      if (!backend.GlobalFonts.registerFromPath(path, options.family)) {
+        throw new Error(`无法注册字体 ${path}`);
+      }
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`渲染图片需要 ${HEADLESS_CANVAS_BACKEND}：请在源码目录执行 npm install 和 npm run build 部署预编译后端。${reason}`);
   }
   const fs = createRequireFromHere("fs") as typeof import("fs");
   for (const candidate of CJK_FONT_CANDIDATES) {
@@ -85,6 +94,7 @@ function registerCjkFont(createRequireFromHere: NodeRequire): void {
       if (!fs.existsSync(candidate)) continue;
       registerFont!(candidate, { family: "StrataBoardCJK" });
       cjkFontFamily = "StrataBoardCJK";
+      cjkFontPath = candidate;
       return;
     } catch {
       // Unparseable font file — try the next candidate.
@@ -129,7 +139,44 @@ function ensureHeadlessDom(): void {
     // Node >= 21 exposes a read-only navigator; lightweight-charts can live
     // without it.
   }
+  const probe = document.createElement("canvas");
+  probe.width = 2;
+  probe.height = 2;
+  const context = probe.getContext("2d");
+  if (!context) throw new Error(`${HEADLESS_CANVAS_BACKEND} 已加载，但 jsdom 无法创建 2D context。`);
+  context.fillRect(0, 0, 2, 2);
+  if (!probe.toDataURL("image/png").startsWith("data:image/png")) {
+    throw new Error(`${HEADLESS_CANVAS_BACKEND} 的 PNG 编码探针失败。`);
+  }
   headlessReady = true;
+}
+
+export function assertHeadlessRendererReady(): void {
+  ensureHeadlessDom();
+}
+
+export interface HeadlessRendererDiagnostics {
+  canvas: { backend: string; ok: boolean; error?: string };
+  fonts: { cjk: string | null; ok: boolean };
+}
+
+export function getHeadlessRendererDiagnostics(): HeadlessRendererDiagnostics {
+  try {
+    assertHeadlessRendererReady();
+    return {
+      canvas: { backend: HEADLESS_CANVAS_BACKEND, ok: true },
+      fonts: { cjk: cjkFontPath, ok: cjkFontFamily !== null },
+    };
+  } catch (error) {
+    return {
+      canvas: {
+        backend: HEADLESS_CANVAS_BACKEND,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      fonts: { cjk: cjkFontPath, ok: cjkFontFamily !== null },
+    };
+  }
 }
 
 // Font stack used for chart text and the PNG header: the registered CJK font
@@ -295,7 +342,7 @@ async function renderQuotePng(body: string, deps: HeadlessRenderDeps, width: num
   const raw = (await deps.dataAdapter.loadOhlcv({ ...spec, freq: "D" })).rows;
   const nativeFreq = detectNativeFreq(raw);
   const effFreq = maxFreq(spec.freq, nativeFreq);
-  const data = effFreq === "D" ? raw : (await deps.dataAdapter.loadOhlcv({ ...spec, freq: effFreq })).rows;
+  const data = effFreq === "D" ? raw : await deps.dataAdapter.loadCachedOhlcv({ ...spec, freq: effFreq });
   if (data.length === 0) {
     throw new Error(t("暂无数据：{symbol} 在所选时间范围内没有数据。", { symbol: spec.symbol }));
   }
@@ -726,7 +773,7 @@ async function renderSpreadPng(body: string, deps: HeadlessRenderDeps, width: nu
   const spec: SpreadSpec = parsed.spec;
 
   const labels = await Promise.all(spec.series.map((ref) => deps.seriesAdapter.resolveLabel(ref)));
-  const points = await deps.seriesAdapter.loadSpread(spec, spec.range, spec.period ?? "D");
+  const points = await deps.seriesAdapter.loadSpread(spec, spec.range, spec.period ?? "D", false);
   const title = spec.title ?? formatExpressionTitle(spec.expression, labels);
 
   return renderSeriesPng(

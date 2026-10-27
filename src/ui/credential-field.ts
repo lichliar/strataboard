@@ -85,10 +85,12 @@ export function renderCredentialField(container: HTMLElement, opts: CredentialFi
         const name = opts.names?.[id];
         dropdown.addOption(id, name ? t("{name}（{desc}）", { name, desc }) : desc);
       }
-      // The saved reference may point at a deleted secret — keep it
-      // selectable so the UI reflects reality instead of silently switching.
+      // Keep unavailable references selectable, distinguishing locked sync
+      // ciphertext from a credential that is genuinely absent.
       if (selection.id && selection.id !== CREDENTIAL_NEW && !opts.credentials.list().includes(selection.id)) {
-        dropdown.addOption(selection.id, t("当前凭据（已失效，请重新选择）"));
+        dropdown.addOption(selection.id, opts.credentials.isSyncLocked()
+          ? t("当前凭据（待解锁）")
+          : t("当前凭据（已失效，请重新选择）"));
       }
       dropdown.setValue(selection.id ?? "").onChange((value) => {
         selection = { id: value || undefined, pendingSecret: "", pendingName: storedName(value || undefined) };
@@ -110,7 +112,7 @@ export function renderCredentialField(container: HTMLElement, opts: CredentialFi
         text
           .setPlaceholder(
             selection.id === CREDENTIAL_NEW
-              ? t("输入新密钥（保存时存入 SecretStorage）")
+              ? t("输入新密钥（保存时安全存储）")
               : t("留空保持不变；填写则更新该凭据的密钥")
           )
           .setValue(selection.pendingSecret ?? "")

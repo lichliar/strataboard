@@ -23,7 +23,7 @@ import {
   createPluginCredentialStore,
   registerStoreForRedaction,
   type ApiKeyResolver,
-  type CredentialStore,
+  type PluginCredentialStore,
 } from "./modules/credentials";
 import { SqliteCache } from "./modules/sqlite-cache";
 import { CardService, codeBlockTypeFor } from "./modules/card-service";
@@ -111,6 +111,7 @@ class QuoteCodeBlockRenderer extends ChartCardCodeBlockRenderer {
   }
 
   protected async renderBody() {
+    const forceRefresh = this.consumeForceRefresh();
     if (this.chartRenderer) {
       this.removeChild(this.chartRenderer);
       this.chartRenderer = null;
@@ -143,18 +144,15 @@ class QuoteCodeBlockRenderer extends ChartCardCodeBlockRenderer {
       // 始终先取原始行（缓存按源的原始粒度存储），据此检测数据源的原生
       // 周期，再决定实际显示周期：只支持小级别向大级别聚合，spec.freq 比
       // 原始级别小时按原始级别钳制展示（不回写卡片文件）。
-      const rawResult = await this.loadData({ ...spec, freq: "D" });
+      const rawResult = await this.loadData({ ...spec, freq: "D" }, forceRefresh);
       const raw = rawResult.rows;
       this.nativeFreq = detectNativeFreq(raw);
       const effFreq = maxFreq(spec.freq, this.nativeFreq);
-      let fromCache = rawResult.fromCache;
-      let lastDataAt = rawResult.lastDataAt;
+      const fromCache = rawResult.fromCache;
+      const lastDataAt = rawResult.lastDataAt;
       let data = raw;
       if (effFreq !== "D") {
-        const effResult = await this.loadData({ ...spec, freq: effFreq });
-        data = effResult.rows;
-        fromCache = fromCache || effResult.fromCache;
-        lastDataAt = effResult.lastDataAt ?? lastDataAt;
+        data = await this.fcPlugin.dataAdapter.loadCachedOhlcv({ ...spec, freq: effFreq });
       }
       const cachedSymbol = await this.fcPlugin.sqliteCache.lookupSymbol(
         spec.symbol,
@@ -257,8 +255,8 @@ class QuoteCodeBlockRenderer extends ChartCardCodeBlockRenderer {
     this.chartRenderer?.forcePaint();
   }
 
-  private async loadData(spec: ParsedCardSpec): Promise<OhlcvLoadResult> {
-    if (this.fcPlugin.pluginSettings.autoRefreshOnOpen) {
+  private async loadData(spec: ParsedCardSpec, force = false): Promise<OhlcvLoadResult> {
+    if (force || this.fcPlugin.pluginSettings.autoRefreshOnOpen) {
       return this.fcPlugin.dataAdapter.loadOhlcv(spec);
     }
     const cached = await this.fcPlugin.dataAdapter.loadCachedOhlcv(spec);
@@ -551,6 +549,7 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
   }
 
   protected async renderBody() {
+    const forceRefresh = this.consumeForceRefresh();
     if (this.chartRenderer) {
       this.removeChild(this.chartRenderer);
       this.chartRenderer = null;
@@ -586,7 +585,7 @@ class OverlayCodeBlockRenderer extends ChartCardCodeBlockRenderer {
         spec.series.map((ref) => this.fcPlugin.seriesAdapter.resolveLabel(ref))
       );
       const allPoints = await Promise.all(
-        spec.series.map((ref) => this.fcPlugin.seriesAdapter.loadSeries(ref, spec.range, period, false, new Set(), meta))
+        spec.series.map((ref) => this.fcPlugin.seriesAdapter.loadSeries(ref, spec.range, period, forceRefresh, new Set(), meta))
       );
       // Correlation badge: each leg's transform comes from its DECLARED value
       // semantics (series kind/corr > source seriesKind > price), never from
@@ -789,6 +788,7 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
   }
 
   protected async renderBody() {
+    const forceRefresh = this.consumeForceRefresh();
     if (this.chartRenderer) {
       this.removeChild(this.chartRenderer);
       this.chartRenderer = null;
@@ -827,7 +827,7 @@ class SpreadCodeBlockRenderer extends ChartCardCodeBlockRenderer {
         spec.series.map((ref) => this.fcPlugin.seriesAdapter.resolveLabel(ref))
       );
       const meta: SeriesLoadMeta = { fromCache: false };
-      const points = await this.fcPlugin.seriesAdapter.loadSpread(spec, spec.range, spec.period ?? "D", new Set(), meta);
+      const points = await this.fcPlugin.seriesAdapter.loadSpread(spec, spec.range, spec.period ?? "D", forceRefresh, new Set(), meta);
       const title = spec.title ?? formatExpressionTitle(spec.expression, labels);
 
       this.containerEl.empty();
@@ -936,7 +936,7 @@ export default class StrataBoardPlugin extends Plugin {
   dataAdapter!: DataAdapter;
   // Central credential seam (modules/credentials.ts): the only way UI, probe
   // and data requests reach a runtime secret.
-  credentials!: CredentialStore;
+  credentials!: PluginCredentialStore;
   resolveApiKey!: ApiKeyResolver;
   seriesAdapter!: SeriesAdapter;
   cardIndex!: CardIndex;
@@ -955,6 +955,7 @@ export default class StrataBoardPlugin extends Plugin {
   async onload() {
     this.credentials = createPluginCredentialStore(this.app);
     await this.loadSettings();
+    await this.credentials.configureSync(this.pluginSettings.credentialSyncEnabled);
 
     const dataCachePath = this.pluginSettings.dataCachePath;
     const symbolCachePath = this.pluginSettings.symbolCachePath;
@@ -1208,6 +1209,17 @@ export default class StrataBoardPlugin extends Plugin {
       })
     );
 
+    const onCredentialSyncFileChanged = (file: unknown) => {
+      if (!(file instanceof TFile) || !this.credentials.handleSyncPath(file.path)) return;
+      void this.credentials.reloadSync().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        new Notice(t("凭证同步失败：{msg}", { msg: redactSecrets(message) }), 10000);
+      });
+    };
+    this.registerEvent(this.app.vault.on("create", onCredentialSyncFileChanged));
+    this.registerEvent(this.app.vault.on("modify", onCredentialSyncFileChanged));
+    this.registerEvent(this.app.vault.on("delete", onCredentialSyncFileChanged));
+
     // Script-output watcher (本地脚本): a script rewriting its CSV is
     // invisible to the incremental cache (the cached extent already covers
     // the rewritten history), so a modify clears the matching source's cache
@@ -1283,6 +1295,7 @@ export default class StrataBoardPlugin extends Plugin {
   }
 
   onunload() {
+    this.credentials?.closeSync();
     this.toolbar.detach();
     detachTooltipManager();
     this.sqliteCache?.save().then(() => this.sqliteCache?.close()).catch((e) => {
@@ -1352,7 +1365,7 @@ export default class StrataBoardPlugin extends Plugin {
     // The old AI credential may also be referenced by a data source; only
     // remove it when the source configuration does not share it.
     if (removedAiCredentialId && !this.pluginSettings.customSources.some((source) => source.credentialId === removedAiCredentialId)) {
-      this.credentials.remove(removedAiCredentialId);
+      if (!this.credentials.isSyncLocked()) await this.credentials.remove(removedAiCredentialId);
       delete this.pluginSettings.credentialNames[removedAiCredentialId];
     }
     // Corner anchors; old "left" | "right" values (and anything unknown) map
@@ -1392,6 +1405,7 @@ export default class StrataBoardPlugin extends Plugin {
   // open source modal holds its own working copy and submits it whole.
   async onExternalSettingsChange() {
     await this.loadSettings();
+    await this.credentials.configureSync(this.pluginSettings.credentialSyncEnabled);
     this.applySettings();
   }
 
@@ -1710,6 +1724,7 @@ export default class StrataBoardPlugin extends Plugin {
         },
       },
       hasCredential: (credentialId: string) => this.credentials.get(credentialId) !== null,
+      credentialLocked: (credentialId: string) => this.credentials.isSyncLocked() && this.credentials.get(credentialId) === null,
     };
   }
 

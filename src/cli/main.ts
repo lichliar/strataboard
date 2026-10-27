@@ -18,8 +18,9 @@ import {
   probeData,
   renderCardToFile,
   renderDoc,
+  runDoctor,
   searchSymbols,
-  validateCards,
+  validateCardsInVault,
 } from "./commands";
 import { ASSET_TYPES } from "../types";
 import { redactSecrets } from "../modules/redact";
@@ -79,15 +80,17 @@ const USAGE = `StrataBoard CLI — 供外部 AI 在不启动 Obsidian 的情况�
       列出全部自定义数据源（含脚本产物标记）。
   groups
       列出全部指标组（命名指标组合，可在卡片编辑弹窗一键应用）。
+  doctor
+      检查 Node、平台、napi canvas、CJK 字体和指标加载状态；环境不可用退出码 1。
   validate <文件路径|->
-      校验一个 Markdown 文件中所有 StrataBoard 卡片块（"-" 表示从 stdin 读）。
-      全部通过退出码 0，任一失败退出码 1。
+      校验一个 Markdown 文件中所有卡片块及 quote 卡指标（"-" 表示从 stdin 读）。
+      检查指标是否存在、已审批、加载成功及参数键是否有效；任一失败退出码 1。
   probe <代码> [--type <资产类型>=custom] [--source <数据源id>] [--days N=14]
       探测某代码最近 N 天是否真有数据。必须带 --source。
   render-card <文件路径|-> [--out <png路径>] [--width N=960] [--height N]
       把输入 Markdown 里的第一个卡片块（quote/overlay/spread）渲染成 PNG 图片
       （"-" 表示从 stdin 读）。默认输出 ./<标题>-<日期>.png。
-      需要插件目录里有 canvas 原生模块（npm run build 部署时自带）。
+      需要插件目录里有 @napi-rs/canvas 预编译后端（npm run build 部署时自带）。
   render-doc <文章.md> [--out-dir <目录>] [--out-md <路径>] [--width N=960] [--height N]
       把文章里所有卡片块渲染成 PNG（默认输出到 <文章名>.assets/），并生成一份
       图片链接版 Markdown（默认 <文章名>.images.md），可直接发布到飞书等平台。
@@ -118,8 +121,7 @@ async function main(): Promise<void> {
   }
 
   // Vault resolution order: --vault flag > STRATABOARD_VAULT > walk up from
-  // cwd. Commands that need the vault resolve it lazily; validate works
-  // anywhere (even outside a vault).
+  // cwd. Commands that need the vault resolve it lazily.
   const needVault = () => createVaultContext(flagString(args.flags, "vault") ?? process.env.STRATABOARD_VAULT);
 
   switch (command) {
@@ -149,6 +151,12 @@ async function main(): Promise<void> {
     case "groups":
       out(listIndicatorGroups(needVault()));
       break;
+    case "doctor": {
+      const result = await runDoctor(needVault());
+      out(result);
+      if (!result.ok) process.exitCode = 1;
+      break;
+    }
     case "validate": {
       const target = args._[1];
       if (!target) throw new CliError("validate 需要一个 Markdown 文件路径（或 - 表示 stdin）。");
@@ -160,7 +168,7 @@ async function main(): Promise<void> {
         if (!fs.existsSync(file)) throw new CliError(`文件不存在: ${file}`);
         text = fs.readFileSync(file, "utf8");
       }
-      const result = validateCards({ markdown: text, label: target });
+      const result = await validateCardsInVault(needVault(), { markdown: text, label: target });
       out(result);
       if (!result.ok) process.exitCode = 1;
       break;

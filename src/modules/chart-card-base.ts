@@ -267,11 +267,21 @@ export abstract class ChartCardCodeBlockRenderer extends MarkdownRenderChild {
   // Default no-op.
   protected forcePaint(): void {}
 
+  private forceNextRender = false;
+
   // Public re-render entry for the plugin-level registry (script-output
   // invalidation and the toolbar 刷新全部卡片 refresh every chart card): same
-  // render path as the footer refresh button.
+  // render path as the footer refresh button. Explicit refreshes bypass the
+  // open-time cache preference so they always request fresh source data.
   refreshCard(): void {
+    this.forceNextRender = true;
     void this.runRender();
+  }
+
+  protected consumeForceRefresh(): boolean {
+    const force = this.forceNextRender;
+    this.forceNextRender = false;
+    return force;
   }
 
   // Subclass opens its spec edit modal (footer edit button / canvas menu).

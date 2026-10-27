@@ -2,7 +2,7 @@ import { Notice } from "obsidian";
 import type { CustomSourceDef, OhlcvRow, ParsedCardSpec, ResolvedCustomSourceDef, SymbolItem } from "../types";
 import { cacheAssetKey, cacheSymbolKey, isWholeTableSearchSource } from "../types";
 import type { ApiKeyResolver } from "./credentials";
-import { resolveDateRange, formatDate, parseDateYmd, nextTradingDate, prevTradingDate } from "../utils/date";
+import { resolveDateRange, formatDate, parseDateYmd, prevTradingDate } from "../utils/date";
 import { matchSymbolEntry, splitLegacyProfileRef } from "../utils/symbol-list";
 import { SqliteCache } from "./sqlite-cache";
 import { CustomQuoteClient } from "./custom-quote-client";
@@ -74,7 +74,10 @@ export class DataAdapter {
     if (!def) {
       throw new Error(t("自定义数据源「{id}」不存在或已停用，请在设置页检查。", { id: sourceId ?? "" }));
     }
-    const { key, missing } = this.resolveApiKey(def);
+    const { key, missing, locked } = this.resolveApiKey(def);
+    if (locked) {
+      throw new Error(t("数据源「{name}」的同步凭据尚未解锁，请先在设置页解锁凭证同步。", { name: def.name }));
+    }
     if (missing) {
       throw new Error(t("数据源「{name}」尚未配置凭据，请在设置页重新选择或创建凭据。", { name: def.name }));
     }
@@ -258,12 +261,11 @@ export class DataAdapter {
         }
       }
 
-      // Fetch later missing data
-      if (end > extent.maxDate) {
-        const laterStart = nextTradingDate(extent.maxDate);
-        if (laterStart <= end) {
-          fetchedRows.push(...(await this.fetchOhlcv(spec, laterStart, end)));
-        }
+      // Re-fetch the latest cached bar as well as any missing tail. A T0 bar
+      // can change throughout the day, and sources may revise their latest
+      // completed bar after publication; mergeOhlcvRows replaces it in place.
+      if (end >= extent.maxDate) {
+        fetchedRows.push(...(await this.fetchOhlcv(spec, extent.maxDate, end)));
       }
     }
 
